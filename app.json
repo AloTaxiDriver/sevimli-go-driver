@@ -1,0 +1,66 @@
+{
+  "expo": {
+    "name": "Vijdon GO Driver",
+    "slug": "VijdonGoDriver",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/vijdon-icon.png",
+    "scheme": "vijdongodriver",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "Vijdon GO haydovchi ilovasi sizning joylashuvingizni xaritada ko'rsatish va buyurtmalarni yo'naltirish uchun ishlatadi."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#FFFFFF",
+        "foregroundImage": "./assets/images/vijdon-icon-adaptive.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "POST_NOTIFICATIONS",
+        "USE_FULL_SCREEN_INTENT",
+        "SYSTEM_ALERT_WINDOW"
+      ],
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyCjk6c_NSXoaIqnmi5XpU3B21A34dFcwsg"
+        }
+      },
+      "package": "com.aslzodiy3.VijdonGoDriver",
+      "googleServicesFile": "./google-services.json"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/vijdon-icon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/vijdon-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#ffffff"
+        }
+      ],
+      "@react-native-firebase/app",
+      "@react-native-firebase/messaging",
+      "./plugins/withOverlayPermission.js",
+      "./plugins/withNotificationSound.js"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "router": {}
+    }
+  }
+}

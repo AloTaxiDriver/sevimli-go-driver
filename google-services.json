@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "636424042470",
+    "project_id": "vijdon-go-25a06",
+    "storage_bucket": "vijdon-go-25a06.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:636424042470:android:d7af2f1bb71ac4fba44827",
+        "android_client_info": {
+          "package_name": "com.aslzodiy3.VijdonGoDriver"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyA63jn32oivUwW_vwCYhoGJ6-fQgE2dzqE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
