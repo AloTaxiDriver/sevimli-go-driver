@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Vijdon GO — Boshqaruv tizimi</title>
+<title>Sevimli Go — Boshqaruv tizimi</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#EDEDED;color:#1A1A1A;height:100vh;overflow:hidden;}
@@ -350,14 +350,14 @@ input:focus,select:focus,textarea:focus{outline:none;}
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
   const firebaseConfig = {
-    apiKey: "AIzaSyC3D0YY07KNabQpcA2fWuyJBn_gPjqMYBs",
-    authDomain: "vijdon-go-25a06.firebaseapp.com",
-    projectId: "vijdon-go-25a06",
-    storageBucket: "vijdon-go-25a06.firebasestorage.app",
-    messagingSenderId: "636424042470",
-    appId: "1:636424042470:web:0a0fb623e1e28827a44827",
-  };
-
+  apiKey: "AIzaSyDcHFdHojN2NBBfgOA8_73oxcbpZ9Ip9Ws",
+  authDomain: "sevimli-go.firebaseapp.com",
+  projectId: "sevimli-go",
+  storageBucket: "sevimli-go.firebasestorage.app",
+  messagingSenderId: "185236711706",
+  appId: "1:185236711706:web:882d2a3d65bc457cb0e4a3",
+  measurementId: "G-64TF2M927F"
+};
   const fbApp = initializeApp(firebaseConfig);
   const db = getFirestore(fbApp);
   const auth = getAuth(fbApp);
@@ -534,6 +534,15 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   };
 
+  window.saveTariffToFirestore = async function (tariffId, tariffData) {
+    if (!tariffId) return;
+    try {
+      await setDoc(doc(db, "tariffs", tariffId), tariffData, { merge: true });
+    } catch (err) {
+      console.error("Tarifni Firestore'ga yozishda xato:", err);
+    }
+  };
+
   // MUHIM: "Buyurtmalar" sahifasi avval faqat localStorage'dan
   // ishlar edi — bu funksiya "Haydovchilar" sahifasidagi
   // listenToDriversLive bilan bir xil naqshda, orders kolleksiyasini
@@ -634,6 +643,64 @@ input:focus,select:focus,textarea:focus{outline:none;}
       console.error("Haydovchini Firestore'dan o'chirishda xato:", err);
     }
   };
+// ============================================================
+  // UNIVERSAL DASHBOARD SYNC — barcha bo'limlar (filiallar, tariflar,
+  // mijozlar, ishchilar, xizmatlar, manzillar va h.k.) endi Firestore
+  // orqali barcha kompyuterlarda bir xil ko'rinishi uchun
+  // ============================================================
+  window.syncDashboardDataToFirestore = async function (key, value) {
+    try {
+      await setDoc(doc(db, "dashboardData", key), { value: JSON.stringify(value), updatedAt: serverTimestamp() });
+    } catch (err) {
+      console.error("Dashboard ma'lumotini Firestore'ga yozishda xato:", err);
+    }
+  };
+
+  window.fetchDashboardDataFromFirestore = async function (key) {
+    try {
+      const snap = await getDocs(collection(db, "dashboardData"));
+      const found = snap.docs.find((d) => d.id === key);
+      if (!found) return null;
+      const data = found.data();
+      return data.value ? JSON.parse(data.value) : null;
+    } catch (err) {
+      console.error("Dashboard ma'lumotini Firestore'dan o'qishda xato:", err);
+      return null;
+    }
+  };
+
+  window.listenToDashboardDataLive = function (key, callback) {
+    return onSnapshot(
+      doc(db, "dashboardData", key),
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const data = docSnap.data();
+          callback(data.value ? JSON.parse(data.value) : null);
+        }
+      },
+      (err) => {
+        console.error("Dashboard ma'lumotini tinglashda xato:", err);
+      }
+    );
+  };
+  window.getRadiusConfig = async function () {
+    try {
+      const snap = await getDocs(collection(db, "settings"));
+      const found = snap.docs.find((d) => d.id === "radiusConfig");
+      return found ? found.data() : null;
+    } catch (err) {
+      console.error("Radius sozlamalarini olishda xato:", err);
+      return null;
+    }
+  };
+
+  window.saveRadiusConfig = async function (cfg) {
+    try {
+      await setDoc(doc(db, "settings", "radiusConfig"), cfg, { merge: true });
+    } catch (err) {
+      console.error("Radius sozlamalarini yozishda xato:", err);
+    }
+  };
 </script>
 </head>
 <body>
@@ -644,7 +711,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
       <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
     </div>
     <div class="logo-text">
-      <div class="name">Vijdon GO
+      <div class="name">Sevimli Go
       </div>
       <div class="sub">Express</div>
     </div>
@@ -754,8 +821,8 @@ input:focus,select:focus,textarea:focus{outline:none;}
         <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
       </div>
       <div>
-        <div style="font-weight:800;font-size:16px;color:#1A1A1A">Vijdon GO</div>
-        <div style="font-weight:700;font-size:9px;color:#16A34A;letter-spacing:0.05em">VIJDON GO &middot; BOSHQARUV</div>
+        <div style="font-weight:800;font-size:16px;color:#1A1A1A">Sevimli Go</div>
+        <div style="font-weight:700;font-size:9px;color:#16A34A;letter-spacing:0.05em">Sevimli Go &middot; BOSHQARUV</div>
       </div>
     </div>
 
@@ -937,11 +1004,11 @@ const SEED={
     {id:'CC007',name:'Yashil'},{id:'CC008',name:'Sariq'},{id:'CC009',name:'Jigarrang'},
     {id:'CC010',name:'Pushti'},
   ],
-  settings:{companyName:'Vijdon GO',phone:'+998712000001',address:'Toshkent'}
+  settings:{companyName:'Sevimli Go',phone:'+998712000001',address:'Toshkent'}
 };
 
 function dbGet(k){try{const v=localStorage.getItem(KEYS[k]);if(v)return JSON.parse(v);localStorage.setItem(KEYS[k],JSON.stringify(SEED[k]));return SEED[k];}catch{return SEED[k]||[];}}
-function dbSet(k,v){try{localStorage.setItem(KEYS[k],JSON.stringify(v));}catch{}}
+function dbSet(k,v){try{localStorage.setItem(KEYS[k],JSON.stringify(v));if(window.syncDashboardDataToFirestore)window.syncDashboardDataToFirestore(k,v);}catch{}}
 function dbAdd(k,item){const d=dbGet(k);d.unshift({...item,id:uid(),created:now()});dbSet(k,d);return d;}
 function dbUpdate(k,id,patch){const d=dbGet(k).map(x=>x.id===id?{...x,...patch}:x);dbSet(k,d);return d;}
 function dbDelete(k,id){const d=dbGet(k).filter(x=>x.id!==id);dbSet(k,d);return d;}
@@ -1154,7 +1221,7 @@ function afterRender(page){
   if(page==='workers'){renderWorkersGrid('');}
   if(page==='groups'){renderGroupCards('');}
   if(page==='addresses'){renderAddressCards('');}
-  if(page==='settings'){populateSetCarBrandSelect();renderCarColorsList();}
+  if(page==='settings'){populateSetCarBrandSelect();renderCarColorsList();loadRadiusSettings();}
   if(page==='statistics'){animateStatistics();}
   if(page==='notifications'){
     renderNotifHistory();
@@ -4207,13 +4274,26 @@ function saveTariff(tariffId){
     carImage:window._tariffCarImage||null,
   };
 
+  let finalTariffId=tariffId;
   if(tariffId){
     tariffs=tariffs.map(t=>t.id===tariffId?{...t,...finalData}:t);
   }else{
     const newId='TRF'+String(tariffs.length+1).padStart(3,'0');
     tariffs.push({id:newId,...finalData});
+    finalTariffId=newId;
   }
   dbSet('tariffs',tariffs);
+  if(window.saveTariffToFirestore){
+    window.saveTariffToFirestore(finalTariffId,{
+      name:finalData.name,
+      perKm:finalData.perKm,
+      minDistance:finalData.minDistance,
+      minDistancePrice:finalData.minDistancePrice,
+      bordur:finalData.bordur,
+      status:finalData.status,
+      carImage:finalData.carImage||null,
+    });
+  }
   window._tariffFormCache=null;
   closeTariffModal();
   renderTariffCards(document.getElementById('tariff-search')?.value?.toLowerCase()||'');
@@ -4653,7 +4733,7 @@ function openAddressModal(addressId){
 
         <div style="width:340px;flex-shrink:0;padding:22px;overflow-y:auto;display:flex;flex-direction:column;gap:13px;border-right:1px solid rgba(0,0,0,0.06)">
           <div class="form-field"><label class="form-label">Filial</label>
-            <select class="form-input" id="am-branch"><option value="">Tanlanmagan</option>${branchOpts}</select>
+            <select class="form-input" id="am-branch" onchange="onAddressBranchChange()"><option value="">Tanlanmagan</option>${branchOpts}</select>
           </div>
           <div class="form-field"><label class="form-label">Manzil guruhi</label>
             <select class="form-input" id="am-group"><option value="">Tanlanmagan</option>${groupOpts}</select>
@@ -4679,7 +4759,7 @@ function openAddressModal(addressId){
     </div>
   </div>`;
 
-  setTimeout(()=>initAddressMap(defaultLat,defaultLng,!!a?.lat),50);
+setTimeout(()=>{initAddressMap(defaultLat,defaultLng,!!a?.lat);if(!a&&document.getElementById('am-branch')?.value)onAddressBranchChange();},50);
 }
 
 function initAddressMap(lat,lng,hasExistingPin){
@@ -4733,6 +4813,18 @@ function updateAddressMapFromInputs(){
   if(isNaN(lat)||isNaN(lng)||!addressModalMap||!addressModalMarker)return;
   addressModalMarker.setLatLng([lat,lng]);
   addressModalMap.setView([lat,lng],addressModalMap.getZoom());
+}
+function onAddressBranchChange(){
+  const branchId=document.getElementById('am-branch')?.value;
+  if(!branchId)return;
+  const branches=dbGet('branches');
+  const branch=branches.find(b=>b.id===branchId);
+  if(!branch||branch.lat==null||branch.lng==null)return;
+  setAddressLatLngInputs(branch.lat,branch.lng);
+  if(addressModalMap&&addressModalMarker){
+    addressModalMarker.setLatLng([branch.lat,branch.lng]);
+    addressModalMap.setView([branch.lat,branch.lng],14,{animate:true});
+  }
 }
 
 function closeAddressModal(){
@@ -5276,6 +5368,17 @@ function renderSettings(){
         </div>
       </div>
 
+      <div class="card" style="padding:20px">
+        <div style="font-weight:700;font-size:15px;margin-bottom:4px">Radius sozlamalari</div>
+        <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:14px">"Domoy / Ish / Mening hududim" tugmalari uchun \u2014 haydovchi shu radius ichidagi buyurtmalarnigina ko\u2019radi</div>
+        <div style="display:flex;flex-direction:column;gap:11px">
+          <div class="form-field"><label class="form-label">Uy radiusi (km)</label><input class="form-input" id="set-radius-home" type="number" min="0.5" step="0.5" value="3"></div>
+          <div class="form-field"><label class="form-label">Ish radiusi (km)</label><input class="form-input" id="set-radius-work" type="number" min="0.5" step="0.5" value="3"></div>
+          <div class="form-field"><label class="form-label">Mening hududim radiusi (km)</label><input class="form-input" id="set-radius-nearby" type="number" min="0.5" step="0.5" value="10"></div>
+        </div>
+        <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:12px;width:100%" onclick="saveRadiusSettings()">Radiuslarni saqlash</button>
+      </div>
+
       <button class="btn btn-coral" style="justify-content:center;padding:12px;font-size:14px" onclick="saveSettings()">\ud83d\udcbe Saqlash</button>
 
       <div class="card" style="padding:20px">
@@ -5464,6 +5567,30 @@ function saveSettings(){
   s.phone=document.getElementById('set-phone')?.value||s.phone;
   s.address=document.getElementById('set-address')?.value||s.address;
   dbSet('settings',s);alert('Saqlandi!');
+}
+
+async function loadRadiusSettings(){
+  if(!window.getRadiusConfig)return;
+  const cfg=await window.getRadiusConfig();
+  if(!cfg)return;
+  const h=document.getElementById('set-radius-home');
+  const w=document.getElementById('set-radius-work');
+  const n=document.getElementById('set-radius-nearby');
+  if(h&&typeof cfg.homeRadiusKm==='number')h.value=cfg.homeRadiusKm;
+  if(w&&typeof cfg.workRadiusKm==='number')w.value=cfg.workRadiusKm;
+  if(n&&typeof cfg.nearbyRadiusKm==='number')n.value=cfg.nearbyRadiusKm;
+}
+
+async function saveRadiusSettings(){
+  const cfg={
+    homeRadiusKm:parseFloat(document.getElementById('set-radius-home')?.value)||3,
+    workRadiusKm:parseFloat(document.getElementById('set-radius-work')?.value)||3,
+    nearbyRadiusKm:parseFloat(document.getElementById('set-radius-nearby')?.value)||10,
+  };
+  if(window.saveRadiusConfig){
+    await window.saveRadiusConfig(cfg);
+    alert('Radiuslar saqlandi!');
+  }
 }
 
 // ============================================================
@@ -6462,6 +6589,24 @@ function startGlobalOrdersListener(){
     if(window.currentPage==='orders'){renderMiniStats();renderOrdersTable();}
   });
 }
+// ============================================================
+// BOSHQA QURILMALARDAGI O'ZGARISHLARNI TINGLASH — ilova ochilganda
+// barcha bo'limlar (filiallar, tariflar, mijozlar va h.k.) Firestore'dagi
+// eng so'nggi holatga moslashtiriladi, boshqa kompyuterda kiritilgan
+// o'zgarish shu yerda darhol ko'rinadi.
+// ============================================================
+const DASHBOARD_SYNC_KEYS=['branches','tariffs','workers','clients','services','addresses','groups','sms','settings','carBrands','carColors','balance'];
+function startDashboardDataSync(){
+  if(!window.listenToDashboardDataLive){setTimeout(startDashboardDataSync,300);return;}
+  DASHBOARD_SYNC_KEYS.forEach(key=>{
+    window.listenToDashboardDataLive(key,(value)=>{
+      if(value==null)return;
+      try{localStorage.setItem(KEYS[key],JSON.stringify(value));}catch{}
+      if(window.currentPage)navigate(window.currentPage);
+    });
+  });
+}
+startDashboardDataSync();
 startGlobalOrdersListener();
 </script>
 </body>
