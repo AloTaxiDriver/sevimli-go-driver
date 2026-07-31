@@ -78,10 +78,10 @@ export default function LoginScreen() {
           <View style={styles.content}>
             <View style={styles.logoRow}>
               <View style={styles.logoIcon}>
-                <Text style={styles.logoIconText}>Z</Text>
+                <Text style={styles.logoIconText}>S</Text>
               </View>
               <View>
-                <Text style={styles.logoName}>Zuvzuv Taxi</Text>
+                <Text style={styles.logoName}>Sevimli Go</Text>
                 <Text style={styles.logoSub}>HAYDOVCHI</Text>
               </View>
             </View>
@@ -260,7 +260,7 @@ const styles = StyleSheet.create({
   // To'liq qattiq, lekin ochroq/kamroq to'yingan rang — "o'chirilgan"
   // holatni bildiradi, shaffoflik ishlatilmaydi (orqadagi kartaning
   // foni bilan qo'shilib ikki qatlamli ko'rinish hosil bo'lmasligi uchun)
-  buttonDisabled: { backgroundColor: '#FFC4AC', shadowOpacity: 0 },
+  buttonDisabled: { backgroundColor: '#BBF7D0', shadowOpacity: 0 },
   buttonText: { color: COLORS.white, fontWeight: '700', fontSize: 16 },
   backLink: { marginTop: 18, alignItems: 'center' },
   backLinkText: { color: 'rgba(22,24,29,0.5)', fontSize: 13, fontWeight: '700' },

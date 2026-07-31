@@ -1,5 +1,5 @@
 // app/theme/colors.ts
-// Vijdon GO — logotipga mos rang palitasi (yashil, dashboard bilan bir xil).
+// Sevimli Go — logotipga mos rang palitasi (yashil, dashboard bilan bir xil).
 
 export const COLORS = {
   primary: '#16A34A',       // asosiy yashil

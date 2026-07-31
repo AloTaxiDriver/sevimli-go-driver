@@ -1,8 +1,8 @@
 import { initializeApp } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
-import { onDocumentCreated } from "firebase-functions/v2/firestore";
+import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onRequest } from "firebase-functions/v2/https";
 
 initializeApp();
@@ -39,6 +39,82 @@ async function getDispatchSettings(): Promise<{
     };
   } catch {
     return { radiusMeters: 1500, timeoutSeconds: 20 };
+  }
+}
+
+async function getRadiusConfig(): Promise<{
+  homeRadiusKm: number;
+  workRadiusKm: number;
+  nearbyRadiusKm: number;
+}> {
+  try {
+    const doc = await db.collection("settings").doc("radiusConfig").get();
+    const data = doc.data();
+    return {
+      homeRadiusKm: typeof data?.homeRadiusKm === "number" ? data.homeRadiusKm : 3,
+      workRadiusKm: typeof data?.workRadiusKm === "number" ? data.workRadiusKm : 3,
+      nearbyRadiusKm: typeof data?.nearbyRadiusKm === "number" ? data.nearbyRadiusKm : 10,
+    };
+  } catch {
+    return { homeRadiusKm: 3, workRadiusKm: 3, nearbyRadiusKm: 10 };
+  }
+}
+
+// "Domoy" / "Ish" / "Mening hududim" filtri — faol bo'lsa, faqat mos
+// radius ichidagi buyurtma ko'rinadi. Rejim yo'q yoki nuqta hali
+// saqlanmagan bo'lsa — cheklovsiz (fail open).
+function isDriverEligibleForOrder(
+  data: FirebaseFirestore.DocumentData,
+  pickupLat: number | undefined,
+  pickupLng: number | undefined,
+  radiusCfg: { homeRadiusKm: number; workRadiusKm: number; nearbyRadiusKm: number }
+): boolean {
+  const mode = data.activeMode;
+  if (!mode) return true;
+  if (pickupLat == null || pickupLng == null) return true;
+
+  let refLat: number | undefined;
+  let refLng: number | undefined;
+  let radiusKm: number;
+
+  if (mode === "home") {
+    refLat = data.savedLocations?.home?.lat;
+    refLng = data.savedLocations?.home?.lng;
+    radiusKm = radiusCfg.homeRadiusKm;
+  } else if (mode === "work") {
+    refLat = data.savedLocations?.work?.lat;
+    refLng = data.savedLocations?.work?.lng;
+    radiusKm = radiusCfg.workRadiusKm;
+  } else if (mode === "nearby") {
+    // MUHIM: "Mening hududim" jonli, harakatlanadigan GPS emas — tugma
+    // bosilgan ANIQ paytda saqlangan qat'iy nuqta ("qoziq"). Haydovchi
+    // keyin qayerga borsa ham, markaz o'zgarmaydi.
+    refLat = data.nearbyAnchor?.lat;
+    refLng = data.nearbyAnchor?.lng;
+    radiusKm = radiusCfg.nearbyRadiusKm;
+  } else {
+    return true;
+  }
+
+  if (refLat == null || refLng == null) return true;
+
+  const distMeters = getDistanceMeters(pickupLat, pickupLng, refLat, refLng);
+  return distMeters <= radiusKm * 1000;
+}
+
+async function getBonusSettings(): Promise<{
+  earnPercent: number;
+  maxRedeemPercent: number;
+}> {
+  try {
+    const doc = await db.collection("settings").doc("bonus").get();
+    const data = doc.data();
+    return {
+      earnPercent: typeof data?.earnPercent === "number" ? data.earnPercent : 4,
+      maxRedeemPercent: typeof data?.maxRedeemPercent === "number" ? data.maxRedeemPercent : 50,
+    };
+  } catch {
+    return { earnPercent: 4, maxRedeemPercent: 50 };
   }
 }
 
@@ -127,6 +203,7 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
 
     // ── POOL BUYURTMA — KETMA-KET DISPATCH ───────────────────
     const settings = await getDispatchSettings();
+    const radiusCfg = await getRadiusConfig();
     logger.info(
       `Dispatch sozlamalari — radius: ${settings.radiusMeters}m, timeout: ${settings.timeoutSeconds}s`
     );
@@ -153,6 +230,7 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!data.pushToken) return;
+      if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) return;
 
       allDrivers.push({ id: doc.id, token: data.pushToken });
 
@@ -303,7 +381,7 @@ async function fetchKunUzNews(): Promise<NewsItem[]> {
     return newsCache.items;
   }
   const res = await fetch(KUN_UZ_RSS_URL, {
-    headers: { "User-Agent": "Mozilla/5.0 (ZuvzuvTaxiDashboard)" },
+    headers: { "User-Agent": "Mozilla/5.0 (SevimliGoDashboard)" },
   });
   const xml = await res.text();
   const itemBlocks = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
@@ -395,6 +473,210 @@ export const onNewNotificationSendPush = onDocumentCreated(
       );
     } catch (error) {
       logger.error("Bildirishnoma push xatosi:", error);
+    }
+  }
+);
+
+// ============================================================
+// MIJOZ BONUS TIZIMI — mijoz ilovasi (customer app).
+// Buyurtma "completed" holatiga o'tganda: buyurtmada sarflangan
+// bonus (bonusUsed) mijoz balansidan yechiladi va narxning bir
+// qismi (settings/bonus.earnPercent) yangi bonus sifatida
+// qo'shiladi. Har ikkalasi ham customers/{id}/bonusHistory'ga
+// yoziladi.
+//
+// MUHIM (xavfsizlik): bu — bonusBalance'ni o'zgartiradigan
+// YAGONA joy bo'lishi kerak. Mijoz ilovasi Firestore Rules
+// orqali bonusBalance'ni to'g'ridan-to'g'ri yoza olmaydi —
+// aks holda mijoz balansni o'zi "hile" bilan oshirib yuborishi
+// mumkin edi.
+//
+// MUHIM (poyga holati / race condition): haydovchi ilovasi safarni
+// yakunlaganda IKKITA ALOHIDA Firestore yozuvi qiladi — avval
+// updateOrderStatus(id, 'completed'), so'ng finalizeOrderPrice(id, ...)
+// (yakuniy, metrланган narx bilan `price`ni qayta yozadi) — bittasi
+// kutilmasdan (E:\Sevimli Go\src\MapScreen.tsx, confirmFinishTrip).
+// Bu ikkala yozuv ham shu triggerni ishga tushiradi va ULARNING
+// FIRESTORE'GA YETIB KELISH TARTIBI KAFOLATLANMAGAN. Shuning uchun:
+// (1) status "completed"ga o'tgan HAR safar (nafaqat birinchi marta)
+// tekshiramiz, (2) tranzaksiya ichida buyurtmani QAYTA o'qiymiz (eventdagi
+// eski snapshot emas) — shu bilan doim ENG SO'NGGI (yakuniy) `price`
+// ishlatiladi, (3) `bonusApplied` flag orqali ikki marta qo'llanishning
+// oldini olamiz (ikkala yozuv ham shu funksiyani chaqirsa ham).
+// ============================================================
+
+export const onOrderCompletedApplyBonus = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const after = event.data?.after;
+    if (!after || after.data()?.status !== "completed") return;
+
+    const orderId = event.params.orderId;
+    const customerId: string | undefined = after.data()?.customerId;
+    if (!customerId) {
+      logger.info(`Buyurtma ${orderId} customerId'siz — bonus hisoblanmadi`);
+      return;
+    }
+
+    const orderRef = after.ref;
+    const customerRef = db.collection("customers").doc(customerId);
+    const historyRef = customerRef.collection("bonusHistory");
+    const { earnPercent } = await getBonusSettings();
+
+    try {
+      await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        const orderData = orderSnap.data();
+        if (!orderData || orderData.status !== "completed" || orderData.bonusApplied) {
+          return;
+        }
+
+        const customerDoc = await tx.get(customerRef);
+        const currentBalance =
+          typeof customerDoc.data()?.bonusBalance === "number" ? customerDoc.data()!.bonusBalance : 0;
+
+        const price = typeof orderData.price === "number" ? orderData.price : 0;
+        const bonusUsed = typeof orderData.bonusUsed === "number" ? Math.max(0, orderData.bonusUsed) : 0;
+        const earnAmount = Math.floor((price * earnPercent) / 100);
+
+        // Mijoz balansidan ortiqni sarflab bo'lmaydi — qo'shimcha himoya
+        // (odatda bonusUsed allaqachon buyurtma yaratilganda cheklangan bo'ladi).
+        const actualSpent = Math.min(bonusUsed, currentBalance);
+        const newBalance = currentBalance - actualSpent + earnAmount;
+
+        tx.set(customerRef, { bonusBalance: newBalance }, { merge: true });
+        tx.set(orderRef, { bonusApplied: true }, { merge: true });
+
+        if (actualSpent > 0) {
+          tx.set(historyRef.doc(), {
+            type: "spent",
+            amount: actualSpent,
+            orderId,
+            note: "Safarda ishlatildi",
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
+        if (earnAmount > 0) {
+          tx.set(historyRef.doc(), {
+            type: "earned",
+            amount: earnAmount,
+            orderId,
+            note: "Safar uchun bonus",
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
+
+        logger.info(
+          `Buyurtma ${orderId}: bonus qo'llanildi (mijoz ${customerId}) — ` +
+            `narx: ${price}, sarflangan: ${actualSpent}, olingan: ${earnAmount}`
+        );
+      });
+    } catch (error) {
+      logger.error(`Bonus tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
+    }
+  }
+);
+
+// ============================================================
+// MIJOZGA PUSH BILDIRISHNOMA — buyurtma holati mijoz uchun
+// muhim bosqichga o'tganda (haydovchi topildi / safar yakunlandi /
+// bekor qilindi) customers/{customerId}.pushToken orqali push
+// yuboradi — drivers/{id}.pushToken bilan bir xil pattern.
+// ============================================================
+
+export const onOrderStatusChangeNotifyCustomer = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!before || !after) return;
+
+    const orderId = event.params.orderId;
+    const customerId: string | undefined = after.customerId;
+    if (!customerId) return;
+
+    let status: "accepted" | "completed" | "cancelled" | null = null;
+    // "completed" holati uchun narx maydoni yakuniy (metrланган) qiymat
+    // bilan alohida yozuv orqali kelishi mumkin — shu holatda push matni
+    // shu eng so'nggi ma'lumotdan quriladi (pastda tozalanadi).
+    let messageData: FirebaseFirestore.DocumentData = after;
+
+    if (after.status === "accepted" && before.status !== "accepted") {
+      status = "accepted";
+    } else if (after.status === "cancelled" && before.status !== "cancelled") {
+      status = "cancelled";
+    } else if (after.status === "completed") {
+      // MUHIM (poyga holati): xuddi onOrderCompletedApplyBonus'dagi kabi,
+      // "completed"ga o'tish va yakuniy narxni yozish IKKITA alohida
+      // Firestore yozuvi — tartib kafolatlanmagan. Shuning uchun bu yerda
+      // ham buyurtmani qayta o'qiymiz va push FAQAT bir marta (eng oxirgi,
+      // yakuniy narx bilan) yuborilishini "completedPushSent" flag orqali
+      // ta'minlaymiz.
+      const orderRef = event.data!.after.ref;
+      const shouldSend = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(orderRef);
+        const data = snap.data();
+        if (!data || data.status !== "completed" || data.completedPushSent) return false;
+        tx.set(orderRef, { completedPushSent: true }, { merge: true });
+        messageData = data;
+        return true;
+      });
+      if (!shouldSend) return;
+      status = "completed";
+    } else {
+      return;
+    }
+
+    let token: string | undefined;
+    try {
+      const customerDoc = await db.collection("customers").doc(customerId).get();
+      token = customerDoc.data()?.pushToken;
+    } catch (error) {
+      logger.error(`Mijoz push tokenini olishda xato (${customerId}):`, error);
+      return;
+    }
+    if (!token) {
+      logger.info(`Mijoz ${customerId} uchun pushToken topilmadi — o'tkazib yuborildi`);
+      return;
+    }
+
+    let title = "Sevimli Go";
+    let body = "";
+
+    if (status === "accepted") {
+      title = "Haydovchi topildi!";
+      body = "Haydovchingiz yo'lga chiqdi.";
+      if (messageData.driverId) {
+        try {
+          const driverDoc = await db.collection("drivers").doc(messageData.driverId).get();
+          const driverData = driverDoc.data();
+          if (driverData) {
+            const name = [driverData.firstName, driverData.lastName].filter(Boolean).join(" ");
+            const car = [driverData.carBrand, driverData.carModel].filter(Boolean).join(" ");
+            body = `${name || "Haydovchi"}${car ? " · " + car : ""} sizga yo'lda`;
+          }
+        } catch (error) {
+          logger.warn(`Haydovchi ma'lumotini olishda xato (${messageData.driverId}):`, error);
+        }
+      }
+    } else if (status === "completed") {
+      title = "Safar yakunlandi";
+      const price = typeof messageData.price === "number" ? messageData.price : undefined;
+      body = price != null ? `To'lov: ${price} so'm. Rahmat!` : "Xush safar bo'lsin!";
+    } else if (status === "cancelled") {
+      title = "Buyurtma bekor qilindi";
+      body = messageData.cancelReason || "Buyurtma bekor qilindi.";
+    }
+
+    try {
+      await messaging.send({
+        token,
+        data: { type: "order_status", orderId, status, title, body },
+        android: { priority: "high" },
+      });
+      logger.info(`Mijozga push yuborildi (${customerId}) — buyurtma ${orderId}: ${status}`);
+    } catch (error) {
+      logger.error(`Mijozga push yuborishda xato (${customerId}):`, error);
     }
   }
 );

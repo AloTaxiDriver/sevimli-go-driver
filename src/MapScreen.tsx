@@ -8,6 +8,7 @@ import * as Location from 'expo-location';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator, Alert, Animated, DeviceEventEmitter, Dimensions, FlatList,
+  Image,
   Modal,
   PanResponder,
   Linking as RNLinking,
@@ -29,7 +30,8 @@ import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
   DispatcherNotification, FirestoreOrder, acceptOrder, cancelOrder, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
-  saveDriverPushToken, setDriverBusyStatus, updateOrderStatus,
+  saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
+  updateOrderStatus
 } from './utils/firebase';
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
 import { getRoute } from './utils/routing';
@@ -67,6 +69,12 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const [notifications, setNotifications] = useState<DispatcherNotification[]>([]);
   const [notifModalVisible, setNotifModalVisible] = useState(false);
   const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [activeMode, setActiveMode] = useState<'home' | 'work' | 'nearby' | null>(null);
+  const [savedLocations, setSavedLocations] = useState<{
+    home?: { lat: number; lng: number; address?: string };
+    work?: { lat: number; lng: number; address?: string };
+  }>({});
+  const [locationSettingsVisible, setLocationSettingsVisible] = useState(false);
   const lastSeenNotifAtRef = useRef(0);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [tripStage, setTripStage] = useState<TripStage>(null);
@@ -127,6 +135,15 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       setUnreadNotifCount(items.filter((n) => n.createdAtMillis > lastSeenNotifAtRef.current).length);
     });
     return unsubscribe;
+  }, [driverId]);
+
+  useEffect(() => {
+    firestore().collection('drivers').doc(driverId).get().then((doc) => {
+      const data = doc.data();
+      if (!data) return;
+      if (data.activeMode) setActiveMode(data.activeMode);
+      if (data.savedLocations) setSavedLocations(data.savedLocations);
+    }).catch((e) => console.warn('Saqlangan manzillarni olishda xato:', e));
   }, [driverId]);
 
   useEffect(() => {
@@ -336,7 +353,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const ROUTE_REFRESH_MS = 15000;
 
   useEffect(() => {
-    const target = activeOrder && (tripStage === 'to_pickup' || tripStage === 'in_progress')
+    const target = activeOrder && activeOrder.toAddress !== '' && (tripStage === 'to_pickup' || tripStage === 'in_progress')
       ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : activeOrder.dropoffLocation)
       : null;
 
@@ -478,6 +495,109 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     AsyncStorage.setItem(`notif_last_seen_${driverId}`, String(now)).catch(() => {});
   }
 
+  function setDriverMode(mode: 'home' | 'work' | 'nearby') {
+    if ((mode === 'home' && !savedLocations.home) || (mode === 'work' && !savedLocations.work)) {
+      Alert.alert(
+        mode === 'home' ? 'Uy manzili saqlanmagan' : 'Ish manzili saqlanmagan',
+        'Avval manzilni sozlamalarda saqlang.',
+        [
+          { text: 'Bekor qilish', style: 'cancel' },
+          { text: 'Sozlash', onPress: () => { setMenuVisible(false); setLocationSettingsVisible(true); } },
+        ]
+      );
+      return;
+    }
+    if (mode === 'nearby' && activeMode !== 'nearby' && !location) {
+      Alert.alert('Joylashuv aniqlanmagan', 'GPS joylashuvi hali aniqlanmadi, birozdan keyin urinib ko\u2018ring.');
+      return;
+    }
+    const newMode = activeMode === mode ? null : mode;
+    setActiveMode(newMode);
+    const patch: { activeMode: typeof newMode; nearbyAnchor?: { lat: number; lng: number } } = { activeMode: newMode };
+    if (newMode === 'nearby' && location) {
+      // "Qoziq" mantig'i: tugma bosilgan ANIQ shu paytdagi joylashuv
+      // qat'iy markaz sifatida saqlanadi. Qayta bosib o'chirib-yoqmasa,
+      // bu nuqta o'zgarmaydi.
+      patch.nearbyAnchor = { lat: location.latitude, lng: location.longitude };
+    }
+    firestore().collection('drivers').doc(driverId).set(
+      patch,
+      { merge: true }
+    ).then(() => {
+      if (newMode === 'nearby') {
+        Alert.alert(
+          'Hudud belgilandi',
+          'Joriy joylashuvingiz markaz sifatida saqlandi. Endi shu nuqtadan atrofdagi buyurtmalarni olasiz — qayerga yursangiz ham markaz o\u2018zgarmaydi.'
+        );
+      }
+    }).catch((e) => console.warn('activeMode yozishda xato:', e));
+  }
+
+  async function saveCurrentLocationAs(kind: 'home' | 'work') {
+    if (!location) return;
+    let address = '';
+    try {
+      const results = await Location.reverseGeocodeAsync(location);
+      const r = results?.[0];
+      if (r) address = [r.street, r.district || r.city].filter(Boolean).join(', ');
+    } catch (e) {
+      console.warn('Manzilni aniqlashda xato:', e);
+    }
+    const point = { lat: location.latitude, lng: location.longitude, address };
+    const newSaved = { ...savedLocations, [kind]: point };
+    setSavedLocations(newSaved);
+    firestore().collection('drivers').doc(driverId).set(
+      { savedLocations: newSaved },
+      { merge: true }
+    ).catch((e) => console.warn('Manzilni saqlashda xato:', e));
+  }
+
+  // Bordyur — ko'chadan olingan yo'lovchi uchun, dispetchersiz, haydovchi
+  // o'zi to'g'ridan-to'g'ri boshlaydigan safar. Oddiy pool buyurtmadan
+  // farqli ravishda "qabul qilish"/"yo'lga chiqish" bosqichlari yo'q —
+  // trip boshidanoq 'in_progress' holatida, chunki yo'lovchi allaqachon
+  // mashinada. Manzil oldindan noma'lum, narx metr (perKm) bo'yicha
+  // hisoblanadi (xuddi tariffPerKm/tariffMinPrice orqali).
+  async function handleStartBordur() {
+    if (!location) {
+      Alert.alert('Joylashuv aniqlanmagan', 'GPS joylashuvi hali aniqlanmadi, birozdan keyin urinib ko‘ring.');
+      return;
+    }
+    try {
+      const { orderId, tariff } = await startBordurTrip(driverId, location);
+      activeOrderSourceId.current = orderId;
+      setActiveOrder({
+        id: orderId,
+        type: tariff.name,
+        distanceKm: 0,
+        durationMin: 0,
+        price: 0,
+        perKm: tariff.perKm,
+        minDistance: tariff.minDistance,
+        minDistancePrice: tariff.minDistancePrice,
+        fromAddress: 'Bordyur',
+        toAddress: '',
+        pickupCount: 1,
+        dropoffCount: 1,
+        customer: { name: 'Bordyur mijozi', phone: '', rating: 4.8 },
+        pickupLocation: location,
+        dropoffLocation: location,
+      });
+      setTripStage('in_progress');
+      setMenuVisible(false);
+    } catch (e: any) {
+      if (e?.message === 'NO_BORDUR_TARIFF') {
+        Alert.alert(
+          'Bordyur tarifi topilmadi',
+          'Dashboard’da "Maxsus rejimlar" bo‘limida bordyur rejimi yoqilgan, faol tarif yo‘q.'
+        );
+      } else {
+        console.warn('Bordyur safarini boshlashda xato:', e);
+        Alert.alert('Xatolik', 'Bordyur safarini boshlab bo‘lmadi. Qayta urinib ko‘ring.');
+      }
+    }
+  }
+
   function recenterMap() {
     if (location && mapRef.current) {
       mapRef.current.animateToRegion({ ...location, latitudeDelta: 0.02, longitudeDelta: 0.02 }, 500);
@@ -588,7 +708,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     );
   }
 
-  const routeTarget = activeOrder && (tripStage === 'to_pickup' || tripStage === 'in_progress')
+  const routeTarget = activeOrder && activeOrder.toAddress !== '' && (tripStage === 'to_pickup' || tripStage === 'in_progress')
     ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : activeOrder.dropoffLocation)
     : null;
   const fallbackDistanceKm = routeTarget ? getDistanceKm(location, routeTarget) : 0;
@@ -642,7 +762,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         <View style={styles.topBarRow}>
           <View style={styles.glassWrap}>
             <GlassPanel style={[styles.brandPill, styles.glassLight]}>
-              <Text style={styles.brandText}>Zuvzuv Taxi Express</Text>
+              <Text style={styles.brandText}>Sevimli Go</Text>
             </GlassPanel>
           </View>
         </View>
@@ -702,7 +822,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
 
       {isOnline && !tripStage && (
         <TouchableOpacity activeOpacity={0.8} style={styles.powerBtnWrap} onPress={goOffline}>
-          <GlassPanel style={styles.powerBtn} intensity={75} tintColor="#FF5A2C">
+          <GlassPanel style={styles.powerBtn} intensity={75} tintColor="#16A34A">
             <Ionicons name="power" size={26} color={COLORS.white} />
           </GlassPanel>
         </TouchableOpacity>
@@ -851,19 +971,39 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             </View>
             <View style={styles.grid}>
               {[
-                { icon: 'home', label: 'Domoy' },
-                { icon: 'briefcase', label: 'Ish' },
-                { icon: 'locate', label: 'Mening hududim' },
-                { icon: 'trail-sign', label: 'Bordyur' },
-              ].map((g) => (
-                <GlassPanel key={g.label} style={[styles.gridItem, styles.glassLight]} intensity={70}>
-                  <TouchableOpacity style={styles.gridItemTouchable}>
-                    <Ionicons name={g.icon as any} size={24} color={COLORS.dark} />
-                    <Text style={styles.gridLabel}>{g.label}</Text>
-                  </TouchableOpacity>
-                </GlassPanel>
-              ))}
+                { icon: 'home', label: 'Domoy', mode: 'home' as const },
+                { icon: 'briefcase', label: 'Ish', mode: 'work' as const },
+                { icon: 'locate', label: 'Mening hududim', mode: 'nearby' as const },
+                { icon: 'trail-sign', label: 'Bordyur', mode: null },
+              ].map((g) => {
+                const isActive = g.mode != null && activeMode === g.mode;
+                return (
+                  <GlassPanel
+                    key={g.label}
+                    style={[styles.gridItem, styles.glassLight, isActive && styles.gridItemActive]}
+                    intensity={70}
+                  >
+                    <TouchableOpacity
+                      style={styles.gridItemTouchable}
+                      onPress={() => {
+                        if (g.mode) setDriverMode(g.mode);
+                        else handleStartBordur();
+                      }}
+                    >
+                      <Ionicons name={g.icon as any} size={24} color={isActive ? COLORS.primary : COLORS.dark} />
+                      <Text style={[styles.gridLabel, isActive && { color: COLORS.primary }]}>{g.label}</Text>
+                    </TouchableOpacity>
+                  </GlassPanel>
+                );
+              })}
             </View>
+            <TouchableOpacity
+              style={styles.locationSettingsLink}
+              onPress={() => { setMenuVisible(false); setLocationSettingsVisible(true); }}
+            >
+              <Ionicons name="settings-outline" size={14} color={COLORS.textMuted} />
+              <Text style={styles.locationSettingsLinkText}>Uy va ish manzilini sozlash</Text>
+            </TouchableOpacity>
           </GlassPanel>
         </View>
       </Modal>
@@ -942,6 +1082,37 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         </View>
       </Modal>
 
+      <Modal visible={locationSettingsVisible} animationType="slide" transparent onRequestClose={() => setLocationSettingsVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <TouchableOpacity style={styles.modalBackdrop} onPress={() => setLocationSettingsVisible(false)} />
+          <GlassPanel style={[styles.sheet, { paddingBottom: 30 + insets.bottom }]} intensity={95}>
+            <View style={styles.sheetHandle} />
+            <Text style={styles.poolTitle}>Manzillarni sozlash</Text>
+            <Text style={styles.poolSubtitle}>Hozirgi joylashuvingizni uy yoki ish manzili sifatida saqlang</Text>
+
+            <View style={[styles.locSettingRow, { marginTop: 16 }]}>
+              <Text style={styles.locSettingLabel}>🏠 Uy manzili</Text>
+              <Text style={styles.locSettingAddress}>
+                {savedLocations.home?.address || (savedLocations.home ? 'Saqlangan (manzil nomisiz)' : 'Hali saqlanmagan')}
+              </Text>
+              <TouchableOpacity style={styles.locSettingBtn} onPress={() => saveCurrentLocationAs('home')}>
+                <Text style={styles.locSettingBtnText}>Joriy joylashuvni Uy sifatida saqlash</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.locSettingRow}>
+              <Text style={styles.locSettingLabel}>💼 Ish manzili</Text>
+              <Text style={styles.locSettingAddress}>
+                {savedLocations.work?.address || (savedLocations.work ? 'Saqlangan (manzil nomisiz)' : 'Hali saqlanmagan')}
+              </Text>
+              <TouchableOpacity style={styles.locSettingBtn} onPress={() => saveCurrentLocationAs('work')}>
+                <Text style={styles.locSettingBtnText}>Joriy joylashuvni Ish sifatida saqlash</Text>
+              </TouchableOpacity>
+            </View>
+          </GlassPanel>
+        </View>
+      </Modal>
+
       <CancelOrderModal
         visible={cancelModalVisible}
         onClose={() => setCancelModalVisible(false)}
@@ -991,6 +1162,14 @@ const styles = StyleSheet.create({
   gridItem: { width: '48%', borderRadius: 16, marginBottom: 12, overflow: 'hidden' },
   gridItemTouchable: { paddingVertical: 18, alignItems: 'center', gap: 8 },
   gridLabel: { fontSize: 13, fontWeight: '700', color: COLORS.dark },
+  gridItemActive: { borderWidth: 1.5, borderColor: COLORS.primary },
+  locationSettingsLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, marginTop: 4, paddingVertical: 8 },
+  locationSettingsLinkText: { fontSize: 12, color: COLORS.textMuted, fontWeight: '600' },
+  locSettingRow: { backgroundColor: 'rgba(255,255,255,0.6)', borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)' },
+  locSettingLabel: { fontSize: 13, fontWeight: '800', color: COLORS.dark, marginBottom: 4 },
+  locSettingAddress: { fontSize: 12, color: COLORS.textMuted, marginBottom: 10 },
+  locSettingBtn: { backgroundColor: COLORS.primary, borderRadius: 10, paddingVertical: 10, alignItems: 'center' },
+  locSettingBtnText: { fontSize: 13, fontWeight: '700', color: COLORS.white },
   poolSheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, maxHeight: '70%', overflow: 'hidden', borderTopWidth: 1.5, borderLeftWidth: 1.5, borderRightWidth: 1.5, borderColor: 'rgba(255,255,255,0.7)' },
   poolTitle: { fontSize: 22, fontWeight: '800', color: COLORS.dark },
   poolSubtitle: { fontSize: 13, color: COLORS.textMuted, marginTop: 4, marginBottom: 8 },

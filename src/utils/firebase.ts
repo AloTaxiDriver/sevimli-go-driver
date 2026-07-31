@@ -553,3 +553,72 @@ export async function displayFullScreenOrderNotification(
     console.warn("Full-screen notification ko'rsatishda xato:", error);
   }
 }
+
+// ============================================================
+// BORDYUR — ko'chadan olingan yo'lovchi, dispetchersiz,
+// haydovchi tomonidan to'g'ridan-to'g'ri boshlanadigan safar
+// ============================================================
+
+export type FirestoreTariff = {
+  id: string;
+  name: string;
+  perKm: number;
+  minDistance: number;
+  minDistancePrice: number;
+};
+
+export async function fetchBordurTariff(): Promise<FirestoreTariff | null> {
+  try {
+    const snapshot = await firestore()
+      .collection('tariffs')
+      .where('bordur', '==', true)
+      .where('status', '==', 'active')
+      .limit(1)
+      .get();
+    if (snapshot.empty) return null;
+    const doc = snapshot.docs[0];
+    const data = doc.data();
+    return {
+      id: doc.id,
+      name: data.name || 'Bordyur',
+      perKm: typeof data.perKm === 'number' ? data.perKm : 0,
+      minDistance: typeof data.minDistance === 'number' ? data.minDistance : 0,
+      minDistancePrice: typeof data.minDistancePrice === 'number' ? data.minDistancePrice : 0,
+    };
+  } catch (error) {
+    console.warn('Bordyur tarifini olishda xato:', error);
+    return null;
+  }
+}
+
+export async function startBordurTrip(
+  driverId: string,
+  location: { latitude: number; longitude: number }
+): Promise<{ orderId: string; tariff: FirestoreTariff }> {
+  const tariff = await fetchBordurTariff();
+  if (!tariff) {
+    throw new Error('NO_BORDUR_TARIFF');
+  }
+  const docRef = await firestore().collection('orders').add({
+    status: 'in_progress',
+    driverId,
+    customerName: 'Bordyur mijozi',
+    customerPhone: '',
+    fromAddress: 'Bordyur',
+    toAddress: '',
+    tariffName: tariff.name,
+    price: 0,
+    distanceKm: 0,
+    perKm: tariff.perKm,
+    minDistance: tariff.minDistance,
+    minDistancePrice: tariff.minDistancePrice,
+    pickupLat: location.latitude,
+    pickupLng: location.longitude,
+    dropoffLat: location.latitude,
+    dropoffLng: location.longitude,
+    source: 'bordur',
+    note: '',
+    createdAt: firestore.FieldValue.serverTimestamp(),
+  });
+  return { orderId: docRef.id, tariff };
+}

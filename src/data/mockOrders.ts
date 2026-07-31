@@ -13,6 +13,12 @@ export type Order = {
   distanceKm: number;
   durationMin: number;
   price: number;
+  // Faqat "bordur" (ko'chadan olingan, dispetchersiz) va Firestore
+  // tarif hujjatidan kelgan buyurtmalarda to'ldiriladi — real vaqtda
+  // metr bo'yicha narx hisoblash uchun (tariffPerKm/tariffMinPrice).
+  perKm?: number;
+  minDistance?: number;
+  minDistancePrice?: number;
   fromAddress: string;
   // B nuqtasi (qayerga boriladi). Mock buyurtmalarda har doim
   // mavjud bo'lgani uchun ixtiyoriy emas, lekin Firestore'dan
