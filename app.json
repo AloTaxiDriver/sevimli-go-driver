@@ -1,23 +1,23 @@
 {
   "expo": {
-    "name": "Vijdon GO Driver",
-    "slug": "VijdonGoDriver",
+    "name": "Sevimli Go Driver",
+    "slug": "SevimliGoDriver",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/vijdon-icon.png",
-    "scheme": "vijdongodriver",
+    "icon": "./assets/images/sevimli-icon.png",
+    "scheme": "sevimligodriver",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Vijdon GO haydovchi ilovasi sizning joylashuvingizni xaritada ko'rsatish va buyurtmalarni yo'naltirish uchun ishlatadi."
+        "NSLocationWhenInUseUsageDescription": "Sevimli Go haydovchi ilovasi sizning joylashuvingizni xaritada ko'rsatish va buyurtmalarni yo'naltirish uchun ishlatadi."
       }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#FFFFFF",
-        "foregroundImage": "./assets/images/vijdon-icon-adaptive.png"
+        "foregroundImage": "./assets/images/sevimli-icon-adaptive.png"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
@@ -30,22 +30,22 @@
       ],
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyCjk6c_NSXoaIqnmi5XpU3B21A34dFcwsg"
+          "apiKey": "AIzaSyDIciAXrlg7Y0DQTZUPf5GwhGRlbz4jULc"
         }
       },
-      "package": "com.aslzodiy3.VijdonGoDriver",
+      "package": "com.aslzodiy3.SevimliGoDriver",
       "googleServicesFile": "./google-services.json"
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/vijdon-icon.png"
+      "favicon": "./assets/images/sevimli-icon.png"
     },
     "plugins": [
       "expo-router",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/images/vijdon-icon.png",
+          "image": "./assets/images/sevimli-splash.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff"
@@ -60,7 +60,11 @@
       "typedRoutes": true
     },
     "extra": {
-      "router": {}
-    }
+      "router": {},
+      "eas": {
+        "projectId": "5fddebdd-6900-4ae6-b522-fd6ab5fdf9ba"
+      }
+    },
+    "owner": "aslzodiy3"
   }
 }
