@@ -56,6 +56,12 @@ export type FirestoreOrder = {
   createdAtMillis?: number;
   cancelReason?: string;
   cancelledBy?: 'driver' | 'dispatcher';
+  /** Mijoz bonus/qo'shimcha xizmat tanlagan bo'lsa, mijozdan haqiqatda
+   * olinishi kerak bo'lgan summa — `price`dan farqli, shu bor bo'lsa
+   * naqd pul sifatida SHU ko'rsatilishi kerak (`price` emas). */
+  finalPrice?: number;
+  bonusUsed?: number;
+  extrasTotal?: number;
 };
 
 export function mapDocToOrder(
@@ -94,6 +100,9 @@ export function mapDocToOrder(
       : 0,
     cancelReason: data.cancelReason || undefined,
     cancelledBy: data.cancelledBy || undefined,
+    finalPrice: typeof data.finalPrice === 'number' ? data.finalPrice : undefined,
+    bonusUsed: typeof data.bonusUsed === 'number' ? data.bonusUsed : undefined,
+    extrasTotal: typeof data.extrasTotal === 'number' ? data.extrasTotal : undefined,
   };
 }
 
@@ -257,11 +266,27 @@ export function listenToOrderCancellation(
 
 export async function finalizeOrderPrice(
   orderId: string,
-  finalPrice: number,
+  meteredPrice: number,
   actualDistanceKm: number
 ): Promise<void> {
-  await firestore().collection('orders').doc(orderId).update({
-    price: Math.round(finalPrice),
+  const roundedPrice = Math.round(meteredPrice);
+  const orderRef = firestore().collection('orders').doc(orderId);
+
+  // MUHIM: mijoz bonus/qo'shimcha xizmat tanlagan bo'lsa, order hujjatida
+  // shularga mos `finalPrice` (haqiqatda olinishi kerak summa) allaqachon
+  // bor — lekin u eski (metrлanmagan taxminiy) narxga asoslangan edi.
+  // Shu yerda haqiqiy metrланган narx bilan qayta hisoblanadi, aks holda
+  // bonus chegirmasi safar oxirida noto'g'ri (eski) narxga qo'llanilgan
+  // bo'lib qolardi.
+  const snap = await orderRef.get();
+  const data = snap.data();
+  const bonusUsed = typeof data?.bonusUsed === 'number' ? data.bonusUsed : 0;
+  const extrasTotal = typeof data?.extrasTotal === 'number' ? data.extrasTotal : 0;
+  const finalPrice = Math.max(0, roundedPrice + extrasTotal - bonusUsed);
+
+  await orderRef.update({
+    price: roundedPrice,
+    finalPrice,
     actualDistanceKm: Math.round(actualDistanceKm * 10) / 10,
   });
 }
@@ -302,7 +327,9 @@ export function firestoreOrderToOrder(
     type: fo.tariffName || "Yo'lovchi",
     distanceKm: fo.distanceKm,
     durationMin: Math.max(3, Math.round(fo.distanceKm * 2.2)),
-    price: fo.price,
+    // Mijoz bonus/qo'shimcha xizmat ishlatgan bo'lsa, haydovchi
+    // haqiqatda olishi kerak bo'lgan summa shu — xom tarif narxi emas.
+    price: typeof fo.finalPrice === 'number' ? fo.finalPrice : fo.price,
     perKm: fo.perKm || 0,
     minDistance: fo.minDistance || 0,
     minDistancePrice: fo.minDistancePrice || fo.price,
