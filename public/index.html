@@ -540,6 +540,12 @@ input:focus,select:focus,textarea:focus{outline:none;}
       await setDoc(doc(db, "tariffs", tariffId), tariffData, { merge: true });
     } catch (err) {
       console.error("Tarifni Firestore'ga yozishda xato:", err);
+      // MUHIM: bu yozuv muvaffaqiyatsiz bo'lsa, dashboard'ning o'z UI'si
+      // baribir "saqlandi" ko'rinishida qoladi (chunki u localStorage'dan
+      // o'qiydi) — shuning uchun bu xatoni ko'rinadigan qilib ko'rsatish
+      // kerak, aks holda admin buni sezmaydi va mijoz ilovasi hech qachon
+      // yangilanishni ko'rmaydi.
+      alert("Tarifni serverga saqlashda xatolik yuz berdi (ehtimol rasm hajmi juda katta): " + (err?.message || err));
     }
   };
 
@@ -4183,19 +4189,43 @@ function renderTariffTabContent(){
   }
 }
 
+// MUHIM: rasm Firestore hujjatida to'g'ridan-to'g'ri (base64) saqlanadi,
+// Firestore esa bitta hujjat uchun 1MB chegara qo'yadi. Telefon
+// kamerasidan to'g'ridan-to'g'ri yuklangan rasm (ko'pincha 1-5MB) shu
+// chegaradan osongina oshib ketadi — natijada Firestore yozuvi JIMGINA
+// muvaffaqiyatsiz tugaydi (dashboard'ning o'zida rasm ko'rinaveradi,
+// chunki u localStorage'dan o'qiydi, lekin mijoz ilovasi buni hech qachon
+// ko'rmaydi). Shuning uchun rasm saqlashdan oldin <canvas> orqali
+// kichraytirilib (maksimal 800px), JPEG sifatida siqiladi — natijada
+// odatda 30-150KB atrofida chiqadi, chegaradan xavfsiz pastda.
 function handleTariffCarImageUpload(event){
   const file=event.target.files?.[0];
   if(!file)return;
-  if(file.size>5*1024*1024){alert('Rasm hajmi 5MB dan oshmasligi kerak!');return;}
+  if(file.size>10*1024*1024){alert('Rasm hajmi 10MB dan oshmasligi kerak!');return;}
   const reader=new FileReader();
   reader.onload=(e)=>{
-    window._tariffCarImage=e.target.result;
-    const preview=document.getElementById('tariff-img-preview');
-    const wrap=document.getElementById('tariff-img-preview-wrap');
-    const placeholder=document.getElementById('tariff-img-placeholder');
-    if(preview)preview.src=window._tariffCarImage;
-    if(wrap)wrap.style.display='block';
-    if(placeholder)placeholder.style.display='none';
+    const img=new Image();
+    img.onload=()=>{
+      const MAX_DIM=800;
+      let w=img.width,h=img.height;
+      if(w>MAX_DIM||h>MAX_DIM){
+        if(w>=h){h=Math.round(h*(MAX_DIM/w));w=MAX_DIM;}
+        else{w=Math.round(w*(MAX_DIM/h));h=MAX_DIM;}
+      }
+      const canvas=document.createElement('canvas');
+      canvas.width=w;canvas.height=h;
+      const ctx=canvas.getContext('2d');
+      ctx.drawImage(img,0,0,w,h);
+      window._tariffCarImage=canvas.toDataURL('image/jpeg',0.72);
+      const preview=document.getElementById('tariff-img-preview');
+      const wrap=document.getElementById('tariff-img-preview-wrap');
+      const placeholder=document.getElementById('tariff-img-placeholder');
+      if(preview)preview.src=window._tariffCarImage;
+      if(wrap)wrap.style.display='block';
+      if(placeholder)placeholder.style.display='none';
+    };
+    img.onerror=()=>alert("Rasmni o'qib bo'lmadi, boshqa fayl tanlang.");
+    img.src=e.target.result;
   };
   reader.readAsDataURL(file);
 }
