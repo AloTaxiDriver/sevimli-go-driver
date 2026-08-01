@@ -1542,6 +1542,7 @@ function normalizeFirestoreOrder(o){
     phone:o.customerPhone||'',
     from:o.fromAddress||'',
     to:o.toAddress||'',
+    to2:o.toAddress2||'',
     tariff:o.tariffName||'',
     price:typeof o.price==='number'?o.price:0,
     driver:o.driverId||null,
@@ -1696,7 +1697,7 @@ function renderOrdersTable(){
       <td style="color:#16A34A;font-family:monospace;font-size:11px;font-weight:700" title="${esc(o.id)}">${esc(o.id.slice(0,8))}</td>
       <td style="font-weight:600">${esc(o.client)}
         <div style="font-size:11px;color:rgba(26,26,26,0.4);font-weight:400">${esc(o.phone)}</div></td>
-      <td><span class="tag tag-green" style="font-size:11px">${esc(o.from)}</span> \u2192 <span class="tag tag-red" style="font-size:11px">${esc(o.to||'\u2014')}</span></td>
+      <td><span class="tag tag-green" style="font-size:11px">${esc(o.from)}</span> \u2192 <span class="tag tag-red" style="font-size:11px">${esc(o.to||'\u2014')}</span>${o.to2?` \u2192 <span class="tag tag-red" style="font-size:11px">${esc(o.to2)}</span>`:''}</td>
       <td style="font-size:12px">${driverName?esc(driverName):'<span style="color:rgba(0,0,0,0.3)">\u2014</span>'}</td>
       <td style="font-weight:700;white-space:nowrap">${(o.price||0).toLocaleString()} <span style="font-size:10px;font-weight:400;color:rgba(26,26,26,0.4)">so\u2019m</span></td>
       <td>${sdot(o.status)}
@@ -1731,6 +1732,7 @@ function editOrderModal(orderId){
         <div class="form-field"><label class="form-label">Telefon</label><input class="form-input" id="eo-phone" value="${esc(o.phone)}"></div>
         <div class="form-field"><label class="form-label">Qayerdan</label><input class="form-input" id="eo-from" value="${esc(o.from)}"></div>
         <div class="form-field"><label class="form-label">Qayerga</label><input class="form-input" id="eo-to" value="${esc(o.to)}"></div>
+        ${o.to2?`<div class="form-field"><label class="form-label">Ikkinchi manzil</label><input class="form-input" value="${esc(o.to2)}" disabled></div>`:''}
         <div class="form-field"><label class="form-label">Narx</label><input class="form-input" id="eo-price" type="number" value="${o.price||0}"></div>
         <div class="form-field"><label class="form-label">Haydovchi</label><select class="form-input" id="eo-driver"><option value="">\u2014 Tayinlanmagan \u2014</option>${driverOpts}</select></div>
         <div style="display:flex;gap:10px;margin-top:4px">
