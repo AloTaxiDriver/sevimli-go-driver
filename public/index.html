@@ -549,6 +549,16 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   };
 
+  window.deleteTariffFromFirestore = async function (tariffId) {
+    if (!tariffId) return;
+    try {
+      await deleteDoc(doc(db, "tariffs", tariffId));
+    } catch (err) {
+      console.error("Tarifni Firestore'dan o'chirishda xato:", err);
+      alert("Tarifni serverdan o'chirishda xatolik yuz berdi: " + (err?.message || err));
+    }
+  };
+
   // MUHIM: "Buyurtmalar" sahifasi avval faqat localStorage'dan
   // ishlar edi — bu funksiya "Haydovchilar" sahifasidagi
   // listenToDriversLive bilan bir xil naqshda, orders kolleksiyasini
@@ -4352,6 +4362,7 @@ function deleteTariffConfirm(tariffId){
     ()=>{
       const tariffs=dbGet('tariffs').filter(t=>t.id!==tariffId);
       dbSet('tariffs',tariffs);
+      if(window.deleteTariffFromFirestore)window.deleteTariffFromFirestore(tariffId);
       renderTariffCards(document.getElementById('tariff-search')?.value?.toLowerCase()||'');
       refreshTariffStats();
     },
