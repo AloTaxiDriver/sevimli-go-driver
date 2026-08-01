@@ -626,7 +626,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setActiveOrder(null);
     activeOrderSourceId.current = null;
   }
-  function handleArrivedAtPickup() { setTripStage('waiting'); }
+  function handleArrivedAtPickup() {
+    const id = activeOrderSourceId.current;
+    if (id) updateOrderStatus(id, 'arrived').catch(console.warn);
+    setTripStage('waiting');
+  }
   function handleStartTrip() {
     const id = activeOrderSourceId.current;
     if (id) updateOrderStatus(id, 'in_progress').catch(console.warn);

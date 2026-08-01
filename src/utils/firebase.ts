@@ -35,7 +35,7 @@ export async function testFirebaseConnection(): Promise<{
 
 export type FirestoreOrder = {
   id: string;
-  status: 'pending' | 'accepted' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'pending' | 'accepted' | 'arrived' | 'in_progress' | 'completed' | 'cancelled';
   driverId: string | null;
   customerName: string;
   customerPhone: string;
@@ -141,7 +141,7 @@ export function listenToActiveOrderForDriver(
   return firestore()
     .collection('orders')
     .where('driverId', '==', driverId)
-    .where('status', 'in', ['accepted', 'in_progress'])
+    .where('status', 'in', ['accepted', 'arrived', 'in_progress'])
     .limit(1)
     .onSnapshot(
       (snapshot) => {
