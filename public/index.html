@@ -335,6 +335,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
     doc,
     deleteDoc,
     updateDoc,
+    increment,
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
   import {
     getAuth,
@@ -516,6 +517,45 @@ input:focus,select:focus,textarea:focus{outline:none;}
         console.error("Haydovchilarni tinglashda xato:", err);
       }
     );
+  };
+
+  // Mijoz ilovasida telefon orqali ro'yxatdan o'tgan HAQIQIY mijozlar
+  // (customers/{uid}) — avval dashboard'ning "Mijozlar" sahifasi bular
+  // bilan bog'liq bo'lmagan, faqat mahalliy/soxta ro'yxat ko'rsatardi.
+  window.listenToCustomersLive = function (callback) {
+    return onSnapshot(
+      collection(db, "customers"),
+      (snapshot) => {
+        const customers = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+        callback(customers);
+      },
+      (err) => {
+        console.error("Mijozlarni tinglashda xato:", err);
+      }
+    );
+  };
+
+  // Admin dashboard'dan mijozning bonus hisobiga qo'lda summa qo'shadi
+  // (masalan reklama aksiyasi, xatoni tuzatish uchun). MUHIM: bu ham
+  // (Cloud Function'dagi onOrderCompletedApplyBonus kabi) bonusHistory'ga
+  // yoziladi, shunda mijoz ilovasidagi tarix ro'yxatida ko'rinadi va
+  // qayerdan kelgani izlanadi.
+  window.addBonusToCustomer = async function (customerId, amount, note) {
+    if (!customerId || !(amount > 0)) return;
+    try {
+      const customerRef = doc(db, "customers", customerId);
+      await updateDoc(customerRef, { bonusBalance: increment(amount) });
+      await addDoc(collection(customerRef, "bonusHistory"), {
+        type: "admin_added",
+        amount,
+        orderId: "",
+        note: note || "Administrator tomonidan qo'shildi",
+        createdAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.error("Mijozga bonus qo'shishda xato:", err);
+      throw err;
+    }
   };
 
   // Dashboard'da haydovchi qo'shilganda/tahrirlanganda, uning login
@@ -2613,74 +2653,104 @@ async function saveDriver(id){
 // ============================================================
 // CLIENTS
 // ============================================================
+let firestoreCustomersList=[];
+let customersPageUnsubscribe=null;
+let clientSearchQuery='';
+
 function renderClients(){
-  const clients=dbGet('clients');
   return `<div class="statrow" style="grid-template-columns:repeat(3,1fr)">
-    <div class="statcard accent"><div class="slabel">Jami mijozlar</div><div class="sval">${clients.length}</div></div>
-    <div class="statcard"><div class="slabel">Faol</div><div class="sval" style="color:#10B981">${clients.filter(c=>c.status==='active').length}</div></div>
-    <div class="statcard"><div class="slabel">Bloklangan</div><div class="sval" style="color:#22C55E">${clients.filter(c=>c.status==='blocked').length}</div></div>
+    <div class="statcard accent"><div class="slabel">Jami mijozlar</div><div class="sval" id="clients-stat-total">0</div></div>
+    <div class="statcard"><div class="slabel">Bonusi bor mijozlar</div><div class="sval" style="color:#10B981" id="clients-stat-with-bonus">0</div></div>
+    <div class="statcard"><div class="slabel">Jami bonus balansi</div><div class="sval" id="clients-stat-bonus-sum">0</div></div>
   </div>
   <div class="card" style="overflow:hidden">
     <div class="sec-head">
       <span class="sec-title">Mijozlar</span>
       <div style="display:flex;gap:8px">
         <div class="searchbar" style="width:180px">${ic('search',14,'rgba(26,26,26,0.4)')}<input placeholder="Qidirish..." oninput="searchClients(this.value)"></div>
-        <button class="btn btn-coral" onclick="showClientModal(null)">${ic('plus',14,'#fff')} Qo’sh</button>
       </div>
     </div>
-    <table class="tbl" id="clients-table"></table>
+    <table class="tbl" id="clients-table"><tbody><tr><td style="padding:20px;color:rgba(0,0,0,0.4)">Yuklanmoqda...</td></tr></tbody></table>
   </div>
   <div id="client-modal"></div>`;
 }
-function afterRenderClients(){renderClientsTable();}
+function afterRenderClients(){
+  if(customersPageUnsubscribe){customersPageUnsubscribe();customersPageUnsubscribe=null;}
+  if(window.listenToCustomersLive){
+    customersPageUnsubscribe=window.listenToCustomersLive((customers)=>{
+      firestoreCustomersList=customers;
+      updateClientStats();
+      renderClientsTable(clientSearchQuery);
+    });
+  }
+}
+function updateClientStats(){
+  const total=document.getElementById('clients-stat-total');
+  const withBonus=document.getElementById('clients-stat-with-bonus');
+  const bonusSum=document.getElementById('clients-stat-bonus-sum');
+  if(total)total.textContent=firestoreCustomersList.length;
+  if(withBonus)withBonus.textContent=firestoreCustomersList.filter(c=>(c.bonusBalance||0)>0).length;
+  if(bonusSum)bonusSum.textContent=firestoreCustomersList.reduce((s,c)=>s+(c.bonusBalance||0),0).toLocaleString();
+}
 function renderClientsTable(search=''){
-  let clients=dbGet('clients');
-  if(search){const q=search.toLowerCase();clients=clients.filter(c=>c.name.toLowerCase().includes(q)||c.phone.includes(q));}
+  clientSearchQuery=search;
+  let customers=firestoreCustomersList;
+  if(search){
+    const q=search.toLowerCase();
+    customers=customers.filter(c=>(c.name||'').toLowerCase().includes(q)||(c.phone||'').includes(q));
+  }
   const el=document.getElementById('clients-table');
   if(!el)return;
-  el.innerHTML=`<thead><tr><th>Mijoz</th><th>Telefon</th><th>Buyurtma</th><th>Xarajat</th><th>Holat</th><th>Amal</th></tr></thead>
-  <tbody>${clients.map(c=>`<tr>
+  if(!customers.length){
+    el.innerHTML=`<tbody><tr><td style="padding:20px;color:rgba(0,0,0,0.4)">Mijoz topilmadi</td></tr></tbody>`;
+    return;
+  }
+  el.innerHTML=`<thead><tr><th>Mijoz</th><th>Telefon</th><th>Bonus balansi</th><th style="white-space:nowrap">Amal</th></tr></thead>
+  <tbody>${customers.map(c=>`<tr>
     <td><div style="display:flex;align-items:center;gap:10px">
       <div style="width:34px;height:34px;border-radius:9px;background:linear-gradient(145deg,#22C55E,#16A34A);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:12px;flex-shrink:0">${(c.name||'?')[0].toUpperCase()}</div>
-      <span style="font-weight:600">${esc(c.name)}</span></div></td>
-    <td style="color:rgba(26,26,26,0.5);font-size:12px">${esc(c.phone)}</td>
-    <td style="font-weight:600">${c.orders||0}</td>
-    <td style="font-weight:600">${(c.totalSpent||0).toLocaleString()} so’m</td>
-    <td>${sdot(c.status)}</td>
+      <span style="font-weight:600">${esc(c.name||'Noma’lum mijoz')}</span></div></td>
+    <td style="color:rgba(26,26,26,0.5);font-size:12px">${esc(c.phone||'')}</td>
+    <td style="font-weight:700">${(c.bonusBalance||0).toLocaleString()} so’m</td>
     <td><div style="display:flex;gap:5px">
       <button class="btn btn-light btn-sm" onclick="showClientModal('${c.id}')">${ic('edit',13)}</button>
-      <button class="btn btn-light btn-sm" onclick="toggleClient('${c.id}','${c.status}')">${ic(c.status==='blocked'?'unlock':'lock',13)}</button>
-      <button class="btn btn-danger btn-sm" onclick="deleteClient('${c.id}')">${ic('trash',13)}</button>
     </div></td>
   </tr>`).join('')}</tbody>`;
 }
 function searchClients(q){renderClientsTable(q);}
-function toggleClient(id,status){dbUpdate('clients',id,{status:status==='blocked'?'active':'blocked'});renderClientsTable();}
-function deleteClient(id){if(confirm("O’chirilsinmi?")){dbDelete('clients',id);renderClientsTable();}}
 function showClientModal(id){
-  const c=id?dbGet('clients').find(x=>x.id===id):{name:'',phone:'',status:'active'};
+  const c=firestoreCustomersList.find(x=>x.id===id);
   if(!c)return;
   document.getElementById('client-modal').innerHTML=`<div class="modal-overlay" onclick="closeModal('client-modal')">
     <div class="modal-box" onclick="event.stopPropagation()">
-      <div class="modal-head"><span style="font-weight:700;font-size:16px">${id?'Tahrirlash':'Yangi mijoz'}</span>
+      <div class="modal-head"><span style="font-weight:700;font-size:16px">${esc(c.name||'Noma’lum mijoz')}</span>
         <button class="btn btn-light" style="padding:5px 10px" onclick="closeModal('client-modal')">${ic('x',14)}</button></div>
-      <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
-        <div class="form-field"><label class="form-label">To'liq ism</label><input class="form-input" id="cm-name" value="${esc(c.name)}"></div>
-        <div class="form-field"><label class="form-label">Telefon</label><input class="form-input" id="cm-phone" value="${esc(c.phone)}"></div>
-        <div class="form-field"><label class="form-label">Holat</label><select class="form-input" id="cm-status"><option value="active"${c.status==='active'?' selected':''}>Faol</option><option value="blocked"${c.status==='blocked'?' selected':''}>Bloklangan</option></select></div>
-        <div style="display:flex;gap:10px;margin-top:4px">
-          <button class="btn btn-coral" style="flex:1;justify-content:center" onclick="saveClient('${id||''}')">Saqlash</button>
-          <button class="btn btn-light" style="flex:1;justify-content:center" onclick="closeModal('client-modal')">Bekor</button>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:14px">
+        <div class="form-field"><label class="form-label">Telefon</label><input class="form-input" value="${esc(c.phone||'')}" disabled></div>
+        <div class="form-field"><label class="form-label">Joriy bonus balansi</label><input class="form-input" value="${(c.bonusBalance||0).toLocaleString()} so’m" disabled></div>
+
+        <div style="border-top:1px solid rgba(0,0,0,0.06);padding-top:14px;display:flex;flex-direction:column;gap:10px">
+          <div style="font-weight:700;font-size:13px">Bonus qo’shish</div>
+          <div class="form-field"><label class="form-label">Miqdor (so’m)</label><input class="form-input" id="cm-bonus-amount" type="number" min="0" step="1000" placeholder="Masalan: 5000"></div>
+          <div class="form-field"><label class="form-label">Izoh (ixtiyoriy)</label><input class="form-input" id="cm-bonus-note" placeholder="Masalan: aksiya bonusi"></div>
+          <button class="btn btn-coral" style="justify-content:center" onclick="addBonusToClient('${id}')">Bonus qo’shish</button>
         </div>
       </div>
     </div>
   </div>`;
 }
-function saveClient(id){
-  const data={name:document.getElementById('cm-name')?.value,phone:document.getElementById('cm-phone')?.value,status:document.getElementById('cm-status')?.value};
-  if(!data.name||!data.phone)return;
-  if(id)dbUpdate('clients',id,data);else dbAdd('clients',{...data,orders:0,totalSpent:0,joined:new Date().toISOString().slice(0,10)});
-  closeModal('client-modal');navigate('clients');
+async function addBonusToClient(id){
+  const amount=parseFloat(document.getElementById('cm-bonus-amount')?.value);
+  const note=document.getElementById('cm-bonus-note')?.value||'';
+  if(!(amount>0)){alert('Miqdorni to’g’ri kiriting!');return;}
+  if(!window.addBonusToCustomer)return;
+  try{
+    await window.addBonusToCustomer(id,amount,note);
+    alert('Bonus qo’shildi!');
+    closeModal('client-modal');
+  }catch(err){
+    alert('Bonus qo’shishda xatolik yuz berdi: '+(err?.message||err));
+  }
 }
 
 // ============================================================
