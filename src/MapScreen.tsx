@@ -458,12 +458,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     orderCancelUnsubscribe.current = null;
   }
   // Buyurtma qabul qilingan zahoti chaqiriladi — shu buyurtmani
-  // dispetcher bekor qilib qo'ysa, haydovchiga darhol xabar beradi va
-  // ekranni bo'sh holatga qaytaradi.
+  // dispetcher yoki mijozning o'zi bekor qilib qo'ysa, haydovchiga
+  // darhol xabar beradi va ekranni bo'sh holatga qaytaradi.
   function startWatchingOrderCancellation(orderId: string) {
     stopWatchingOrderCancellation();
-    orderCancelUnsubscribe.current = listenToOrderCancellation(orderId, (reason) => {
-      Alert.alert('Buyurtma bekor qilindi', `Dispetcher tomonidan bekor qilindi.\nSabab: ${reason}`);
+    orderCancelUnsubscribe.current = listenToOrderCancellation(orderId, (reason, cancelledBy) => {
+      const who = cancelledBy === 'customer' ? 'Mijoz' : 'Dispetcher';
+      Alert.alert('Buyurtma bekor qilindi', `${who} tomonidan bekor qilindi.\nSabab: ${reason}`);
       stopWatchingOrderCancellation();
       setTripStage(null);
       setActiveOrder(null);

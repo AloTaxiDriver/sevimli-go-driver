@@ -231,7 +231,7 @@ export async function cancelOrder(
 
 export function listenToOrderCancellation(
   orderId: string,
-  onCancelledByDispatcher: (reason: string) => void
+  onCancelled: (reason: string, cancelledBy: string) => void
 ): () => void {
   return firestore()
     .collection('orders')
@@ -239,8 +239,14 @@ export function listenToOrderCancellation(
     .onSnapshot(
       (doc) => {
         const data = doc.data();
-        if (data && data.status === 'cancelled' && data.cancelledBy === 'dispatcher') {
-          onCancelledByDispatcher(data.cancelReason || "Dispetcher tomonidan bekor qilindi");
+        // MUHIM: avval faqat cancelledBy==='dispatcher' bo'lganda xabar
+        // berilardi — lekin mijoz ilovasi cancelOrder() chaqirganda
+        // cancelledBy:'customer' yozadi, shu sabab mijoz bekor qilganda
+        // haydovchi hech qachon xabar olmasdi. Haydovchining o'zi bekor
+        // qilgan holatini (cancelledBy==='driver') o'ziga qayta
+        // xabar qilmaslik uchun shu birgina holat istisno qilinadi.
+        if (data && data.status === 'cancelled' && data.cancelledBy !== 'driver') {
+          onCancelled(data.cancelReason || 'Bekor qilindi', data.cancelledBy || 'dispatcher');
         }
       },
       (error) => {
