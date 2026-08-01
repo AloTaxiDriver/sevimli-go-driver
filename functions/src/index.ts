@@ -102,20 +102,52 @@ function isDriverEligibleForOrder(
   return distMeters <= radiusKm * 1000;
 }
 
+// Admin dashboard'ning "Mijozlar uchun bonus" bo'limida sozlanadi
+// (settings/bonus hujjati). MUHIM: `maxRedeemPercent` (yo'l narxining
+// X%i) o'rniga endi ADMIN QAT'IY BELGILAGAN chegara ishlatiladi —
+// yoki so'mda (masalan "bitta buyurtmaga 2000 so'mdan ko'p emas"),
+// yoki foizda (`perOrderCapType` shuni tanlaydi).
 async function getBonusSettings(): Promise<{
   earnPercent: number;
-  maxRedeemPercent: number;
+  minBalanceToUse: number;
+  perOrderCapType: "amount" | "percent";
+  perOrderCapValue: number;
 }> {
+  const fallback = {
+    earnPercent: 4,
+    minBalanceToUse: 0,
+    perOrderCapType: "percent" as const,
+    perOrderCapValue: 50,
+  };
   try {
     const doc = await db.collection("settings").doc("bonus").get();
     const data = doc.data();
+    if (!data) return fallback;
     return {
-      earnPercent: typeof data?.earnPercent === "number" ? data.earnPercent : 4,
-      maxRedeemPercent: typeof data?.maxRedeemPercent === "number" ? data.maxRedeemPercent : 50,
+      earnPercent: typeof data.earnPercent === "number" ? data.earnPercent : fallback.earnPercent,
+      minBalanceToUse:
+        typeof data.minBalanceToUse === "number" ? data.minBalanceToUse : fallback.minBalanceToUse,
+      perOrderCapType: data.perOrderCapType === "amount" ? "amount" : "percent",
+      perOrderCapValue:
+        typeof data.perOrderCapValue === "number" ? data.perOrderCapValue : fallback.perOrderCapValue,
     };
   } catch {
-    return { earnPercent: 4, maxRedeemPercent: 50 };
+    return fallback;
   }
+}
+
+// Berilgan yo'l narxi va bonus sozlamalari asosida, bitta buyurtmada
+// ishlatilishi mumkin bo'lgan ENG KATTA bonus summasini hisoblaydi —
+// mijoz balansidan tashqari qo'shimcha cheklov sifatida. Server tomonda
+// ham qo'llaniladi (mijoz o'zboshimchalik bilan kattaroq `bonusUsed`
+// yuborib bo'lmasligi uchun) va mijoz ilovasida ham xuddi shu formula.
+function computePerOrderBonusCap(
+  price: number,
+  settings: { perOrderCapType: "amount" | "percent"; perOrderCapValue: number }
+): number {
+  return settings.perOrderCapType === "amount"
+    ? settings.perOrderCapValue
+    : Math.floor((price * settings.perOrderCapValue) / 100);
 }
 
 async function isOrderStillPending(orderId: string): Promise<boolean> {
@@ -521,7 +553,7 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
     const orderRef = after.ref;
     const customerRef = db.collection("customers").doc(customerId);
     const historyRef = customerRef.collection("bonusHistory");
-    const { earnPercent } = await getBonusSettings();
+    const bonusSettings = await getBonusSettings();
 
     try {
       await db.runTransaction(async (tx) => {
@@ -537,11 +569,17 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
 
         const price = typeof orderData.price === "number" ? orderData.price : 0;
         const bonusUsed = typeof orderData.bonusUsed === "number" ? Math.max(0, orderData.bonusUsed) : 0;
-        const earnAmount = Math.floor((price * earnPercent) / 100);
+        const earnAmount = Math.floor((price * bonusSettings.earnPercent) / 100);
 
-        // Mijoz balansidan ortiqni sarflab bo'lmaydi — qo'shimcha himoya
-        // (odatda bonusUsed allaqachon buyurtma yaratilganda cheklangan bo'ladi).
-        const actualSpent = Math.min(bonusUsed, currentBalance);
+        // Mijoz haqiqatan ham bonus ishlatishga huquqli bo'lganini
+        // (minBalanceToUse) va bitta buyurtma uchun admin belgilagan
+        // chegaradan (perOrderCap) oshmaganini SERVER TOMONDA qayta
+        // tekshiramiz — mijoz ilovasi `bonusUsed`ni o'zboshimchalik
+        // bilan kattaroq yuborsa ham, undan ortig'i hech qachon
+        // balansdan yechilmaydi.
+        const eligible = currentBalance >= bonusSettings.minBalanceToUse;
+        const perOrderCap = eligible ? computePerOrderBonusCap(price, bonusSettings) : 0;
+        const actualSpent = eligible ? Math.min(bonusUsed, currentBalance, perOrderCap) : 0;
         const newBalance = currentBalance - actualSpent + earnAmount;
 
         tx.set(customerRef, { bonusBalance: newBalance }, { merge: true });

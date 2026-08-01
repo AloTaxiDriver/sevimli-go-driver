@@ -717,6 +717,28 @@ input:focus,select:focus,textarea:focus{outline:none;}
       console.error("Radius sozlamalarini yozishda xato:", err);
     }
   };
+
+  // Mijozlar uchun bonus (cashback) sozlamasi — settings/bonus hujjati.
+  // MUHIM: bonusBalance'ning o'zi bu yerda emas, faqat Cloud Function
+  // (onOrderCompletedApplyBonus) orqali o'zgaradi — bu shunchaki qoidalar.
+  window.getClientBonusSettings = async function () {
+    try {
+      const snap = await getDocs(collection(db, "settings"));
+      const found = snap.docs.find((d) => d.id === "bonus");
+      return found ? found.data() : null;
+    } catch (err) {
+      console.error("Bonus sozlamalarini olishda xato:", err);
+      return null;
+    }
+  };
+
+  window.saveClientBonusSettings = async function (cfg) {
+    try {
+      await setDoc(doc(db, "settings", "bonus"), cfg, { merge: true });
+    } catch (err) {
+      console.error("Bonus sozlamalarini yozishda xato:", err);
+    }
+  };
 </script>
 </head>
 <body>
@@ -767,6 +789,10 @@ input:focus,select:focus,textarea:focus{outline:none;}
         <div class="dropdown-item" onclick="navigate('clients');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
           Mijozlar
+        </div>
+        <div class="dropdown-item" onclick="navigate('bonussettings');toggleDropdown()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 18 3 22 9 12 22 2 9"/><line x1="2" y1="9" x2="22" y2="9"/><line x1="6" y1="3" x2="12" y2="22"/><line x1="18" y1="3" x2="12" y2="22"/></svg>
+          Mijozlar uchun bonus
         </div>
         <div class="dropdown-item" onclick="navigate('orderhistory');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
@@ -1045,14 +1071,14 @@ function navigate(page){
   if(nb){nb.classList.add('active');}
   else{
     const moreBtn=document.getElementById('more-btn');
-    const dropdownPages=['drivers','services','workers','groups','addresses','clients','orderhistory','calllog','sms','settings'];
+    const dropdownPages=['drivers','services','workers','groups','addresses','clients','bonussettings','orderhistory','calllog','sms','settings'];
     if(moreBtn&&dropdownPages.includes(page))moreBtn.classList.add('active');
   }
   // Render
   const main=document.getElementById('main-content');
   const hour=new Date().getHours();
   const greet=hour<12?'Xayrli tong':hour<18?'Xayrli kun':'Xayrli kech';
-  const titles={orders:'Buyurtmalar oynasi',statistics:'Statistika',drivers:'Haydovchilar',balance:'Moliya',clients:'Mijozlar',map:'Xarita',workers:'Ishchilar',branches:'Filiallar',tariffs:'Tariflar',services:'Qo’shimcha xizmatlar',groups:'Manzil guruhlari',addresses:'Manzillar',sms:'SMS xizmati',settings:'Sozlamalar',notifications:'Bildirishnomalar',profile:'Profil',orderhistory:'Buyurtma tarixi',calllog:'Qo\u2019ng\u2019iroqlar tarixi'};
+  const titles={orders:'Buyurtmalar oynasi',statistics:'Statistika',drivers:'Haydovchilar',balance:'Moliya',clients:'Mijozlar',map:'Xarita',workers:'Ishchilar',branches:'Filiallar',tariffs:'Tariflar',services:'Qo’shimcha xizmatlar',groups:'Manzil guruhlari',addresses:'Manzillar',sms:'SMS xizmati',settings:'Sozlamalar',notifications:'Bildirishnomalar',profile:'Profil',orderhistory:'Buyurtma tarixi',calllog:'Qo\u2019ng\u2019iroqlar tarixi',bonussettings:'Mijozlar uchun bonus'};
   const now2=new Date();
   const timeStr=now2.toLocaleTimeString('uz-UZ',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
   const UZ_MONTHS=['Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr'];
@@ -1238,6 +1264,7 @@ function afterRender(page){
   if(page==='groups'){renderGroupCards('');}
   if(page==='addresses'){renderAddressCards('');}
   if(page==='settings'){populateSetCarBrandSelect();renderCarColorsList();loadRadiusSettings();}
+  if(page==='bonussettings'){loadBonusSettingsForm();}
   if(page==='statistics'){animateStatistics();}
   if(page==='notifications'){
     renderNotifHistory();
@@ -1261,6 +1288,7 @@ function renderPage(p){
   if(p==='sms')return renderSMS();
   if(p==='map')return renderMap();
   if(p==='settings')return renderSettings();
+  if(p==='bonussettings')return renderBonusSettings();
   if(p==='notifications')return renderNotifications();
   if(p==='profile')return renderProfile();
   if(p==='orderhistory')return renderOrderHistory();
@@ -5633,6 +5661,84 @@ async function saveRadiusSettings(){
   if(window.saveRadiusConfig){
     await window.saveRadiusConfig(cfg);
     alert('Radiuslar saqlandi!');
+  }
+}
+
+// MUHIM: hozircha bonus qoidasi YAGONA (global) — Filial faqat interfeys
+// uchun ko'rsatiladi, real cheklash hali qo'llanilmaydi. Filial bo'yicha
+// alohida qoidalar keyinroq, mijoz ilovasi buyurtma yaratishda qaysi
+// filialga tegishli ekanini aniqlay boshlagach qo'shiladi.
+function renderBonusSettings(){
+  const branches=dbGet('branches');
+  const branchOpts=branches.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('');
+  return `<div style="max-width:640px;display:flex;flex-direction:column;gap:14px">
+    <div class="card" style="padding:20px">
+      <div style="font-weight:700;font-size:15px;margin-bottom:4px">Mijozlar uchun bonus sozlamasi</div>
+      <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:16px">Mijoz ilovasidagi "Bonusdan foydalanish" va safar tugagandan keyin olinadigan cashback shu qoidalar asosida ishlaydi.</div>
+
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="form-field">
+          <label class="form-label">Filial</label>
+          <select class="form-input" id="bs-branch">
+            <option value="">Barcha filiallar</option>
+            ${branchOpts}
+          </select>
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Cashback (har bir buyurtmadan necha % bonus sifatida qaytadi)</label>
+          <input class="form-input" id="bs-earn-percent" type="number" min="0" max="100" step="0.5" placeholder="Masalan: 4">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Bonusdan foydalanish uchun eng kam miqdor (so'm)</label>
+          <input class="form-input" id="bs-min-balance" type="number" min="0" step="1000" placeholder="Masalan: 10000">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Bitta buyurtma uchun bonus chegarasi</label>
+          <div style="display:flex;gap:8px">
+            <input class="form-input" id="bs-cap-value" type="number" min="0" step="500" placeholder="Masalan: 2000" style="flex:1">
+            <select class="form-input" id="bs-cap-type" style="width:110px">
+              <option value="amount">so'm</option>
+              <option value="percent">%</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="saveBonusSettingsForm()">Saqlash</button>
+    </div>
+  </div>`;
+}
+
+async function loadBonusSettingsForm(){
+  if(!window.getClientBonusSettings)return;
+  const cfg=await window.getClientBonusSettings();
+  if(!cfg)return;
+  const branchEl=document.getElementById('bs-branch');
+  const earnEl=document.getElementById('bs-earn-percent');
+  const minBalEl=document.getElementById('bs-min-balance');
+  const capValEl=document.getElementById('bs-cap-value');
+  const capTypeEl=document.getElementById('bs-cap-type');
+  if(branchEl&&cfg.branchId)branchEl.value=cfg.branchId;
+  if(earnEl&&typeof cfg.earnPercent==='number')earnEl.value=cfg.earnPercent;
+  if(minBalEl&&typeof cfg.minBalanceToUse==='number')minBalEl.value=cfg.minBalanceToUse;
+  if(capValEl&&typeof cfg.perOrderCapValue==='number')capValEl.value=cfg.perOrderCapValue;
+  if(capTypeEl&&cfg.perOrderCapType)capTypeEl.value=cfg.perOrderCapType;
+}
+
+async function saveBonusSettingsForm(){
+  const cfg={
+    branchId:document.getElementById('bs-branch')?.value||null,
+    earnPercent:parseFloat(document.getElementById('bs-earn-percent')?.value)||0,
+    minBalanceToUse:parseFloat(document.getElementById('bs-min-balance')?.value)||0,
+    perOrderCapType:document.getElementById('bs-cap-type')?.value==='percent'?'percent':'amount',
+    perOrderCapValue:parseFloat(document.getElementById('bs-cap-value')?.value)||0,
+  };
+  if(window.saveClientBonusSettings){
+    await window.saveClientBonusSettings(cfg);
+    alert('Bonus sozlamalari saqlandi!');
   }
 }
 
