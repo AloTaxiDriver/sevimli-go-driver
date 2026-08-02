@@ -742,6 +742,16 @@ const OTP_TTL_MS = 5 * 60 * 1000; // 5 daqiqa
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // qayta yuborishdan oldin kutish
 const OTP_MAX_ATTEMPTS = 5;
 
+// Eskiz SMS shabloni hali moderatsiyada bo'lgan paytda, Eskiz'dan tashqari
+// qolgan butun oqimni (kod tekshirish, custom token, tizimga kirish)
+// sinash uchun — bu raqamga SMS UMUMAN YUBORILMAYDI, doim shu qattiq
+// kod ishlatiladi. MUHIM: shablon tasdiqlangandan keyin bu vaqtinchalik
+// yechim OLIB TASHLANISHI kerak — productionda hech qanday raqam SMS'siz
+// kira olmasligi shart.
+const TEST_PHONE_CODES: Record<string, string> = {
+  "+998918118181": "0000",
+};
+
 function isValidUzPhone(phone: unknown): phone is string {
   return typeof phone === "string" && /^\+998\d{9}$/.test(phone);
 }
@@ -830,7 +840,8 @@ export const requestPhoneOtp = onRequest(
       // o'tkazilgan shablon bilan ANIQ bir xil bo'lishi shart ("Sevimli
       // Go ilovasida tasdiqlash kodi: 0000" — 4 xonali), aks holda
       // Eskiz "matn moderatsiyadan o'tmagan" xatosini qaytaradi.
-      const code = String(Math.floor(1000 + Math.random() * 9000));
+      const testCode = TEST_PHONE_CODES[phone];
+      const code = testCode || String(Math.floor(1000 + Math.random() * 9000));
       await otpRef.set({
         code,
         expiresAtMillis: Date.now() + OTP_TTL_MS,
@@ -838,7 +849,11 @@ export const requestPhoneOtp = onRequest(
         lastSentAtMillis: Date.now(),
       });
 
-      await sendEskizSms(phone, `Sevimli Go ilovasida tasdiqlash kodi: ${code}`);
+      if (!testCode) {
+        await sendEskizSms(phone, `Sevimli Go ilovasida tasdiqlash kodi: ${code}`);
+      } else {
+        logger.info(`Test raqami (${phone}) — SMS yuborilmadi, qattiq kod ishlatildi`);
+      }
       res.status(200).json({ ok: true });
     } catch (error) {
       logger.error(`SMS kod yuborishda xato (${phone}):`, error);
