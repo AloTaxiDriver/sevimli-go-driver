@@ -624,6 +624,87 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
 );
 
 // ============================================================
+// HAYDOVCHI KOMISSIYASI — buyurtma "completed" bo'lganda, tarifda
+// belgilangan komissiya (foiz yoki qat'iy summa, dashboard'ning
+// "Tariflar" bo'limi orqali sozlanadi) haydovchining balansidan
+// yechiladi. E:\Sevimli Go\src\MapScreen.tsx balansi <=0 bo'lgan
+// haydovchiga yangi buyurtma qabul qilishni taqiqlaydi — shu ikkisi
+// birgalikda "avval hisobda pul bo'lishi kerak, so'ng har safar
+// komissiya yechiladi" talabini ta'minlaydi.
+// ============================================================
+
+export const onOrderCompletedDeductCommission = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const after = event.data?.after;
+    if (!after || after.data()?.status !== "completed") return;
+
+    const orderId = event.params.orderId;
+    const driverId: string | undefined = after.data()?.driverId;
+    if (!driverId) {
+      logger.info(`Buyurtma ${orderId} driverId'siz — komissiya hisoblanmadi`);
+      return;
+    }
+
+    const orderRef = after.ref;
+    const driverRef = db.collection("drivers").doc(driverId);
+
+    try {
+      await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        const orderData = orderSnap.data();
+        if (!orderData || orderData.status !== "completed" || orderData.commissionApplied) {
+          return;
+        }
+
+        // MUHIM (poyga holati): xuddi bonus funksiyasidagi kabi, "completed"ga
+        // o'tish va yakuniy narxni yozish ikkita alohida yozuv — shuning uchun
+        // buyurtmani QAYTA o'qiymiz (eng so'nggi `price`/`finalPrice` bilan) va
+        // `commissionApplied` flag orqali ikki marta yechilishning oldini olamiz.
+        let driverCommission = 0;
+        let commissionType: "percent" | "fixed" = "percent";
+        const tariffId: string | undefined = orderData.tariffId;
+        if (tariffId) {
+          const tariffSnap = await tx.get(db.collection("tariffs").doc(tariffId));
+          const tariffData = tariffSnap.data();
+          if (tariffData) {
+            driverCommission =
+              typeof tariffData.driverCommission === "number" ? tariffData.driverCommission : 0;
+            commissionType = tariffData.commissionType === "fixed" ? "fixed" : "percent";
+          }
+        }
+
+        // Haydovchi mijozdan haqiqatda naqd olgan summa (bonus/qo'shimcha
+        // xizmatlar hisobga olingan) — shu summadan komissiya hisoblanadi.
+        const price =
+          typeof orderData.finalPrice === "number"
+            ? orderData.finalPrice
+            : typeof orderData.price === "number"
+            ? orderData.price
+            : 0;
+        const commissionAmount =
+          commissionType === "fixed" ? driverCommission : Math.round((price * driverCommission) / 100);
+
+        const driverDoc = await tx.get(driverRef);
+        const currentBalance =
+          typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
+        const newBalance = currentBalance - commissionAmount;
+
+        tx.set(driverRef, { balance: newBalance }, { merge: true });
+        tx.set(orderRef, { commissionApplied: true }, { merge: true });
+
+        logger.info(
+          `Buyurtma ${orderId}: komissiya yechildi (haydovchi ${driverId}) — ` +
+            `narx: ${price}, komissiya: ${commissionAmount}, yangi balans: ${newBalance}`
+        );
+      });
+    } catch (error) {
+      logger.error(`Komissiya tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
+    }
+  }
+);
+
+// ============================================================
 // MIJOZGA PUSH BILDIRISHNOMA — buyurtma holati mijoz uchun
 // muhim bosqichga o'tganda (haydovchi topildi / safar yakunlandi /
 // bekor qilindi) customers/{customerId}.pushToken orqali push
