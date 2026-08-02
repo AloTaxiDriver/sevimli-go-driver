@@ -3,6 +3,7 @@ import firestore from '@react-native-firebase/firestore';
 import React, { useState } from 'react';
 import {
   Alert,
+  Linking,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -12,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import GlassPanel from '../components/GlassPanel';
+import { requestDriverPhoneOtp, verifyDriverPhoneOtp } from '../utils/firebase';
 import { COLORS } from '../theme/colors';
 
 interface Props {
@@ -40,7 +42,15 @@ function formatPhone(d: string) {
 // Dashboard tomonidan qo'lda qo'shilgan eski haydovchilarda bu maydon
 // umuman yo'q — ular bilan solishtirilganda hech narsa o'zgarmaydi
 // (login() ularni hamon avvalgidek kiritaveradi).
+//
+// Ro'yxatdan o'tish endi 2 bosqichli: forma to'ldirish -> Telegram
+// orqali kelgan kodni tasdiqlash -> shundan keyingina Firestore'ga
+// yoziladi. Bu mijoz ilovasi bilan BIR XIL Cloud Function'lardan
+// foydalanadi (requestDriverPhoneOtp/verifyDriverPhoneOtp,
+// utils/firebase.ts) — kimdir boshqa birovning raqamini yozib
+// qo'ymasligi shu orqali kafolatlanadi.
 export default function RegisterScreen({ onBack, onSubmitted }: Props) {
+  const [step, setStep] = useState<'form' | 'otp'>('form');
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [rawDigits, setRawDigits] = useState('');
@@ -50,7 +60,9 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
   const [carModel, setCarModel] = useState('');
   const [carColor, setCarColor] = useState('');
   const [plate, setPlate] = useState('');
+  const [code, setCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState('');
 
   const fullPhone = '+998' + rawDigits;
@@ -65,7 +77,12 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
     carModel.trim() &&
     plate.trim();
 
-  async function handleSubmit() {
+  async function sendOtp() {
+    const { telegramDeepLink } = await requestDriverPhoneOtp(fullPhone);
+    if (telegramDeepLink) await Linking.openURL(telegramDeepLink);
+  }
+
+  async function handleContinueToOtp() {
     if (submitting) return;
     setError('');
     if (!firstName.trim() || !lastName.trim()) {
@@ -91,14 +108,29 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
 
     setSubmitting(true);
     try {
-      const ref = firestore().collection('drivers').doc(fullPhone);
-      const existing = await ref.get();
+      const existing = await firestore().collection('drivers').doc(fullPhone).get();
       if (existing.exists()) {
         setError('Bu raqam bilan haydovchi allaqachon roʻyxatdan oʻtgan');
-        setSubmitting(false);
         return;
       }
-      await ref.set({
+      await sendOtp();
+      setStep('otp');
+    } catch (e) {
+      console.warn('[REGISTER] SMS kod yuborishda xato:', e);
+      setError('Kod yuborishda xatolik yuz berdi. Internetni tekshiring.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleVerifyAndSubmit() {
+    if (submitting || code.length < 4) return;
+    setError('');
+    setSubmitting(true);
+    try {
+      await verifyDriverPhoneOtp(fullPhone, code);
+
+      await firestore().collection('drivers').doc(fullPhone).set({
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         name: `${firstName.trim()} ${lastName.trim()}`,
@@ -117,16 +149,30 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
         selfRegistered: true,
         joined: new Date().toISOString().slice(0, 10),
       });
+
       Alert.alert(
         'Roʻyxatdan oʻtish yuborildi',
         'Maʼlumotlaringiz moderatsiyaga yuborildi. Administrator tasdiqlagach, ilovaga kira olasiz.',
         [{ text: 'Tushunarli', onPress: onSubmitted }]
       );
-    } catch (e) {
-      console.warn('[REGISTER] Xato:', e);
-      setError('Ulanishda xato yuz berdi. Internetni tekshiring.');
+    } catch (e: any) {
+      setError(e?.message || 'Kod notoʻgʻri yoki muddati oʻtgan.');
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleResend() {
+    if (resending) return;
+    setResending(true);
+    setError('');
+    try {
+      await sendOtp();
+      setCode('');
+    } catch (e) {
+      setError('Kodni qayta yuborishda xato yuz berdi.');
+    } finally {
+      setResending(false);
     }
   }
 
@@ -143,111 +189,155 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.content}>
-            <TouchableOpacity onPress={onBack} style={styles.backButton}>
+            <TouchableOpacity
+              onPress={step === 'otp' ? () => setStep('form') : onBack}
+              style={styles.backButton}
+            >
               <Text style={styles.backButtonText}>{'< Orqaga'}</Text>
             </TouchableOpacity>
 
-            <GlassPanel intensity={40} style={styles.glassCard}>
-              <Text style={styles.title}>Roʻyxatdan oʻtish</Text>
-              <Text style={styles.subtitle}>
-                Maʼlumotlaringiz administratorga tekshirish uchun yuboriladi
-              </Text>
-
-              <Text style={styles.sectionLabel}>Shaxsiy maʼlumot</Text>
-              <View style={styles.row}>
-                <TextInput
-                  style={[styles.input, styles.rowInput]}
-                  value={firstName}
-                  onChangeText={setFirstName}
-                  placeholder="Ism"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                />
-                <TextInput
-                  style={[styles.input, styles.rowInput]}
-                  value={lastName}
-                  onChangeText={setLastName}
-                  placeholder="Familiya"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                />
-              </View>
-
-              <Text style={styles.label}>Telefon raqamingiz</Text>
-              <View style={styles.phoneRow}>
-                <Text style={styles.prefix}>+998</Text>
-                <TextInput
-                  style={styles.phoneInput}
-                  value={formatPhone(rawDigits)}
-                  onChangeText={(t) => setRawDigits(onlyDigits(t))}
-                  keyboardType="number-pad"
-                  placeholder="(90) 123-45-67"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                />
-              </View>
-
-              <TextInput
-                style={styles.input}
-                value={password}
-                onChangeText={setPassword}
-                secureTextEntry
-                placeholder="Parol"
-                placeholderTextColor="rgba(22,24,29,0.3)"
-              />
-              <TextInput
-                style={styles.input}
-                value={passwordConfirm}
-                onChangeText={setPasswordConfirm}
-                secureTextEntry
-                placeholder="Parolni tasdiqlang"
-                placeholderTextColor="rgba(22,24,29,0.3)"
-              />
-
-              <Text style={styles.sectionLabel}>Avtomobil</Text>
-              <View style={styles.row}>
-                <TextInput
-                  style={[styles.input, styles.rowInput]}
-                  value={carBrand}
-                  onChangeText={setCarBrand}
-                  placeholder="Markasi (Chevrolet)"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                />
-                <TextInput
-                  style={[styles.input, styles.rowInput]}
-                  value={carModel}
-                  onChangeText={setCarModel}
-                  placeholder="Modeli (Cobalt)"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                />
-              </View>
-              <View style={styles.row}>
-                <TextInput
-                  style={[styles.input, styles.rowInput]}
-                  value={carColor}
-                  onChangeText={setCarColor}
-                  placeholder="Rangi (ixtiyoriy)"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                />
-                <TextInput
-                  style={[styles.input, styles.rowInput]}
-                  value={plate}
-                  onChangeText={setPlate}
-                  placeholder="Davlat raqami"
-                  placeholderTextColor="rgba(22,24,29,0.3)"
-                  autoCapitalize="characters"
-                />
-              </View>
-
-              {!!error && <Text style={styles.errorText}>{error}</Text>}
-
-              <TouchableOpacity
-                style={[styles.button, (!isValid || submitting) && styles.buttonDisabled]}
-                onPress={handleSubmit}
-                disabled={!isValid || submitting}
-              >
-                <Text style={styles.buttonText}>
-                  {submitting ? 'Yuborilmoqda...' : 'Roʻyxatdan oʻtkazish'}
+            {step === 'form' ? (
+              <GlassPanel intensity={40} style={styles.glassCard}>
+                <Text style={styles.title}>Roʻyxatdan oʻtish</Text>
+                <Text style={styles.subtitle}>
+                  Maʼlumotlaringiz administratorga tekshirish uchun yuboriladi
                 </Text>
-              </TouchableOpacity>
-            </GlassPanel>
+
+                <Text style={styles.sectionLabel}>Shaxsiy maʼlumot</Text>
+                <View style={styles.row}>
+                  <TextInput
+                    style={[styles.input, styles.rowInput]}
+                    value={firstName}
+                    onChangeText={setFirstName}
+                    placeholder="Ism"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                  />
+                  <TextInput
+                    style={[styles.input, styles.rowInput]}
+                    value={lastName}
+                    onChangeText={setLastName}
+                    placeholder="Familiya"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                  />
+                </View>
+
+                <Text style={styles.label}>Telefon raqamingiz</Text>
+                <View style={styles.phoneRow}>
+                  <Text style={styles.prefix}>+998</Text>
+                  <TextInput
+                    style={styles.phoneInput}
+                    value={formatPhone(rawDigits)}
+                    onChangeText={(t) => setRawDigits(onlyDigits(t))}
+                    keyboardType="number-pad"
+                    placeholder="(90) 123-45-67"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                  />
+                </View>
+
+                <TextInput
+                  style={styles.input}
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry
+                  placeholder="Parol"
+                  placeholderTextColor="rgba(22,24,29,0.3)"
+                />
+                <TextInput
+                  style={styles.input}
+                  value={passwordConfirm}
+                  onChangeText={setPasswordConfirm}
+                  secureTextEntry
+                  placeholder="Parolni tasdiqlang"
+                  placeholderTextColor="rgba(22,24,29,0.3)"
+                />
+
+                <Text style={styles.sectionLabel}>Avtomobil</Text>
+                <View style={styles.row}>
+                  <TextInput
+                    style={[styles.input, styles.rowInput]}
+                    value={carBrand}
+                    onChangeText={setCarBrand}
+                    placeholder="Markasi (Chevrolet)"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                  />
+                  <TextInput
+                    style={[styles.input, styles.rowInput]}
+                    value={carModel}
+                    onChangeText={setCarModel}
+                    placeholder="Modeli (Cobalt)"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                  />
+                </View>
+                <View style={styles.row}>
+                  <TextInput
+                    style={[styles.input, styles.rowInput]}
+                    value={carColor}
+                    onChangeText={setCarColor}
+                    placeholder="Rangi (ixtiyoriy)"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                  />
+                  <TextInput
+                    style={[styles.input, styles.rowInput]}
+                    value={plate}
+                    onChangeText={setPlate}
+                    placeholder="Davlat raqami"
+                    placeholderTextColor="rgba(22,24,29,0.3)"
+                    autoCapitalize="characters"
+                  />
+                </View>
+
+                {!!error && <Text style={styles.errorText}>{error}</Text>}
+
+                <TouchableOpacity
+                  style={[styles.button, (!isValid || submitting) && styles.buttonDisabled]}
+                  onPress={handleContinueToOtp}
+                  disabled={!isValid || submitting}
+                >
+                  <Text style={styles.buttonText}>
+                    {submitting ? 'Yuborilmoqda...' : 'Davom etish'}
+                  </Text>
+                </TouchableOpacity>
+              </GlassPanel>
+            ) : (
+              <GlassPanel intensity={40} style={styles.glassCard}>
+                <Text style={styles.title}>Tasdiqlash kodi</Text>
+                <Text style={styles.subtitle}>
+                  {fullPhone} uchun Telegram botga yuborilgan kodni kiriting
+                </Text>
+
+                <TextInput
+                  style={[styles.input, styles.otpInput]}
+                  value={code}
+                  onChangeText={(t) => setCode(t.replace(/\D/g, '').slice(0, 4))}
+                  keyboardType="number-pad"
+                  placeholder="0000"
+                  placeholderTextColor="rgba(22,24,29,0.3)"
+                  maxLength={4}
+                  autoFocus
+                />
+
+                {!!error && <Text style={styles.errorText}>{error}</Text>}
+
+                <TouchableOpacity
+                  style={[styles.button, (code.length < 4 || submitting) && styles.buttonDisabled]}
+                  onPress={handleVerifyAndSubmit}
+                  disabled={code.length < 4 || submitting}
+                >
+                  <Text style={styles.buttonText}>
+                    {submitting ? 'Tekshirilmoqda...' : 'Tasdiqlash'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity onPress={handleResend} style={styles.backLink} disabled={resending}>
+                  <Text style={styles.registerLinkText}>
+                    Kod kelmadimi?{' '}
+                    <Text style={styles.registerLinkAccent}>
+                      {resending ? 'Yuborilmoqda...' : 'Qayta yuborish'}
+                    </Text>
+                  </Text>
+                </TouchableOpacity>
+              </GlassPanel>
+            )}
           </View>
         </ScrollView>
       </SafeAreaView>
@@ -330,6 +420,13 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     marginBottom: 14,
   },
+  otpInput: {
+    fontSize: 28,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: 12,
+    marginTop: 10,
+  },
   errorText: { color: COLORS.danger, fontSize: 13, marginTop: 4, marginBottom: 8, fontWeight: '700' },
   button: {
     backgroundColor: COLORS.primary,
@@ -346,4 +443,7 @@ const styles = StyleSheet.create({
   },
   buttonDisabled: { backgroundColor: '#BBF7D0', shadowOpacity: 0 },
   buttonText: { color: COLORS.white, fontWeight: '700', fontSize: 16 },
+  backLink: { marginTop: 18, alignItems: 'center' },
+  registerLinkText: { color: 'rgba(22,24,29,0.5)', fontSize: 13, fontWeight: '600' },
+  registerLinkAccent: { color: COLORS.primary, fontWeight: '800' },
 });

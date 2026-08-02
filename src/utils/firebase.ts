@@ -8,6 +8,41 @@ import { NativeModules } from 'react-native';
 
 const { OverlayModule } = NativeModules;
 
+// ============================================================
+// RO'YXATDAN O'TISHDA TELEFON TASDIQLASH — mijoz ilovasi bilan BIR
+// XIL Cloud Function'lardan foydalanadi (E:\Sevimli Go\functions\src\index.ts
+// — requestPhoneOtp/verifyPhoneOtp, Eskiz/Telegram orqali SMS kod).
+// MUHIM: qaytadigan Firebase custom token bu yerda ISHLATILMAYDI —
+// haydovchi ilovasi Firebase Auth emas, o'zining alohida
+// telefon+parol (Firestore'ga to'g'ridan-to'g'ri) tizimidan
+// foydalanadi (AuthContext.tsx). Bu funksiyalar faqat kodning
+// to'g'riligini tasdiqlash uchun chaqiriladi.
+// ============================================================
+
+const REQUEST_OTP_URL = 'https://us-central1-sevimli-go.cloudfunctions.net/requestPhoneOtp';
+const VERIFY_OTP_URL = 'https://us-central1-sevimli-go.cloudfunctions.net/verifyPhoneOtp';
+
+async function postOtpJson(url: string, body: unknown): Promise<any> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data?.error || "So'rovni bajarishda xatolik yuz berdi");
+  }
+  return data;
+}
+
+export async function requestDriverPhoneOtp(fullPhone: string): Promise<{ telegramDeepLink?: string }> {
+  return postOtpJson(REQUEST_OTP_URL, { phone: fullPhone });
+}
+
+export async function verifyDriverPhoneOtp(fullPhone: string, code: string): Promise<void> {
+  await postOtpJson(VERIFY_OTP_URL, { phone: fullPhone, code });
+}
+
 export async function testFirebaseConnection(): Promise<{
   success: boolean;
   message: string;
