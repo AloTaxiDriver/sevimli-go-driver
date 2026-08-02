@@ -2,8 +2,12 @@
 import notifee, { EventType } from '@notifee/react-native';
 import messaging from '@react-native-firebase/messaging';
 import { router, Stack } from 'expo-router';
-import React, { useEffect } from 'react';
-import { AuthProvider } from '../src/context/AuthContext';
+import React, { useEffect, useState } from 'react';
+import { ActivityIndicator, View } from 'react-native';
+import { AuthProvider, useAuth } from '../src/context/AuthContext';
+import LoginScreen from '../src/screens/LoginScreen';
+import RegisterScreen from '../src/screens/RegisterScreen';
+import { COLORS } from '../src/theme/colors';
 import { displayDispatcherNotification, displayFullScreenOrderNotification } from '../src/utils/firebase';
 
 // MUHIM: bu handler ilova komponent darajasidan TASHQARIDA, fayl
@@ -106,7 +110,38 @@ export default function RootLayout() {
 
   return (
     <AuthProvider>
-      <Stack screenOptions={{ headerShown: false }} />
+      <AppNavigator />
     </AuthProvider>
   );
+}
+
+// MUHIM: kirish/chiqish holati shu yerda, ILOVA ILDIZIDA, to'g'ridan-to'g'ri
+// AuthContext holatiga qarab hal qilinadi — `router.replace('/')` kabi
+// buyruqli navigatsiyaga UMUMAN tayanmaydi. Avval "Chiqish" tugmasi
+// logout()'dan keyin router.replace('/') chaqirar edi, lekin bu (tabs)
+// ichidan chaqirilganda har doim ham to'liq/ishonchli ishlamas edi —
+// natijada mijoz "chiqmadi, faqat ma'lumotlar o'chdi" holatida qolib
+// ketardi. Endi logout() shunchaki `driver`ni null qiladi — shu yetarli,
+// chunki quyidagi shart darhol qayta hisoblanib, Login ekraniga o'tadi.
+function AppNavigator() {
+  const { isLoggedIn, bootstrapping } = useAuth();
+  const [showRegister, setShowRegister] = useState(false);
+
+  if (bootstrapping) {
+    return (
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg }}>
+        <ActivityIndicator size="large" color={COLORS.primary} />
+      </View>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return showRegister ? (
+      <RegisterScreen onBack={() => setShowRegister(false)} onSubmitted={() => setShowRegister(false)} />
+    ) : (
+      <LoginScreen onRegister={() => setShowRegister(true)} />
+    );
+  }
+
+  return <Stack screenOptions={{ headerShown: false }} />;
 }

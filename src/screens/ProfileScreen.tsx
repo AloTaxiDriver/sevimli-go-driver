@@ -1,6 +1,5 @@
 // src/screens/ProfileScreen.tsx
 import { Ionicons } from '@expo/vector-icons';
-import { router } from 'expo-router';
 import React from 'react';
 import { Image, SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import GlassPanel from '../components/GlassPanel';
@@ -10,9 +9,11 @@ import { COLORS } from '../theme/colors';
 export default function ProfileScreen() {
   const { driver, logout } = useAuth();
 
+  // MUHIM: navigatsiya qilish shart emas — app/_layout.tsx'dagi
+  // AppNavigator `isLoggedIn`ni to'g'ridan-to'g'ri kuzatib turadi,
+  // driver null bo'lishi bilan avtomatik Login ekraniga o'tadi.
   function handleLogout() {
     logout();
-    router.replace('/');
   }
 
   return (

@@ -1,31 +1,11 @@
 // app/index.tsx
+// MUHIM: kirish/chiqish holati endi app/_layout.tsx'da (AppNavigator)
+// hal qilinadi — bu ekran shu <Stack/> mounted bo'lganda (ya'ni
+// FAQAT tizimga kirilgan bo'lsa) ishga tushadi, shuning uchun bu
+// yerda qayta autentifikatsiya tekshiruvi kerak emas.
 import { Redirect } from 'expo-router';
-import React, { useState } from 'react';
-import { ActivityIndicator, View } from 'react-native';
-import { useAuth } from '../src/context/AuthContext';
-import LoginScreen from '../src/screens/LoginScreen';
-import RegisterScreen from '../src/screens/RegisterScreen';
-import { COLORS } from '../src/theme/colors';
+import React from 'react';
 
 export default function Index() {
-  const { isLoggedIn, bootstrapping } = useAuth();
-  const [showRegister, setShowRegister] = useState(false);
-
-  if (bootstrapping) {
-    return (
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: COLORS.bg }}>
-        <ActivityIndicator size="large" color={COLORS.primary} />
-      </View>
-    );
-  }
-
-  if (!isLoggedIn) {
-    return showRegister ? (
-      <RegisterScreen onBack={() => setShowRegister(false)} onSubmitted={() => setShowRegister(false)} />
-    ) : (
-      <LoginScreen onRegister={() => setShowRegister(true)} />
-    );
-  }
-
   return <Redirect href="/(tabs)" />;
 }
