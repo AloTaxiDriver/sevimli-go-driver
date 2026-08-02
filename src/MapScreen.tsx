@@ -30,7 +30,7 @@ import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
   DispatcherNotification, FirestoreOrder, acceptOrder, cancelOrder, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
-  saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
+  revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
 } from './utils/firebase';
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
@@ -263,6 +263,24 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         const doc = await firestore().collection('orders').doc(orderId).get();
         const data = doc.data();
         if (!data) { console.warn('Buyurtma topilmadi:', orderId); return; }
+
+        // MUHIM: native overlay Firestore'ga "accepted" deb ALLAQACHON
+        // yozib bo'lgan bo'ladi (shu funksiya faqat UI'ni sozlaydi) —
+        // shuning uchun balans yetarli emasligini bu yerda bilib olsak,
+        // OLDINI OLISH kechikkan bo'ladi, faqat DARHOL BEKOR QILAMIZ:
+        // buyurtma qayta "pending" holatiga qaytariladi (haydovchisiz),
+        // shunda boshqa haydovchilarga ko'rinadi, bu esa hisob-kitobsiz
+        // ishlashda davom etmaydi.
+        if ((driver?.balance || 0) <= 0) {
+          await revertOrderAcceptance(orderId).catch(() => {});
+          setPendingAcceptId(null);
+          processedAcceptId.current = null;
+          Alert.alert(
+            'Balans yetarli emas',
+            'Buyurtma qabul qilish uchun hisobingizni to\'ldiring. Buyurtma boshqa haydovchiga qaytarildi.'
+          );
+          return;
+        }
 
         const fo: FirestoreOrder = {
           id: orderId,
@@ -616,6 +634,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   }
 
   function handleAcceptOrder() {
+    if ((driver?.balance || 0) <= 0) {
+      Alert.alert(
+        'Balans yetarli emas',
+        'Buyurtma qabul qilish uchun hisobingizni to\'ldiring.'
+      );
+      return;
+    }
     const id = activeOrderSourceId.current;
     if (id) acceptOrder(id, driverId).catch(console.warn);
     setTripStage('to_pickup');
@@ -686,6 +711,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setDriverBusyStatus(driverId, false).catch(() => {});
   }
   function handleTakePoolOrder(order: Order) {
+    if ((driver?.balance || 0) <= 0) {
+      Alert.alert(
+        'Balans yetarli emas',
+        'Buyurtma qabul qilish uchun hisobingizni to\'ldiring.'
+      );
+      return;
+    }
     acceptOrder(order.id, driverId).catch(console.warn);
     activeOrderSourceId.current = order.id;
     startWatchingOrderCancellation(order.id);

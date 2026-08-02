@@ -254,6 +254,17 @@ export async function declineDirectOrder(orderId: string): Promise<void> {
   await firestore().collection('orders').doc(orderId).update({ status: 'cancelled' });
 }
 
+// Balansi yetarli bo'lmagan haydovchi buyurtmani qabul qilib qo'ysa
+// (masalan native overlay orqali, JS tomon Firestore yozuvidan keyin
+// bilib qoladi) — buyurtmani darhol qaytadan "pending" holatiga va
+// haydovchisiz qilib qaytaradi, shunda u boshqa haydovchilarga ko'rinadi.
+export async function revertOrderAcceptance(orderId: string): Promise<void> {
+  await firestore().collection('orders').doc(orderId).update({
+    status: 'pending',
+    driverId: null,
+  });
+}
+
 export async function updateOrderStatus(
   orderId: string,
   status: FirestoreOrder['status']
