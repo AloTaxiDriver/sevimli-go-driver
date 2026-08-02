@@ -826,7 +826,11 @@ export const requestPhoneOtp = onRequest(
         return;
       }
 
-      const code = String(Math.floor(100000 + Math.random() * 900000));
+      // MUHIM: kod uzunligi va SMS matni Eskiz kabinetida moderatsiyadan
+      // o'tkazilgan shablon bilan ANIQ bir xil bo'lishi shart ("Sevimli
+      // Go ilovasida tasdiqlash kodi: 0000" — 4 xonali), aks holda
+      // Eskiz "matn moderatsiyadan o'tmagan" xatosini qaytaradi.
+      const code = String(Math.floor(1000 + Math.random() * 9000));
       await otpRef.set({
         code,
         expiresAtMillis: Date.now() + OTP_TTL_MS,
@@ -834,7 +838,7 @@ export const requestPhoneOtp = onRequest(
         lastSentAtMillis: Date.now(),
       });
 
-      await sendEskizSms(phone, `Sevimli Go tasdiqlash kodi: ${code}`);
+      await sendEskizSms(phone, `Sevimli Go ilovasida tasdiqlash kodi: ${code}`);
       res.status(200).json({ ok: true });
     } catch (error) {
       logger.error(`SMS kod yuborishda xato (${phone}):`, error);
