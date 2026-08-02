@@ -2190,16 +2190,8 @@ function renderDrivers(){
   <div id="driver-modal"></div>`;
 }
 function afterRenderDrivers(){
-  if(driversPageUnsubscribe){driversPageUnsubscribe();driversPageUnsubscribe=null;}
-  if(window.listenToDriversLive){
-    driversPageUnsubscribe=window.listenToDriversLive((drivers)=>{
-      firestoreDriversList=drivers.map(normalizeFirestoreDriver);
-      updateDriverStats();
-      renderDriversGrid(driverSearchQuery,driverFilter);
-    });
-  }else{
-    renderDriversGrid();
-  }
+  updateDriverStats();
+  renderDriversGrid(driverSearchQuery,driverFilter);
 }
 function updateDriverStats(){
   const total=document.getElementById('drv-stat-total');
@@ -3084,7 +3076,7 @@ function animateStatistics(){
 // BALANCE
 // ============================================================
 function renderBalance(){
-  const drivers=dbGet('drivers');
+  const drivers=firestoreDriversList;
   const txns=dbGet('driverTxns')||[];
   const totalBalance=drivers.reduce((s,d)=>s+(d.balance||0),0);
   const totalIncome=txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
@@ -3167,7 +3159,7 @@ function filterBalanceTxns(q){renderBalanceTable(q);}
 // HISOBNI BOSHQARISH MODAL
 // ============================================================
 function showAccountModal(prefillId){
-  const drivers=dbGet('drivers');
+  const drivers=firestoreDriversList;
   let prefillLabel='';
   if(prefillId){
     const pd=drivers.find(d=>d.id===prefillId);
@@ -3232,7 +3224,7 @@ function showAccountModal(prefillId){
 
 
 function searchDriverDropdown(q){
-  const drivers=dbGet('drivers');
+  const drivers=firestoreDriversList;
   const query=(q||'').toLowerCase().trim();
   const dd=document.getElementById('am-driver-dropdown');
   if(!dd)return;
@@ -3270,7 +3262,7 @@ function searchDriverDropdown(q){
 }
 
 function selectDriverFromDropdown(driverId){
-  const drv=dbGet('drivers').find(d=>d.id===driverId);
+  const drv=firestoreDriversList.find(d=>d.id===driverId);
   if(!drv)return;
   const searchInput=document.getElementById('am-driver-search');
   const hiddenInput=document.getElementById('am-driver');
@@ -3319,7 +3311,7 @@ function updateDriverBalanceDisplay(){
   const box=document.getElementById('am-current-balance');
   const val=document.getElementById('am-balance-val');
   if(!id){if(box)box.style.display='none';return;}
-  const drv=dbGet('drivers').find(d=>d.id===id);
+  const drv=firestoreDriversList.find(d=>d.id===id);
   if(!drv)return;
   if(box)box.style.display='flex';
   if(val){
@@ -3337,16 +3329,17 @@ function saveAccountTxn(){
   if(!amount){alert('Miqdorni kiriting!');return;}
   if(!reason){alert('Sababni tanlang!');return;}
 
-  const drivers=dbGet('drivers');
-  const drv=drivers.find(d=>d.id===driverId);
+  const drv=firestoreDriversList.find(d=>d.id===driverId);
   if(!drv)return;
 
   const branches=dbGet('branches');
   const branch=branches[0]?branches[0].name:'—';
 
-  // Update driver balance
-  drv.balance=(drv.balance||0)+(accountTxnType==='add'?amount:-amount);
-  dbSet('drivers',drivers);
+  // Haydovchi haqiqiy Firestore hujjati (id = telefon raqami) — shu
+  // yerga yozilmasa, o'zgarish faqat dashboard ekranida ko'rinib,
+  // haydovchi ilovasidagi balansga ta'sir qilmaydi.
+  const newBalance=(drv.balance||0)+(accountTxnType==='add'?amount:-amount);
+  if(window.saveDriverToFirestore)window.saveDriverToFirestore(driverId,{balance:newBalance});
 
   // Add transaction record
   const txns=dbGet('driverTxns')||[];
@@ -6790,6 +6783,20 @@ setTimeout(()=>{
 // foydalanadi. type="module" bloki asinxron yuklanadi, shuning uchun
 // window.listenToOrdersLive hali tayyor bo'lmasa, tayyor bo'lguncha
 // qayta urinib turamiz.
+// Haydovchilar tinglovchisini ham GLOBAL ishga tushiramiz (faqat
+// "Haydovchilar" sahifasiga bog'lab qo'yilmagan) — "Balans" sahifasidagi
+// hisobni to'ldirish oynasi ham real haydovchilar ro'yxatini (o'zi
+// ro'yxatdan o'tganlar ham) ko'rishi kerak, aks holda faqat demo
+// ma'lumotlar (dbGet('drivers')) ko'rinardi.
+function startGlobalDriversListener(){
+  if(driversPageUnsubscribe)return;
+  if(!window.listenToDriversLive){setTimeout(startGlobalDriversListener,300);return;}
+  driversPageUnsubscribe=window.listenToDriversLive((drivers)=>{
+    firestoreDriversList=drivers.map(normalizeFirestoreDriver);
+    if(window.currentPage==='drivers'){updateDriverStats();renderDriversGrid(driverSearchQuery,driverFilter);}
+  });
+}
+
 function startGlobalOrdersListener(){
   if(ordersPageUnsubscribe)return;
   if(!window.listenToOrdersLive){setTimeout(startGlobalOrdersListener,300);return;}
@@ -6817,6 +6824,7 @@ function startDashboardDataSync(){
 }
 startDashboardDataSync();
 startGlobalOrdersListener();
+startGlobalDriversListener();
 </script>
 </body>
 </html>
