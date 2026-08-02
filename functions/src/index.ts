@@ -1,3 +1,4 @@
+import { randomBytes } from "crypto";
 import { initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
@@ -15,6 +16,7 @@ const auth = getAuth();
 
 const eskizEmail = defineSecret("ESKIZ_EMAIL");
 const eskizPassword = defineSecret("ESKIZ_PASSWORD");
+const telegramBotToken = defineSecret("TELEGRAM_BOT_TOKEN");
 
 function getDistanceMeters(
   lat1: number, lng1: number, lat2: number, lng2: number
@@ -785,7 +787,11 @@ async function getEskizToken(): Promise<string> {
   return token;
 }
 
-async function sendEskizSms(phone: string, message: string): Promise<void> {
+// MUHIM: hozircha hech qayerdan chaqirilmaydi (Eskiz shabloni moderatsiyada,
+// vaqtincha faqat Telegram ishlatilmoqda) — tasdiqlangach requestPhoneOtp
+// ichida qayta yoqiladi. `export` — shu oraliqda ham "ishlatilmagan"
+// xatosini bermasligi uchun.
+export async function sendEskizSms(phone: string, message: string): Promise<void> {
   const mobilePhone = phone.replace("+", "");
   const send = async (token: string) =>
     fetch("https://notify.eskiz.uz/api/message/sms/send", {
@@ -811,8 +817,21 @@ async function sendEskizSms(phone: string, message: string): Promise<void> {
   }
 }
 
+const TELEGRAM_BOT_USERNAME = "sevimligo_bot";
+
+async function sendTelegramMessage(chatId: number | string, text: string): Promise<void> {
+  const res = await fetch(`https://api.telegram.org/bot${telegramBotToken.value()}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, text }),
+  });
+  if (!res.ok) {
+    throw new Error(`Telegram xabar yuborish xatosi: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+}
+
 export const requestPhoneOtp = onRequest(
-  { secrets: [eskizEmail, eskizPassword] },
+  { secrets: [eskizEmail, eskizPassword, telegramBotToken] },
   async (req, res) => {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Faqat POST" });
@@ -842,22 +861,86 @@ export const requestPhoneOtp = onRequest(
       // Eskiz "matn moderatsiyadan o'tmagan" xatosini qaytaradi.
       const testCode = TEST_PHONE_CODES[phone];
       const code = testCode || String(Math.floor(1000 + Math.random() * 9000));
+
+      // MUHIM (xavfsizlik): har bir so'rov uchun YANGI, tasodifiy
+      // linkToken yaratiladi — Telegram bot'ga "/start <token>" orqali
+      // ulanish shu tokenga bog'liq, DOIMIY telefon->chat bog'lanishi
+      // hech qayerda saqlanmaydi. Aks holda, kimdir boshqa birovning
+      // telefon raqamini bilib, o'sha raqam uchun botni oldindan o'zi
+      // ishga tushirib qo'ysa, haqiqiy egasining keyingi kirish
+      // urinishlaridagi kod UNGA emas, o'sha kishiga borardi — bu real
+      // hisobni o'g'irlash xavfi. Har safar yangi, faqat shu bitta
+      // urinish uchun (5 daqiqa) amal qiladigan token bilan bu xavf
+      // yo'qoladi.
+      const linkToken = randomBytes(16).toString("base64url");
       await otpRef.set({
         code,
+        linkToken,
         expiresAtMillis: Date.now() + OTP_TTL_MS,
         attempts: 0,
         lastSentAtMillis: Date.now(),
       });
 
-      if (!testCode) {
-        await sendEskizSms(phone, `Sevimli Go ilovasida tasdiqlash kodi: ${code}`);
-      } else {
-        logger.info(`Test raqami (${phone}) — SMS yuborilmadi, qattiq kod ishlatildi`);
+      if (testCode) {
+        logger.info(`Test raqami (${phone}) — hech narsa yuborilmadi, qattiq kod ishlatildi`);
+        res.status(200).json({ ok: true });
+        return;
       }
-      res.status(200).json({ ok: true });
+
+      // Hozircha FAQAT Telegram orqali yuboriladi (Eskiz SMS shabloni
+      // hali moderatsiyada) — tasdiqlangach, sendEskizSms ham shu yerda
+      // PARALEL chaqirilishi kerak (bittasi ikkinchisini almashtirmasdan).
+      res.status(200).json({
+        ok: true,
+        telegramDeepLink: `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${linkToken}`,
+      });
     } catch (error) {
       logger.error(`SMS kod yuborishda xato (${phone}):`, error);
       res.status(500).json({ error: "SMS kod yuborishda xatolik yuz berdi" });
+    }
+  }
+);
+
+// Telegram bot'ning webhook manzili — @sevimligo_bot'da "/start <token>"
+// kelganda, shu tokenga mos kutilayotgan OTP kodini o'sha chatga yuboradi.
+// MUHIM: bu manzil Telegram'ning o'zida (setWebhook orqali) ro'yxatdan
+// o'tkazilgan bo'lishi kerak, aks holda Telegram bu yerga hech narsa
+// yubormaydi.
+export const telegramBotWebhook = onRequest(
+  { secrets: [telegramBotToken] },
+  async (req, res) => {
+    try {
+      const message = req.body?.message;
+      const text: string | undefined = message?.text;
+      const chatId = message?.chat?.id;
+      if (!text || !chatId || !text.startsWith("/start")) {
+        res.status(200).send("ok");
+        return;
+      }
+
+      const token = text.replace("/start", "").trim();
+      if (!token) {
+        res.status(200).send("ok");
+        return;
+      }
+
+      const snap = await db.collection("otpCodes").where("linkToken", "==", token).limit(1).get();
+      if (snap.empty) {
+        await sendTelegramMessage(chatId, "Havola muddati tugagan. Ilovada qaytadan urinib ko'ring.");
+        res.status(200).send("ok");
+        return;
+      }
+      const data = snap.docs[0].data();
+      if (Date.now() > data.expiresAtMillis) {
+        await sendTelegramMessage(chatId, "Kod muddati tugagan. Ilovada qaytadan urinib ko'ring.");
+        res.status(200).send("ok");
+        return;
+      }
+      await sendTelegramMessage(chatId, `Sevimli Go ilovasida tasdiqlash kodi: ${data.code}`);
+      res.status(200).send("ok");
+    } catch (error) {
+      logger.error("Telegram webhook xatosi:", error);
+      res.status(200).send("ok");
     }
   }
 );
