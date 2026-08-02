@@ -156,7 +156,8 @@ export default function LoginScreen({ onRegister }: Props) {
               {step === 'phone' && onRegister && (
                 <TouchableOpacity onPress={onRegister} style={styles.backLink}>
                   <Text style={styles.registerLinkText}>
-                    Hisobingiz yo\u02bbqmi? <Text style={styles.registerLinkAccent}>Ro\u02bbyxatdan o\u02bbtish</Text>
+                    {'Hisobingiz yo\u02bbqmi? '}
+                    <Text style={styles.registerLinkAccent}>{'Ro\u02bbyxatdan o\u02bbtish'}</Text>
                   </Text>
                 </TouchableOpacity>
               )}
