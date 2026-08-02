@@ -2172,6 +2172,7 @@ function renderDrivers(){
     <div class="statcard"><div class="slabel">Bo\u2019sh</div><div class="sval" id="drv-stat-free" style="color:#10B981">0</div></div>
     <div class="statcard"><div class="slabel">Band</div><div class="sval" id="drv-stat-busy" style="color:#F59E0B">0</div></div>
     <div class="statcard"><div class="slabel">Oflayn</div><div class="sval" id="drv-stat-offline" style="color:#9CA3AF">0</div></div>
+    <div class="statcard accent"><div class="slabel">Moderatsiyada</div><div class="sval" id="drv-stat-pending" style="color:#F59E0B">0</div></div>
   </div>
   <div class="card" style="overflow:hidden">
     <div class="sec-head">
@@ -2179,7 +2180,7 @@ function renderDrivers(){
       <div style="display:flex;gap:8px">
         <div class="searchbar" style="width:180px">${ic('search',14,'rgba(26,26,26,0.4)')}<input placeholder="Qidirish..." oninput="searchDrivers(this.value)"></div>
         <select class="form-input" style="padding:8px 10px;font-size:12px" onchange="filterDrv(this.value)">
-          <option value="all">Barchasi</option><option value="free">Bo’sh</option><option value="busy">Band</option><option value="offline">Oflayn</option>
+          <option value="all">Barchasi</option><option value="pending">Moderatsiyada</option><option value="free">Bo’sh</option><option value="busy">Band</option><option value="offline">Oflayn</option>
         </select>
         <button class="btn btn-coral" onclick="showDriverModal(null)">${ic('plus',14,'#fff')} Qo’sh</button>
       </div>
@@ -2205,28 +2206,32 @@ function updateDriverStats(){
   const free=document.getElementById('drv-stat-free');
   const busy=document.getElementById('drv-stat-busy');
   const offline=document.getElementById('drv-stat-offline');
+  const pending=document.getElementById('drv-stat-pending');
   if(total)total.textContent=firestoreDriversList.length;
   if(free)free.textContent=firestoreDriversList.filter(d=>d.status==='free').length;
   if(busy)busy.textContent=firestoreDriversList.filter(d=>d.status==='busy').length;
   if(offline)offline.textContent=firestoreDriversList.filter(d=>d.status==='offline').length;
+  if(pending)pending.textContent=firestoreDriversList.filter(d=>d.approved===false).length;
 }
 function renderDriversGrid(search='',filter='all'){
   driverSearchQuery=search;
   let drivers=firestoreDriversList;
   if(search){const q=search.toLowerCase();drivers=drivers.filter(d=>d.name.toLowerCase().includes(q)||d.phone.includes(q)||(d.car||'').toLowerCase().includes(q));}
-  if(filter!=='all')drivers=drivers.filter(d=>d.status===filter);
+  if(filter==='pending')drivers=drivers.filter(d=>d.approved===false);
+  else if(filter!=='all')drivers=drivers.filter(d=>d.status===filter);
   const el=document.getElementById('drivers-grid');
   if(!el)return;
-  el.innerHTML=drivers.map(d=>`<div class="driver-card">
+  el.innerHTML=drivers.map(d=>`<div class="driver-card" style="${d.approved===false?'border:1.5px solid #F59E0B':''}">
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
       ${d.photo?`<img src="${esc(d.photo)}" style="width:44px;height:44px;border-radius:13px;object-fit:cover;flex-shrink:0">`:`<div style="width:44px;height:44px;border-radius:13px;background:linear-gradient(145deg,#22C55E,#16A34A);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px;flex-shrink:0">${initials(d.name)}</div>`}
       <div style="flex:1"><div style="font-weight:600;font-size:14px">${esc(d.name)}</div><div style="font-size:11px;color:rgba(26,26,26,0.45)">${esc(d.phone)}</div></div>
-      ${sdot(d.status)}
+      ${d.approved===false?'<span class="tag" style="background:rgba(245,158,11,0.12);color:#F59E0B;font-size:10px;font-weight:700">Moderatsiyada</span>':sdot(d.status)}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:13px">
       ${[['Mashina',d.car],['Raqam',d.plate],['Reyting','⭐ '+d.rating],['Sayohat',d.trips]].map(([l,v])=>`<div><div style="font-size:10px;color:rgba(26,26,26,0.45);margin-bottom:2px">${l}</div><div style="font-size:13px;font-weight:600">${esc(String(v))}</div></div>`).join('')}
     </div>
     <div style="display:flex;gap:8px">
+      ${d.approved===false?`<button class="btn btn-coral" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="approveDriver('${d.id}')">${ic('check',13,'#fff')} Tasdiqlash</button>`:''}
       <button class="btn btn-light" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="showDriverModal('${d.id}')">${ic('edit',13)} Tahrir</button>
       <button class="btn btn-danger" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="deleteDriver('${d.id}')">${ic('trash',13)} O’chir</button>
     </div>
@@ -2234,6 +2239,12 @@ function renderDriversGrid(search='',filter='all'){
 }
 function searchDrivers(q){renderDriversGrid(q,driverFilter);}
 function filterDrv(f){driverFilter=f;renderDriversGrid(driverSearchQuery,f);}
+// Haydovchi ilovada o'zi ro'yxatdan o'tganda approved:false bilan
+// yoziladi (E:\Sevimli Go\src\screens\RegisterScreen.tsx) — shu
+// tugma orqali admin tasdiqlab, kirishga ruxsat beradi.
+function approveDriver(id){
+  if(window.saveDriverToFirestore)window.saveDriverToFirestore(id,{approved:true});
+}
 function deleteDriver(id){
   showConfirmModal(
     'Haydovchini o\u2019chirish',
