@@ -3208,12 +3208,6 @@ function showAccountModal(prefillId){
           <select class="form-input" id="am-reason"></select>
         </div>
 
-        <div class="form-field">
-          <label class="form-label">Admin paroli <span style="color:#22C55E">*</span></label>
-          <input class="form-input" id="am-password" type="password" placeholder="Tasdiqlash uchun parolni kiriting">
-          <div id="am-pass-error" style="display:none;color:#22C55E;font-size:11px;margin-top:4px;font-weight:600">Parol xato! Qaytadan urinib ko\u2019ring.</div>
-        </div>
-
         <div style="display:flex;gap:10px;margin-top:4px">
           <button class="btn btn-coral" style="flex:1;justify-content:center" onclick="saveAccountTxn()">Saqlash</button>
           <button class="btn btn-light" style="flex:1;justify-content:center" onclick="closeModal('account-modal')">Bekor</button>
@@ -3323,31 +3317,14 @@ function updateDriverBalanceDisplay(){
   }
 }
 
-function getAdminPassword(){
-  return localStorage.getItem('taxi_admin_password')||'1234';
-}
-
 function saveAccountTxn(){
   const driverId=document.getElementById('am-driver')?.value;
   const amount=parseInt(document.getElementById('am-amount')?.value)||0;
   const reason=document.getElementById('am-reason')?.value?.trim();
-  const password=document.getElementById('am-password')?.value;
 
   if(!driverId){alert('Haydovchini tanlang!');return;}
   if(!amount){alert('Miqdorni kiriting!');return;}
   if(!reason){alert('Sababni tanlang!');return;}
-  if(!password){
-    const err=document.getElementById('am-pass-error');
-    if(err){err.textContent='Admin parolini kiriting!';err.style.display='block';}
-    return;
-  }
-  if(password!==getAdminPassword()){
-    const err=document.getElementById('am-pass-error');
-    if(err){err.textContent='Parol xato! Qaytadan urinib ko\u2019ring.';err.style.display='block';}
-    const pinp=document.getElementById('am-password');
-    if(pinp){pinp.style.borderColor='#22C55E';pinp.focus();pinp.select();}
-    return;
-  }
 
   const drivers=dbGet('drivers');
   const drv=drivers.find(d=>d.id===driverId);
