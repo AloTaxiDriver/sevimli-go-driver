@@ -110,6 +110,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError("Parol noto'g'ri");
         return false;
       }
+      // MUHIM: faqat ANIQ `approved:false` bo'lgan hisoblar (o'zi
+      // ro'yxatdan o'tib, hali moderatsiyadan o'tmagan) bloklanadi.
+      // Dashboard'dan qo'lda qo'shilgan eski haydovchilarda bu maydon
+      // umuman yo'q — ular bilan hech narsa o'zgarmaydi.
+      if (data.approved === false) {
+        setError("Hisobingiz hali moderatsiyada. Administrator tasdiqlashini kuting.");
+        return false;
+      }
 
       setDriver(mapFirestoreDriver(phone, data));
       await AsyncStorage.setItem(SAVED_PHONE_KEY, phone);

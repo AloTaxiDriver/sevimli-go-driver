@@ -27,7 +27,11 @@ function formatPhone(d: string) {
   return out;
 }
 
-export default function LoginScreen() {
+interface Props {
+  onRegister?: () => void;
+}
+
+export default function LoginScreen({ onRegister }: Props) {
   const { login, error, loading } = useAuth();
   const [rawDigits, setRawDigits] = useState('');
   const [password, setPassword] = useState('');
@@ -148,6 +152,14 @@ export default function LoginScreen() {
                   <Text style={styles.backLinkText}>{'< Raqamni o\u02bbzgartirish'}</Text>
                 </TouchableOpacity>
               )}
+
+              {step === 'phone' && onRegister && (
+                <TouchableOpacity onPress={onRegister} style={styles.backLink}>
+                  <Text style={styles.registerLinkText}>
+                    Hisobingiz yo\u02bbqmi? <Text style={styles.registerLinkAccent}>Ro\u02bbyxatdan o\u02bbtish</Text>
+                  </Text>
+                </TouchableOpacity>
+              )}
             </GlassPanel>
           </View>
         </ScrollView>
@@ -264,4 +276,6 @@ const styles = StyleSheet.create({
   buttonText: { color: COLORS.white, fontWeight: '700', fontSize: 16 },
   backLink: { marginTop: 18, alignItems: 'center' },
   backLinkText: { color: 'rgba(22,24,29,0.5)', fontSize: 13, fontWeight: '700' },
+  registerLinkText: { color: 'rgba(22,24,29,0.5)', fontSize: 13, fontWeight: '600' },
+  registerLinkAccent: { color: COLORS.primary, fontWeight: '800' },
 });
