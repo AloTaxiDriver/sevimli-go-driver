@@ -132,9 +132,14 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
     setError('');
     setSubmitting(true);
     try {
-      await verifyDriverPhoneOtp(fullPhone, code);
+      const { telegramChatId } = await verifyDriverPhoneOtp(fullPhone, code);
 
       await firestore().collection('drivers').doc(fullPhone).set({
+        // MUHIM: shu chat ID admin ariza tasdiqlagan/rad etganda
+        // @sevimligo_bot orqali xabar yuborish uchun kerak (bot bilan
+        // faqat shu tasdiqlash bosqichida "muloqot" bo'lgani uchun,
+        // boshqa payt uni olishning iloji yo'q).
+        telegramChatId,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         name: `${firstName.trim()} ${lastName.trim()}`,

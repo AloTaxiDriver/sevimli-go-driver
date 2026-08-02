@@ -1017,6 +1017,12 @@ export const telegramBotWebhook = onRequest(
         res.status(200).send("ok");
         return;
       }
+      // MUHIM: shu chatId keyinchalik verifyPhoneOtp orqali haydovchi
+      // hujjatiga (telegramChatId) ko'chiriladi — bu FAQAT to'g'ri kod
+      // muvaffaqiyatli tasdiqlangandan keyin sodir bo'ladi, shuning
+      // uchun yuqoridagi bir martalik linkToken xavfsizligini
+      // buzmaydi (kelajakdagi kirishlar hali ham yangi token talab qiladi).
+      await snap.docs[0].ref.set({ chatId }, { merge: true });
       await sendTelegramMessage(chatId, `Sevimli Go ilovasida tasdiqlash kodi: ${data.code}`);
       res.status(200).send("ok");
     } catch (error) {
@@ -1074,9 +1080,83 @@ export const verifyPhoneOtp = onRequest(async (req, res) => {
     // token imzolash ruxsati muammosi) to'g'ri kodni "sarflab" qo'yardi,
     // mijoz qaytadan butun SMS'ni so'rashga majbur bo'lardi.
     await otpRef.delete();
-    res.status(200).json({ customToken, uid: userRecord.uid });
+    res.status(200).json({ customToken, uid: userRecord.uid, chatId: data.chatId ?? null });
   } catch (error) {
     logger.error(`SMS kodni tekshirishda xato (${phone}):`, error);
     res.status(500).json({ error: "Tekshirishda xatolik yuz berdi" });
   }
 });
+
+// ============================================================
+// HAYDOVCHI MODERATSIYASI — dashboard'da admin o'zi ro'yxatdan
+// o'tgan haydovchini tasdiqlasa/rad etsa, haydovchiga @sevimligo_bot
+// orqali xabar boradi (registratsiyada saqlangan telegramChatId
+// orqali — RegisterScreen.tsx verifyDriverPhoneOtp muvaffaqiyatli
+// bo'lgach, shu maydonni drivers/{phone} hujjatiga yozadi).
+// ============================================================
+
+// Tasdiqlash dashboard'da oddiy Firestore yozuvi (saveDriverToFirestore)
+// orqali sodir bo'lgani uchun, bu yerda o'sha yozuvni "eshitib",
+// approved false->true o'tganda xabar yuboramiz.
+export const onDriverApprovedNotifyTelegram = onDocumentUpdated(
+  { document: "drivers/{phone}", secrets: [telegramBotToken] },
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after || before?.approved === true || after.approved !== true) return;
+
+    const chatId = after.telegramChatId;
+    if (!chatId) return;
+
+    try {
+      await sendTelegramMessage(
+        chatId,
+        "Tabriklaymiz! Sevimli Go haydovchi arizangiz tasdiqlandi — endi ilovaga kirishingiz mumkin."
+      );
+    } catch (error) {
+      logger.error(`Haydovchi (${event.params.phone}) tasdiqlash xabarini yuborishda xato:`, error);
+    }
+  }
+);
+
+// Rad etish dashboard'da alohida chaqiriladi (oddiy Firestore
+// yozuvidan farqli, chunki xabar yuborish uchun bot tokeni kerak,
+// u faqat server tomonda mavjud) — xabar yuborilib, so'ng ariza
+// o'chiriladi.
+export const rejectDriver = onRequest(
+  { region: "us-central1", cors: true, secrets: [telegramBotToken] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Faqat POST" });
+      return;
+    }
+    const phone = req.body?.phone;
+    if (typeof phone !== "string" || !phone) {
+      res.status(400).json({ error: "Telefon raqami kerak" });
+      return;
+    }
+
+    try {
+      const driverRef = db.collection("drivers").doc(phone);
+      const snap = await driverRef.get();
+      const chatId = snap.data()?.telegramChatId;
+
+      if (chatId) {
+        try {
+          await sendTelegramMessage(
+            chatId,
+            "Afsuski, Sevimli Go haydovchi arizangiz rad etildi. Qo'shimcha ma'lumot uchun qo'llab-quvvatlash xizmatiga murojaat qiling."
+          );
+        } catch (error) {
+          logger.error(`Haydovchi (${phone}) rad etish xabarini yuborishda xato:`, error);
+        }
+      }
+
+      await driverRef.delete();
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      logger.error(`Haydovchini rad etishda xato (${phone}):`, error);
+      res.status(500).json({ error: "Rad etishda xatolik yuz berdi" });
+    }
+  }
+);

@@ -2225,7 +2225,7 @@ function renderDriversGrid(search='',filter='all'){
     <div style="display:flex;gap:8px">
       ${d.approved===false?`<button class="btn btn-coral" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="approveDriver('${d.id}')">${ic('check',13,'#fff')} Tasdiqlash</button>`:''}
       <button class="btn btn-light" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="showDriverModal('${d.id}')">${ic('edit',13)} Tahrir</button>
-      <button class="btn btn-danger" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="deleteDriver('${d.id}')">${ic('trash',13)} O’chir</button>
+      ${d.approved===false?`<button class="btn btn-danger" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="rejectDriverModeration('${d.id}')">${ic('x',13)} Rad etish</button>`:`<button class="btn btn-danger" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="deleteDriver('${d.id}')">${ic('trash',13)} O’chir</button>`}
     </div>
   </div>`).join('')||'<p style="padding:20px;color:rgba(0,0,0,0.4)">Haydovchi topilmadi</p>';
 }
@@ -2236,6 +2236,32 @@ function filterDrv(f){driverFilter=f;renderDriversGrid(driverSearchQuery,f);}
 // tugma orqali admin tasdiqlab, kirishga ruxsat beradi.
 function approveDriver(id){
   if(window.saveDriverToFirestore)window.saveDriverToFirestore(id,{approved:true});
+}
+// Tasdiqlashdan farqli o'laroq, rad etish uchun Telegram bot orqali
+// xabar yuborish kerak (bot tokeni faqat server tomonda bo'lgani
+// uchun oddiy Firestore yozuvi yetarli emas) — shu sabab alohida
+// Cloud Function (rejectDriver) chaqiriladi, u xabarni yuborib,
+// so'ng arizani o'chiradi.
+const REJECT_DRIVER_URL='https://us-central1-sevimli-go.cloudfunctions.net/rejectDriver';
+function rejectDriverModeration(id){
+  showConfirmModal(
+    'Arizani rad etish',
+    'Haydovchiga botda xabar boradi va ariza butunlay o’chiriladi. Bu amalni qaytarib bo’lmaydi.',
+    async ()=>{
+      try{
+        await fetch(REJECT_DRIVER_URL,{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({phone:id}),
+        });
+      }catch(err){
+        console.error('Haydovchini rad etishda xato:',err);
+      }
+      navigate('drivers');
+    },
+    'Ha, rad etish',
+    true
+  );
 }
 function deleteDriver(id){
   showConfirmModal(

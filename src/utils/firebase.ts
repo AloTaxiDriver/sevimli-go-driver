@@ -39,8 +39,12 @@ export async function requestDriverPhoneOtp(fullPhone: string): Promise<{ telegr
   return postOtpJson(REQUEST_OTP_URL, { phone: fullPhone });
 }
 
-export async function verifyDriverPhoneOtp(fullPhone: string, code: string): Promise<void> {
-  await postOtpJson(VERIFY_OTP_URL, { phone: fullPhone, code });
+export async function verifyDriverPhoneOtp(
+  fullPhone: string,
+  code: string
+): Promise<{ telegramChatId: number | string | null }> {
+  const data = await postOtpJson(VERIFY_OTP_URL, { phone: fullPhone, code });
+  return { telegramChatId: data?.chatId ?? null };
 }
 
 export async function testFirebaseConnection(): Promise<{
