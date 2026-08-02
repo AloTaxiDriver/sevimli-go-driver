@@ -1,14 +1,20 @@
 import { initializeApp } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
 import { onRequest } from "firebase-functions/v2/https";
+import { defineSecret } from "firebase-functions/params";
 
 initializeApp();
 
 const db = getFirestore();
 const messaging = getMessaging();
+const auth = getAuth();
+
+const eskizEmail = defineSecret("ESKIZ_EMAIL");
+const eskizPassword = defineSecret("ESKIZ_PASSWORD");
 
 function getDistanceMeters(
   lat1: number, lng1: number, lat2: number, lng2: number
@@ -718,3 +724,172 @@ export const onOrderStatusChangeNotifyCustomer = onDocumentUpdated(
     }
   }
 );
+
+// ============================================================
+// MIJOZ ILOVASI KIRISHI — Eskiz.uz orqali SMS kod
+// ============================================================
+// Firebase Phone Auth sideload qilingan (Play Store'ga chiqmagan) APK
+// bilan ishlamaydi (Play Integrity mijozning haqiqiy telefon raqamini
+// tasdiqlay olmaydi — faqat Console'ga qo'shilgan test raqamlar
+// ishlaydi). Shuning uchun SMS kodni o'zimiz Eskiz.uz orqali yuboramiz,
+// tekshirgandan keyin esa Firebase'ning "custom token"ini yaratib
+// mijoz ilovasiga qaytaramiz — shu token bilan `signInWithCustomToken`
+// chaqirilsa, qolgan BUTUN tizim (Firestore Rules, customers/{uid}
+// profil, bonus va h.k.) hech qanday o'zgarishsiz, avvalgidek ishlaydi,
+// faqat SMS yuborish/tekshirish usuli almashadi.
+
+const OTP_TTL_MS = 5 * 60 * 1000; // 5 daqiqa
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // qayta yuborishdan oldin kutish
+const OTP_MAX_ATTEMPTS = 5;
+
+function isValidUzPhone(phone: unknown): phone is string {
+  return typeof phone === "string" && /^\+998\d{9}$/.test(phone);
+}
+
+// Eskiz'ning tokeni ~30 kun amal qiladi — settings/eskizToken'da keshlab
+// qo'yamiz, shunda har bir SMS uchun qayta login qilinmaydi.
+async function getEskizToken(): Promise<string> {
+  const cacheRef = db.collection("settings").doc("eskizToken");
+  const cached = await cacheRef.get();
+  const cachedData = cached.data();
+  if (cachedData?.token && typeof cachedData.expiresAtMillis === "number" &&
+      cachedData.expiresAtMillis > Date.now() + 60_000) {
+    return cachedData.token;
+  }
+
+  const res = await fetch("https://notify.eskiz.uz/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ email: eskizEmail.value(), password: eskizPassword.value() }),
+  });
+  if (!res.ok) {
+    throw new Error(`Eskiz login xatosi: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+  const json: any = await res.json();
+  const token: string | undefined = json?.data?.token;
+  if (!token) throw new Error("Eskiz login javobida token topilmadi");
+
+  // Eskiz tokeni 30 kunlik — xavfsizlik uchun 25 kun deb keshlaymiz.
+  const expiresAtMillis = Date.now() + 25 * 24 * 60 * 60 * 1000;
+  await cacheRef.set({ token, expiresAtMillis }, { merge: true });
+  return token;
+}
+
+async function sendEskizSms(phone: string, message: string): Promise<void> {
+  const mobilePhone = phone.replace("+", "");
+  const send = async (token: string) =>
+    fetch("https://notify.eskiz.uz/api/message/sms/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Authorization: `Bearer ${token}`,
+      },
+      body: new URLSearchParams({ mobile_phone: mobilePhone, message, from: "4546" }),
+    });
+
+  let token = await getEskizToken();
+  let res = await send(token);
+  if (res.status === 401) {
+    // Token muddati o'tgan/bekor qilingan bo'lishi mumkin — keshni
+    // tozalab, bir marta qayta urinib ko'ramiz.
+    await db.collection("settings").doc("eskizToken").delete().catch(() => {});
+    token = await getEskizToken();
+    res = await send(token);
+  }
+  if (!res.ok) {
+    throw new Error(`Eskiz SMS xatosi: ${res.status} ${await res.text().catch(() => "")}`);
+  }
+}
+
+export const requestPhoneOtp = onRequest(
+  { secrets: [eskizEmail, eskizPassword] },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Faqat POST" });
+      return;
+    }
+    const phone = req.body?.phone;
+    if (!isValidUzPhone(phone)) {
+      res.status(400).json({ error: "Telefon raqami noto'g'ri formatda (+998XXXXXXXXX kerak)" });
+      return;
+    }
+
+    const otpRef = db.collection("otpCodes").doc(phone);
+    try {
+      const existing = await otpRef.get();
+      const existingData = existing.data();
+      if (
+        existingData?.lastSentAtMillis &&
+        Date.now() - existingData.lastSentAtMillis < OTP_RESEND_COOLDOWN_MS
+      ) {
+        res.status(429).json({ error: "Iltimos, biroz kutib qayta urinib ko'ring" });
+        return;
+      }
+
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      await otpRef.set({
+        code,
+        expiresAtMillis: Date.now() + OTP_TTL_MS,
+        attempts: 0,
+        lastSentAtMillis: Date.now(),
+      });
+
+      await sendEskizSms(phone, `Sevimli Go tasdiqlash kodi: ${code}`);
+      res.status(200).json({ ok: true });
+    } catch (error) {
+      logger.error(`SMS kod yuborishda xato (${phone}):`, error);
+      res.status(500).json({ error: "SMS kod yuborishda xatolik yuz berdi" });
+    }
+  }
+);
+
+export const verifyPhoneOtp = onRequest(async (req, res) => {
+  if (req.method !== "POST") {
+    res.status(405).json({ error: "Faqat POST" });
+    return;
+  }
+  const phone = req.body?.phone;
+  const code = req.body?.code;
+  if (!isValidUzPhone(phone) || typeof code !== "string") {
+    res.status(400).json({ error: "Noto'g'ri so'rov" });
+    return;
+  }
+
+  const otpRef = db.collection("otpCodes").doc(phone);
+  try {
+    const snap = await otpRef.get();
+    const data = snap.data();
+    if (!data) {
+      res.status(400).json({ error: "Avval SMS kod so'rang" });
+      return;
+    }
+    if (Date.now() > data.expiresAtMillis) {
+      await otpRef.delete();
+      res.status(400).json({ error: "Kod muddati tugagan, qaytadan so'rang" });
+      return;
+    }
+    if ((data.attempts || 0) >= OTP_MAX_ATTEMPTS) {
+      res.status(429).json({ error: "Urinishlar soni tugadi, qaytadan SMS so'rang" });
+      return;
+    }
+    if (data.code !== code) {
+      await otpRef.set({ attempts: (data.attempts || 0) + 1 }, { merge: true });
+      res.status(400).json({ error: "Kod noto'g'ri" });
+      return;
+    }
+
+    await otpRef.delete();
+
+    let userRecord;
+    try {
+      userRecord = await auth.getUserByPhoneNumber(phone);
+    } catch {
+      userRecord = await auth.createUser({ phoneNumber: phone });
+    }
+    const customToken = await auth.createCustomToken(userRecord.uid);
+    res.status(200).json({ customToken, uid: userRecord.uid });
+  } catch (error) {
+    logger.error(`SMS kodni tekshirishda xato (${phone}):`, error);
+    res.status(500).json({ error: "Tekshirishda xatolik yuz berdi" });
+  }
+});
