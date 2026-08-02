@@ -3,7 +3,9 @@ import firestore from '@react-native-firebase/firestore';
 import React, { useState } from 'react';
 import {
   Alert,
+  KeyboardAvoidingView,
   Linking,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -59,7 +61,8 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
   const [carBrand, setCarBrand] = useState('');
   const [carModel, setCarModel] = useState('');
   const [carColor, setCarColor] = useState('');
-  const [plate, setPlate] = useState('');
+  const [plateRegion, setPlateRegion] = useState('');
+  const [plateBody, setPlateBody] = useState('');
   const [code, setCode] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [resending, setResending] = useState(false);
@@ -75,7 +78,8 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
     password === passwordConfirm &&
     carBrand.trim() &&
     carModel.trim() &&
-    plate.trim();
+    plateRegion.trim() &&
+    plateBody.trim();
 
   async function sendOtp() {
     const { telegramDeepLink } = await requestDriverPhoneOtp(fullPhone);
@@ -101,7 +105,7 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
       setError('Parollar bir xil emas');
       return;
     }
-    if (!carBrand.trim() || !carModel.trim() || !plate.trim()) {
+    if (!carBrand.trim() || !carModel.trim() || !plateRegion.trim() || !plateBody.trim()) {
       setError('Avtomobil maʼlumotlarini toʻliq kiriting');
       return;
     }
@@ -140,7 +144,15 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
         carModel: carModel.trim(),
         carColor: carColor.trim(),
         car: `${carBrand.trim()} ${carModel.trim()}`,
-        plate: plate.trim(),
+        // MUHIM: dashboard'ning "Avtomobil" tahrirlash formasi
+        // plateRegion/plateBody'ni ALOHIDA maydonlar sifatida o'qiydi
+        // (viloyat kodi dropdown + davlat raqami matn qutisi) — faqat
+        // birlashtirilgan `plate`ni yozish ular BO'SH ko'rinishiga olib
+        // kelardi, garchi karta ko'rinishida (faqat `plate`ni o'qiydigan
+        // joyda) to'g'ri chiqib turgan bo'lsa ham.
+        plateRegion: plateRegion.trim(),
+        plateBody: plateBody.trim(),
+        plate: `${plateRegion.trim()}${plateBody.trim()}`,
         status: 'offline',
         approved: false,
         rating: 5.0,
@@ -182,6 +194,11 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
       <View style={styles.ornamentBottomLeft} />
 
       <SafeAreaView style={styles.safe}>
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+        >
         <ScrollView
           style={styles.flex}
           contentContainerStyle={styles.scrollContent}
@@ -268,19 +285,30 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
                     placeholderTextColor="rgba(22,24,29,0.3)"
                   />
                 </View>
+                <TextInput
+                  style={styles.input}
+                  value={carColor}
+                  onChangeText={setCarColor}
+                  placeholder="Rangi (ixtiyoriy)"
+                  placeholderTextColor="rgba(22,24,29,0.3)"
+                />
+
+                <Text style={styles.label}>Davlat raqami</Text>
                 <View style={styles.row}>
                   <TextInput
-                    style={[styles.input, styles.rowInput]}
-                    value={carColor}
-                    onChangeText={setCarColor}
-                    placeholder="Rangi (ixtiyoriy)"
+                    style={[styles.input, styles.plateRegionInput]}
+                    value={plateRegion}
+                    onChangeText={(t) => setPlateRegion(t.replace(/\D/g, '').slice(0, 2))}
+                    keyboardType="number-pad"
+                    placeholder="01"
                     placeholderTextColor="rgba(22,24,29,0.3)"
+                    maxLength={2}
                   />
                   <TextInput
-                    style={[styles.input, styles.rowInput]}
-                    value={plate}
-                    onChangeText={setPlate}
-                    placeholder="Davlat raqami"
+                    style={[styles.input, styles.plateBodyInput]}
+                    value={plateBody}
+                    onChangeText={setPlateBody}
+                    placeholder="A123BC"
                     placeholderTextColor="rgba(22,24,29,0.3)"
                     autoCapitalize="characters"
                   />
@@ -340,6 +368,7 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
             )}
           </View>
         </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     </View>
   );
@@ -349,7 +378,7 @@ const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: COLORS.bg, overflow: 'hidden' },
   safe: { flex: 1 },
   flex: { flex: 1 },
-  scrollContent: { flexGrow: 1, paddingBottom: 40 },
+  scrollContent: { flexGrow: 1, paddingBottom: 220 },
   content: { flex: 1, paddingHorizontal: 24, paddingTop: 50, justifyContent: 'flex-start' },
 
   ornamentTopRight: {
@@ -401,6 +430,8 @@ const styles = StyleSheet.create({
   label: { fontSize: 13, color: 'rgba(22,24,29,0.6)', marginBottom: 8, fontWeight: '700' },
   row: { flexDirection: 'row', gap: 10 },
   rowInput: { flex: 1 },
+  plateRegionInput: { flex: 0.35 },
+  plateBodyInput: { flex: 0.65 },
   phoneRow: {
     flexDirection: 'row',
     alignItems: 'center',
