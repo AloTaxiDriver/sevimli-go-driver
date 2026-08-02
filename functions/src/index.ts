@@ -897,8 +897,6 @@ export const verifyPhoneOtp = onRequest(async (req, res) => {
       return;
     }
 
-    await otpRef.delete();
-
     let userRecord;
     try {
       userRecord = await auth.getUserByPhoneNumber(phone);
@@ -906,6 +904,12 @@ export const verifyPhoneOtp = onRequest(async (req, res) => {
       userRecord = await auth.createUser({ phoneNumber: phone });
     }
     const customToken = await auth.createCustomToken(userRecord.uid);
+
+    // MUHIM: kodni FAQAT token muvaffaqiyatli yaratilgandan keyin
+    // o'chiramiz — aks holda Auth tomonda vaqtinchalik xato (masalan
+    // token imzolash ruxsati muammosi) to'g'ri kodni "sarflab" qo'yardi,
+    // mijoz qaytadan butun SMS'ni so'rashga majbur bo'lardi.
+    await otpRef.delete();
     res.status(200).json({ customToken, uid: userRecord.uid });
   } catch (error) {
     logger.error(`SMS kodni tekshirishda xato (${phone}):`, error);
