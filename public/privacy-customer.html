@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maxfiylik siyosati — Sevimli Go (Mijoz)</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;background:#EDEDED;color:#1A1A1A;line-height:1.65;}
+.wrap{max-width:760px;margin:0 auto;padding:40px 20px 80px;}
+.header{display:flex;align-items:center;gap:12px;margin-bottom:32px;}
+.logo-icon{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#FFC629,#F5A623);display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 3px 10px rgba(245,166,35,0.35);}
+.header h1{font-size:22px;font-weight:800;}
+.card{background:#fff;border-radius:18px;padding:32px 30px;box-shadow:0 1px 4px rgba(0,0,0,0.06);}
+.updated{color:rgba(26,26,26,0.5);font-size:13px;margin-bottom:24px;}
+h2{font-size:17px;font-weight:700;margin:28px 0 10px;color:#B7791F;}
+h2:first-of-type{margin-top:0;}
+p{margin-bottom:12px;font-size:14.5px;color:rgba(26,26,26,0.85);}
+ul{margin:0 0 14px 20px;}
+li{margin-bottom:6px;font-size:14.5px;color:rgba(26,26,26,0.85);}
+a{color:#B7791F;text-decoration:none;font-weight:600;}
+a:hover{text-decoration:underline;}
+.contact-box{background:#F4F4F4;border-radius:12px;padding:16px 18px;margin-top:8px;font-size:14px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="header">
+    <div class="logo-icon">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+    </div>
+    <h1>Sevimli Go</h1>
+  </div>
+
+  <div class="card">
+    <div class="updated">Oxirgi yangilanish: 2026-yil 3-avgust</div>
+
+    <p>Ushbu Maxfiylik siyosati "Sevimli Go" mijoz mobil ilovasi ("Ilova") tomonidan foydalanuvchi ma'lumotlarining qanday to'planishi, ishlatilishi va himoya qilinishini tushuntiradi. Ilovadan foydalanish orqali siz ushbu siyosat shartlariga rozilik bildirasiz.</p>
+
+    <h2>1. Biz to'playdigan ma'lumotlar</h2>
+    <p>Ilova xizmatlarni ko'rsatish uchun quyidagi ma'lumotlarni to'playdi:</p>
+    <ul>
+      <li><strong>Telefon raqami:</strong> ro'yxatdan o'tish va tizimga kirishni tasdiqlash (SMS/Telegram orqali yuboriladigan bir martalik kod) uchun.</li>
+      <li><strong>Ism:</strong> agar foydalanuvchi kiritsa, buyurtmani haydovchiga tanishtirish uchun.</li>
+      <li><strong>Joylashuv (GPS) ma'lumotlari:</strong> olib ketish (pickup) nuqtasini aniqlash, buyurtma yaratish va safar davomida haydovchining joylashuvini xaritada ko'rsatish uchun.</li>
+      <li><strong>Buyurtma ma'lumotlari:</strong> jo'nash va borish manzillari, tanlangan tarif, narx, sharh/izoh, buyurtma tarixi.</li>
+      <li><strong>Saqlangan manzillar:</strong> foydalanuvchi o'zi belgilagan "Uy", "Ish" va boshqa manzillar — keyingi buyurtmalarda tezroq tanlash uchun.</li>
+      <li><strong>Bonus/lоyallik balansi:</strong> ilova ichidagi bonus tizimidan foydalanish uchun.</li>
+      <li><strong>Bildirishnoma tokeni (push token):</strong> buyurtma holati (haydovchi topildi, safar yakunlandi, bekor qilindi va h.k.) haqida bildirishnoma yuborish uchun.</li>
+    </ul>
+
+    <h2>2. Ma'lumotlardan qanday foydalanamiz</h2>
+    <ul>
+      <li>Buyurtmani yaratish va yaqin atrofdagi haydovchi bilan bog'lash uchun;</li>
+      <li>Xarita orqali marshrut, masofa va narxni hisoblash uchun;</li>
+      <li>Telefon raqamini tasdiqlash va hisobga kirishni ta'minlash uchun;</li>
+      <li>Bonus balansini hisoblash va yangilash uchun;</li>
+      <li>Foydalanuvchiga buyurtma holati haqida bildirishnoma yuborish uchun;</li>
+      <li>Xizmat sifatini yaxshilash va nizolarni hal qilish uchun.</li>
+    </ul>
+
+    <h2>3. Ma'lumotlarni saqlash va xavfsizlik</h2>
+    <p>Barcha ma'lumotlar Google Firebase infratuzilmasida (Firestore) saqlanadi. Ma'lumotlarga faqat vakolatli dispetcherlar va tizim administratorlari kira oladi.</p>
+
+    <h2>4. Ma'lumotlarni uchinchi shaxslar bilan almashish</h2>
+    <p>Biz sizning shaxsiy ma'lumotlaringizni uchinchi shaxslarga sotmaymiz. Ma'lumotlar faqat quyidagi hollarda almashilishi mumkin:</p>
+    <ul>
+      <li>Buyurtmani bajarish uchun zarur bo'lgan haydovchi bilan (ism, telefon, jo'nash/borish manzili);</li>
+      <li>Xizmat infratuzilmasini ta'minlovchi provayderlar bilan (Google Firebase, Google Maps, SMS/Telegram orqali kod yetkazish xizmatlari) — faqat xizmat ko'rsatish maqsadida;</li>
+      <li>Qonuniy talab bo'lganda, tegishli davlat organlari bilan.</li>
+    </ul>
+
+    <h2>5. Joylashuv ruxsati</h2>
+    <p>Ilova GPS joylashuvga kirish ruxsatini so'raydi. Bu ruxsat faqat buyurtma yaratish va faol safar davomida ishlatiladi — ilova fonda ishlab turganda foydalanuvchining joylashuvi kuzatilmaydi. Foydalanuvchi istalgan vaqtda telefon sozlamalari orqali bu ruxsatni bekor qilishi mumkin, biroq bu holda buyurtma berish funksiyasi ishlamay qolishi mumkin.</p>
+
+    <h2>6. Ma'lumotlarni o'chirish</h2>
+    <p>Foydalanuvchi o'z hisobini va unga tegishli shaxsiy ma'lumotlarni o'chirishni so'rashi mumkin. Buning uchun quyidagi bo'limdagi aloqa ma'lumotlari orqali murojaat qiling.</p>
+
+    <h2>7. Bolalar maxfiyligi</h2>
+    <p>Ilova 18 yoshdan kichik shaxslar uchun mo'ljallanmagan va ulardan ongli ravishda ma'lumot to'plamaydi.</p>
+
+    <h2>8. Ushbu siyosatga o'zgartirishlar</h2>
+    <p>Biz ushbu Maxfiylik siyosatini vaqti-vaqti bilan yangilashimiz mumkin. O'zgarishlar shu sahifada e'lon qilinadi.</p>
+
+    <h2>9. Biz bilan bog'lanish</h2>
+    <div class="contact-box">
+      <div><strong>Sevimli Go</strong></div>
+      <div>Telefon: <a href="tel:+998918118181">+998 91 811 81 81</a></div>
+      <div>Sayt: <a href="https://sevimligo.uz">sevimligo.uz</a></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
