@@ -5,7 +5,6 @@ import {
   Alert,
   KeyboardAvoidingView,
   Linking,
-  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -199,10 +198,16 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
       <View style={styles.ornamentBottomLeft} />
 
       <SafeAreaView style={styles.safe}>
+        {/* MUHIM: Android'da avval `behavior="height"` ishlatilgan edi, lekin
+            bu ilova `edgeToEdgeEnabled:true` bilan qurilgani uchun tizim
+            ekranni o'zi ham "resize" qilishga urinadi — ikkalasi to'qnashib,
+            klaviatura ba'zan maydonlarni yopib qo'yardi. `"padding"` esa
+            klaviatura balandligiga qarab pastki bo'shliq qo'shadi, tizimning
+            resize xatti-harakatiga bog'liq emas, shuning uchun ikkala
+            platformada ham barqaror ishlaydi. */}
         <KeyboardAvoidingView
           style={styles.flex}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 24}
+          behavior="padding"
         >
         <ScrollView
           style={styles.flex}
