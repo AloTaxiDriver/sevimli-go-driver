@@ -5,7 +5,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
-import { onRequest } from "firebase-functions/v2/https";
+import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import { defineSecret } from "firebase-functions/params";
 
 initializeApp();
@@ -1160,3 +1160,69 @@ export const rejectDriver = onRequest(
     }
   }
 );
+
+// ============================================================
+// DASHBOARD XODIMLARI (ROL TIZIMI) — /admin, /manager, /depecher
+// bo'limlariga kirish uchun. Har bir xodim o'z Firebase Auth
+// hisobiga (email+parol) ega bo'ladi, roli esa adminRoles/{uid}
+// hujjatida saqlanadi — Firestore xavfsizlik qoidalari ham shu
+// hujjatni o'qib, ma'lumotlarga kirishni cheklaydi (faqat interfeys
+// emas, haqiqiy himoya).
+// ============================================================
+export const createStaffAccount = onCall(async (request) => {
+  const callerUid = request.auth?.uid;
+  if (!callerUid) {
+    throw new HttpsError("unauthenticated", "Tizimga kiring");
+  }
+
+  // Faqat 'admin' roli boshqa xodim hisobini yarata oladi — bu
+  // tekshiruv Firestore qoidalaridagi bilan bir xil mantiq, lekin
+  // bu yerda alohida qayta tekshiriladi, chunki Cloud Function
+  // Admin SDK orqali ishlagani sabab Firestore qoidalarini
+  // umuman aylanib o'tadi.
+  const callerRoleDoc = await db.collection("adminRoles").doc(callerUid).get();
+  if (callerRoleDoc.data()?.role !== "admin") {
+    throw new HttpsError("permission-denied", "Faqat administrator xodim qo'sha oladi");
+  }
+
+  const { email, password, role, name, branches } = request.data || {};
+  if (typeof email !== "string" || !email.includes("@")) {
+    throw new HttpsError("invalid-argument", "Email noto'g'ri formatda");
+  }
+  if (typeof password !== "string" || password.length < 6) {
+    throw new HttpsError("invalid-argument", "Parol kamida 6 belgidan iborat bo'lishi kerak");
+  }
+  if (!["admin", "manager", "depecher"].includes(role)) {
+    throw new HttpsError("invalid-argument", "Rol noto'g'ri");
+  }
+
+  try {
+    const userRecord = await auth.createUser({
+      email,
+      password,
+      displayName: typeof name === "string" ? name : undefined,
+    });
+    await db.collection("adminRoles").doc(userRecord.uid).set({
+      email,
+      role,
+      name: typeof name === "string" ? name : "",
+      branches: Array.isArray(branches) ? branches : [],
+      createdAt: FieldValue.serverTimestamp(),
+      createdBy: callerUid,
+    });
+    return { uid: userRecord.uid };
+  } catch (error: any) {
+    logger.error("Xodim hisobini yaratishda xato:", error);
+    if (error?.code === "auth/email-already-exists") {
+      throw new HttpsError("already-exists", "Bu email allaqachon ro'yxatdan o'tgan");
+    }
+    throw new HttpsError("internal", "Hisob yaratishda xatolik yuz berdi");
+  }
+});
+
+// Rolni o'chirish (hisobni butunlay o'chirish emas — Firebase Auth
+// hisobi qoladi, lekin adminRoles hujjati o'chgach, keyingi safar
+// kirishga urinishda "rol topilmadi" deb rad etiladi). Shunchaki
+// Firestore hujjatini o'chirish yetarli bo'lgani uchun bu alohida
+// Cloud Function talab qilmaydi — dashboard to'g'ridan-to'g'ri
+// o'chira oladi (Firestore qoidalari faqat 'admin' rolga ruxsat beradi).

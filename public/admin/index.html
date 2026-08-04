@@ -330,6 +330,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
     orderBy,
     limit,
     getDocs,
+    getDoc,
     onSnapshot,
     setDoc,
     doc,
@@ -343,6 +344,10 @@ input:focus,select:focus,textarea:focus{outline:none;}
     onAuthStateChanged,
     signOut,
   } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+  import {
+    getFunctions,
+    httpsCallable,
+  } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-functions.js";
   import {
     getStorage,
     ref,
@@ -363,6 +368,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
   const db = getFirestore(fbApp);
   const auth = getAuth(fbApp);
   const storage = getStorage(fbApp);
+  const functions = getFunctions(fbApp);
 
   // Haydovchi rasmini Firebase Storage'ga yuklaydi va ochiq havolasini
   // qaytaradi. MUHIM: rasm hech qachon Firestore hujjatiga to'g'ridan-
@@ -392,11 +398,47 @@ input:focus,select:focus,textarea:focus{outline:none;}
   //
   // Tizimga kirmagan bo'lsa — faqat login ekrani ko'rsatiladi, asosiy
   // dashboard (id="app-root") yashirin turadi.
-  onAuthStateChanged(auth, (user) => {
+  onAuthStateChanged(auth, async (user) => {
     const appRoot = document.getElementById('app-root');
     const loginScreen = document.getElementById('login-screen');
     const wasHidden = appRoot && appRoot.style.display === 'none';
     if (user) {
+      // MUHIM: rolni Firestore'dan (adminRoles/{uid}) o'qiymiz va
+      // TASDIQLANGUNCHA dashboard ko'rsatilmaydi — aks holda ruxsatsiz
+      // bo'limlar bir lahza "yaltirab" ko'rinib qolishi mumkin edi.
+      // adminRoles hujjati yo'q (yoki roli noto'g'ri) bo'lsa — bu
+      // hisobga dashboard'ga kirish huquqi berilmagan deb hisoblanadi
+      // va darhol chiqariladi.
+      let roleData = null;
+      try {
+        const roleSnap = await getDoc(doc(db, 'adminRoles', user.uid));
+        roleData = roleSnap.exists() ? roleSnap.data() : null;
+      } catch (err) {
+        console.error("Rolni o'qishda xato:", err);
+      }
+
+      if (!roleData || !['admin', 'manager', 'depecher'].includes(roleData.role)) {
+        alert("Sizga dashboard'ga kirish huquqi berilmagan. Administratorga murojaat qiling.");
+        await signOut(auth);
+        return;
+      }
+
+      window.currentAdminRole = roleData.role;
+      window.currentAdminBranches = roleData.branches || [];
+      if (typeof window.applyRoleUIRestrictions === 'function') {
+        window.applyRoleUIRestrictions();
+      }
+
+      // Rol bilan URL yo'li mos kelmasa (masalan manager /admin'ga
+      // kirmoqchi bo'lsa), mos yo'lga qayta yo'naltiramiz — bu
+      // Firestore qoidalaridan tashqari qo'shimcha, ko'rinadigan himoya.
+      const ROLE_PATHS = { admin: '/admin', manager: '/manager', depecher: '/depecher' };
+      const expectedPrefix = ROLE_PATHS[roleData.role];
+      if (expectedPrefix && !window.location.pathname.startsWith(expectedPrefix)) {
+        window.location.href = expectedPrefix + '/';
+        return;
+      }
+
       if (appRoot) appRoot.style.display = '';
       if (loginScreen) loginScreen.style.display = 'none';
       const nameEl = document.getElementById('user-pill-name');
@@ -779,6 +821,35 @@ input:focus,select:focus,textarea:focus{outline:none;}
       console.error("Bonus sozlamalarini yozishda xato:", err);
     }
   };
+
+  // Xodimga dashboard kirish huquqi (email+parol, rol) berish —
+  // Cloud Function orqali, chunki Firebase Auth hisobini yaratish
+  // Admin SDK talab qiladi (client SDK bunga qodir emas). Faqat
+  // 'admin' rolidagi joriy foydalanuvchi chaqira oladi — buni
+  // funksiya o'zi ham qayta tekshiradi.
+  window.createStaffDashboardAccess = async function (payload) {
+    try {
+      const callable = httpsCallable(functions, "createStaffAccount");
+      const result = await callable(payload);
+      return { ok: true, uid: result.data.uid };
+    } catch (err) {
+      console.error("Xodim hisobini yaratishda xato:", err);
+      return { ok: false, error: err.message || "Xatolik yuz berdi" };
+    }
+  };
+
+  // Kirish huquqini bekor qilish — Firebase Auth hisobining o'zi
+  // qoladi, faqat adminRoles hujjati o'chiriladi, shundan keyin
+  // keyingi kirish urinishida "ruxsat yo'q" deb rad etiladi.
+  window.revokeStaffDashboardAccess = async function (uid) {
+    try {
+      await deleteDoc(doc(db, "adminRoles", uid));
+      return true;
+    } catch (err) {
+      console.error("Kirish huquqini bekor qilishda xato:", err);
+      return false;
+    }
+  };
 </script>
 </head>
 <body>
@@ -806,47 +877,47 @@ input:focus,select:focus,textarea:focus{outline:none;}
     <div class="dropdown">
       <button onclick="toggleDropdown()" id="more-btn">Ko'proq ▾</button>
       <div class="dropdown-menu hidden" id="dropdown-menu">
-        <div class="dropdown-item" onclick="navigate('drivers');toggleDropdown()">
+        <div class="dropdown-item" data-page="drivers" onclick="navigate('drivers');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
           Haydovchilar
         </div>
-        <div class="dropdown-item" onclick="navigate('services');toggleDropdown()">
+        <div class="dropdown-item" data-page="services" onclick="navigate('services');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>
           Qo’shimcha xizmatlar
         </div>
-        <div class="dropdown-item" onclick="navigate('workers');toggleDropdown()">
+        <div class="dropdown-item" data-page="workers" onclick="navigate('workers');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           Hodimlar
         </div>
-        <div class="dropdown-item" onclick="navigate('groups');toggleDropdown()">
+        <div class="dropdown-item" data-page="groups" onclick="navigate('groups');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
           Manzil guruhlari
         </div>
-        <div class="dropdown-item" onclick="navigate('addresses');toggleDropdown()">
+        <div class="dropdown-item" data-page="addresses" onclick="navigate('addresses');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/></svg>
           Manzillar
         </div>
-        <div class="dropdown-item" onclick="navigate('clients');toggleDropdown()">
+        <div class="dropdown-item" data-page="clients" onclick="navigate('clients');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
           Mijozlar
         </div>
-        <div class="dropdown-item" onclick="navigate('bonussettings');toggleDropdown()">
+        <div class="dropdown-item" data-page="bonussettings" onclick="navigate('bonussettings');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 18 3 22 9 12 22 2 9"/><line x1="2" y1="9" x2="22" y2="9"/><line x1="6" y1="3" x2="12" y2="22"/><line x1="18" y1="3" x2="12" y2="22"/></svg>
           Mijozlar uchun bonus
         </div>
-        <div class="dropdown-item" onclick="navigate('orderhistory');toggleDropdown()">
+        <div class="dropdown-item" data-page="orderhistory" onclick="navigate('orderhistory');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
           Buyurtma tarixi
         </div>
-        <div class="dropdown-item" onclick="navigate('calllog');toggleDropdown()">
+        <div class="dropdown-item" data-page="calllog" onclick="navigate('calllog');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2A19.79 19.79 0 0 1 11.61 19a19.5 19.5 0 0 1-6.49-5.69 19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 3.6 3.21h3a2 2 0 0 1 2 1.72c.12.96.36 1.9.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.91a16 16 0 0 0 6.16 6.16l.91-.91a2 2 0 0 1 2.11-.45c.91.34 1.85.57 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
           Qo’ng’iroqlar tarixi
         </div>
-        <div class="dropdown-item" onclick="navigate('sms');toggleDropdown()">
+        <div class="dropdown-item" data-page="sms" onclick="navigate('sms');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           SMS xizmati
         </div>
-        <div class="dropdown-item" onclick="navigate('settings');toggleDropdown()">
+        <div class="dropdown-item" data-page="settings" onclick="navigate('settings');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
           Sozlamalar
         </div>
@@ -1102,7 +1173,51 @@ let currentPage='orders';
 const TOPNAV_IDS=['orders','statistics','drivers','balance','clients'];
 const SIDEBAR_IDS=['orders','map','drivers','clients','balance','statistics','settings'];
 
+// Rol asosidagi kirish ruxsati — /admin, /manager, /depecher bo'limlari
+// uchun. `null` — cheklovsiz (hammasiga kira oladi). Bu ro'yxat
+// FAQAT interfeysni (tugmalar/menyu) boshqaradi — haqiqiy ma'lumot
+// himoyasi Firestore xavfsizlik qoidalarida amalga oshiriladi.
+const ROLE_ALLOWED_PAGES={
+  admin:null,
+  manager:['orders','notifications','balance','branches','drivers','tariffs','map','groups','addresses','clients','orderhistory','calllog','statistics','bonussettings','profile'],
+  depecher:['orders','notifications','map','profile'],
+};
+
+function isPageAllowedForRole(page){
+  const allowed=ROLE_ALLOWED_PAGES[window.currentAdminRole];
+  return !allowed||allowed.includes(page);
+}
+
+// Rolga ruxsat berilmagan tugma/menyu bandlarini yashiradi. Login
+// tasdiqlangach bir marta chaqiriladi (rol o'zgarmasdan, sahifa qayta
+// chizilishi bilan yo'qolib qolmasligi uchun CSS orqali emas, DOM'dan
+// to'g'ridan-to'g'ri olib tashlaymiz).
+function applyRoleUIRestrictions(){
+  const allowed=ROLE_ALLOWED_PAGES[window.currentAdminRole];
+  if(!allowed)return; // admin — cheklovsiz
+  document.querySelectorAll('[id^="nav-"]').forEach(btn=>{
+    const page=btn.id.replace('nav-','');
+    if(page&&!allowed.includes(page))btn.style.display='none';
+  });
+  let anyDropdownVisible=false;
+  document.querySelectorAll('.dropdown-item[data-page]').forEach(item=>{
+    const page=item.getAttribute('data-page');
+    if(page&&!allowed.includes(page)){item.style.display='none';}
+    else{anyDropdownVisible=true;}
+  });
+  const moreBtn=document.getElementById('more-btn');
+  if(moreBtn&&!anyDropdownVisible)moreBtn.style.display='none';
+}
+
 function navigate(page){
+  // Depecher/manager ruxsat berilmagan sahifaga to'g'ridan-to'g'ri
+  // (masalan eski xatcho'p yoki URL orqali emas — bu ilova URL
+  // marshrutlashdan foydalanmaydi, lekin boshqa joydan chaqirilgan
+  // navigate() chaqiruvlaridan himoya uchun) o'tishga urinsa,
+  // "Asosiy"ga qaytariladi.
+  if(!isPageAllowedForRole(page)){
+    page='orders';
+  }
   currentPage=page;
   window.currentPage=page; // module blokidagi onAuthStateChanged shu orqali o'qiydi
   // Update topnav
@@ -3529,6 +3644,8 @@ function showWorkerModal(id){
             <option value="inactive" ${w&&w.status==='inactive'?'selected':''}>Nofaol</option>
           </select>
         </div>
+
+        ${isEdit?renderWorkerAccessSection(w):''}
       </div>
       <div style="display:flex;gap:10px;margin-top:20px">
         <button class="btn btn-light" style="flex:1;justify-content:center" onclick="closeModal('worker-modal')">Bekor qilish</button>
@@ -3539,6 +3656,76 @@ function showWorkerModal(id){
   refreshWorkerBranchUI();
 
   document.addEventListener('click',workerBranchOutsideClickHandler);
+}
+
+// "Ishchilar" bo'limidagi bitta xodimga sevimligo.uz/admin,
+// /manager yoki /depecher'ga kirish huquqini (email+parol+rol)
+// berish/bekor qilish bo'limi. Bu \u2014 Firestore'dagi `workers` blobi
+// (shunchaki HR ro'yxati) dan MUSTAQIL, alohida `adminRoles/{uid}`
+// hujjatiga bog'langan \u2014 worker yozuvida faqat ko'rsatish uchun
+// accessUid/accessRole/accessEmail saqlanadi.
+const ACCESS_ROLE_LABELS={admin:'Administrator (hammasi)',manager:'Menejer',depecher:'Depecher'};
+
+function renderWorkerAccessSection(w){
+  if(w.accessUid){
+    return `<div class="form-field" style="background:#F0FDF4;border:1px solid rgba(22,163,74,0.2);border-radius:10px;padding:12px 14px">
+      <label class="form-label" style="margin-bottom:6px">Dashboard kirish huquqi</label>
+      <div style="font-size:13px;font-weight:600;margin-bottom:2px">${esc(w.accessEmail||'')}</div>
+      <div style="font-size:12px;color:rgba(0,0,0,0.5);margin-bottom:10px">${esc(ACCESS_ROLE_LABELS[w.accessRole]||w.accessRole)}</div>
+      <button type="button" class="btn btn-danger" style="font-size:12px;padding:7px 12px" onclick="revokeWorkerAccess('${w.id}')">${ic('trash',13)} Kirish huquqini bekor qilish</button>
+    </div>`;
+  }
+  return `<div class="form-field" style="background:#FAFAFA;border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:12px 14px">
+    <label class="form-label" style="margin-bottom:6px">Dashboard kirish huquqi (ixtiyoriy)</label>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <input class="form-input" id="wm-access-email" placeholder="Email (login uchun)">
+      <input class="form-input" id="wm-access-password" type="password" placeholder="Parol (kamida 6 belgi)">
+      <select class="form-input" id="wm-access-role">
+        <option value="manager">Menejer \u2014 filial bo'yicha, sozlamalarsiz</option>
+        <option value="depecher">Depecher \u2014 faqat buyurtma/xarita</option>
+        <option value="admin">Administrator \u2014 hammasi</option>
+      </select>
+      <button type="button" class="btn btn-coral" style="font-size:12px;padding:8px" onclick="grantWorkerAccess('${w.id}')">${ic('plus',13,'#fff')} Kirish huquqi yaratish</button>
+    </div>
+  </div>`;
+}
+
+async function grantWorkerAccess(workerId){
+  const email=document.getElementById('wm-access-email')?.value?.trim();
+  const password=document.getElementById('wm-access-password')?.value||'';
+  const role=document.getElementById('wm-access-role')?.value;
+  const w=dbGet('workers').find(x=>x.id===workerId);
+  if(!w)return;
+  if(!email||!email.includes('@')){alert('Email to\u2019g\u2019ri kiritilmagan');return;}
+  if(password.length<6){alert('Parol kamida 6 belgidan iborat bo\u2019lishi kerak');return;}
+
+  const btn=event?.target?.closest('button');
+  if(btn){btn.disabled=true;btn.textContent='Yaratilmoqda...';}
+
+  const result=await window.createStaffDashboardAccess({email,password,role,name:w.name,branches:w.branches||[]});
+  if(!result.ok){
+    alert('Xato: '+result.error);
+    if(btn){btn.disabled=false;btn.textContent='Kirish huquqi yaratish';}
+    return;
+  }
+  dbUpdate('workers',workerId,{accessUid:result.uid,accessEmail:email,accessRole:role});
+  showWorkerModal(workerId);
+}
+
+function revokeWorkerAccess(workerId){
+  const w=dbGet('workers').find(x=>x.id===workerId);
+  if(!w||!w.accessUid)return;
+  showConfirmModal(
+    'Kirish huquqini bekor qilish',
+    `${w.accessEmail} dashboard'ga endi kira olmaydi. Bu amalni qaytarib bo\u2019lmaydi.`,
+    async()=>{
+      await window.revokeStaffDashboardAccess(w.accessUid);
+      dbUpdate('workers',workerId,{accessUid:null,accessEmail:null,accessRole:null});
+      showWorkerModal(workerId);
+    },
+    'Ha, bekor qilish',
+    true
+  );
 }
 
 function workerBranchOutsideClickHandler(e){
