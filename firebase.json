@@ -5,6 +5,12 @@
       "firebase.json",
       "**/.*",
       "**/node_modules/**"
+    ],
+    "rewrites": [
+      { "source": "/manager", "destination": "/admin/index.html" },
+      { "source": "/manager/**", "destination": "/admin/index.html" },
+      { "source": "/depecher", "destination": "/admin/index.html" },
+      { "source": "/depecher/**", "destination": "/admin/index.html" }
     ]
   },
   "functions": [
