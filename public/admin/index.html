@@ -2163,7 +2163,11 @@ function submitOrder(){
   const client=document.getElementById('f-client')?.value?.trim()||'Noma\u2019lum mijoz';
   const phone=document.getElementById('f-phone')?.value?.trim();
   const from=document.getElementById('f-from')?.value;
-  const to=document.getElementById('f-to')?.value?.trim()||'Belgilanmagan';
+  // MUHIM: bo'sh qoldirilsa '' (bo'sh satr) qolishi kerak, "Belgilanmagan"
+  // kabi matn EMAS — aks holda mobil ilova buni haqiqiy B manzil deb
+  // hisoblab, koordinata topilmagani uchun haydovchi joylashuvi yaqinida
+  // tasodifiy B nuqta o'ylab topadi va uni xaritada ko'rsatadi.
+  const to=document.getElementById('f-to')?.value?.trim()||'';
   if(!phone||!from){alert("Telefon va qayerdan majburiy!");return;}
   const tariffs=dbGet('tariffs');
   const sel=document.getElementById('f-tariff')?.value;

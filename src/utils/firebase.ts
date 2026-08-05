@@ -370,7 +370,13 @@ export function firestoreOrderToOrder(
   const dropoffLocation =
     fo.dropoffLat != null && fo.dropoffLng != null
       ? { latitude: fo.dropoffLat, longitude: fo.dropoffLng }
-      : randomNearbyPoint(driverLocation);
+      // B manzil haqiqatan berilmagan bo'lsa (toAddress bo'sh), tasodifiy
+      // nuqta o'ylab topilmasin — aks holda xaritada soxta B manzil chiqadi.
+      // Faqat toAddress mavjud-u koordinata yetishmayotgan eski/noto'g'ri
+      // ma'lumotlar uchun zaxira sifatida tasodifiy nuqta ishlatiladi.
+      : fo.toAddress
+      ? randomNearbyPoint(driverLocation)
+      : pickupLocation;
 
   return {
     id: fo.id,
