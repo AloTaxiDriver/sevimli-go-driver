@@ -5805,6 +5805,17 @@ function renderSettings(){
       </div>
 
       <div class="card" style="padding:20px">
+        <div style="font-weight:700;font-size:15px;margin-bottom:4px">Telefoniya (OnlinePBX)</div>
+        <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:14px">Kiruvchi qo’ng’iroqlar dashboard’da real vaqtda (ovozli jarang bilan) ko’rsatilishi uchun. Qiymatlarni <b>panel.onlinepbx.ru</b> → Сервисы → API bo’limidan oling.</div>
+        <div style="display:flex;flex-direction:column;gap:11px">
+          <div class="form-field"><label class="form-label">PBX domeni</label><input class="form-input" id="set-pbx-domain" placeholder="pbx25995.onpbx.ru" value="${esc(s.pbxDomain||'')}"></div>
+          <div class="form-field"><label class="form-label">API kalit</label><input class="form-input" id="set-pbx-apikey" placeholder="API kalit" value="${esc(s.pbxApiKey||'')}"></div>
+          <div class="form-field"><label class="form-label">Ichki raqam (extension)</label><input class="form-input" id="set-pbx-extension" placeholder="100" value="${esc(s.pbxExtension||'')}"></div>
+        </div>
+        <button class="btn btn-light" style="justify-content:center;padding:9px;margin-top:12px;width:100%" onclick="savePbxSettings()">${ic('check',13,'#555')} PBX ulanishini saqlash</button>
+      </div>
+
+      <div class="card" style="padding:20px">
         <div style="font-weight:700;font-size:15px;margin-bottom:14px;padding-bottom:12px;border-bottom:1px solid rgba(0,0,0,0.06)">Parol</div>
         <div style="display:flex;flex-direction:column;gap:11px">
           <div class="form-field"><label class="form-label">Yangi parol</label><input class="form-input" type="password" placeholder="\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022"></div>
@@ -6011,6 +6022,16 @@ function saveSettings(){
   s.phone=document.getElementById('set-phone')?.value||s.phone;
   s.address=document.getElementById('set-address')?.value||s.address;
   dbSet('settings',s);alert('Saqlandi!');
+}
+
+function savePbxSettings(){
+  const s=dbGet('settings');
+  s.pbxDomain=(document.getElementById('set-pbx-domain')?.value||'').trim();
+  s.pbxApiKey=(document.getElementById('set-pbx-apikey')?.value||'').trim();
+  s.pbxExtension=(document.getElementById('set-pbx-extension')?.value||'').trim();
+  dbSet('settings',s);
+  alert('PBX ulanishi saqlandi!');
+  startPbxCallListener();
 }
 
 async function loadRadiusSettings(){
@@ -6746,6 +6767,15 @@ function simulateIncomingCall(){
 }
 
 function answerCall(){
+  if(pbxActiveChannel){
+    // Haqiqiy PBX qo'ng'iroq: brauzerda ovoz oqimi hali yo'q (WebRTC
+    // ulanishi kutilmoqda), shuning uchun bu tugma faqat jarangni
+    // to'xtatadi — qo'ng'iroqning o'zi haqiqiy qurilmada (mobil ilova/
+    // stol telefoni) javob beriladi. Holat channel_answer hodisasi
+    // kelganda avtomatik yangilanadi.
+    stopPbxRingTone();
+    return;
+  }
   callState='active';
   callHide('incoming-call-badge');
   callHide('btn-answer');
@@ -6762,6 +6792,13 @@ function answerCall(){
 }
 
 function rejectCall(){
+  if(pbxActiveChannel){
+    // Haqiqiy qo'ng'iroqni PBX orqali chindan ham bekor qilamiz —
+    // qolgan holatni tozalash channel_destroy hodisasi orqali amalga oshadi.
+    pbxHangup();
+    stopPbxRingTone();
+    return;
+  }
   callState='idle';
   callHide('incoming-call-badge');
   callHide('btn-answer');
@@ -6771,6 +6808,10 @@ function rejectCall(){
 }
 
 function endCall(){
+  if(pbxActiveChannel){
+    pbxHangup();
+    return;
+  }
   callState='idle';
   clearInterval(callInterval);
   callHide('call-duration-badge');
@@ -6815,6 +6856,138 @@ function toggleRecord(){
 function callFmtTime(s){
   const m=Math.floor(s/60),ss=s%60;
   return String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0');
+}
+
+// ============================================================
+// PBX REAL-VAQT QO'NG'IROQ INTEGRATSIYASI (OnlinePBX WebSocket API 3.0.0)
+// Faqat hodisalarni (qo'ng'iroq keldi/javob berildi/tugadi) real vaqtda
+// oladi — ovoz oqimi WebRTC orqali emas (hali OnlinePBX bilan
+// aniqlashtirilmoqda), shuning uchun dashboard qo'ng'iroqni ovozli
+// jarang bilan ko'rsatadi, lekin javob berish haqiqiy qurilmada
+// (mobil ilova/stol telefoni) amalga oshadi.
+// ============================================================
+let pbxWs=null;
+let pbxReconnectTimer=null;
+let pbxRingAudioCtx=null;
+let pbxRingInterval=null;
+let pbxActiveChannel=null; // {uuid, call_uuid}
+
+function startPbxCallListener(){
+  const s=dbGet('settings');
+  if(!s.pbxDomain||!s.pbxApiKey)return;
+  connectPbxWs(s.pbxDomain,s.pbxApiKey);
+}
+
+function connectPbxWs(domain,apiKey){
+  try{
+    if(pbxWs){try{pbxWs.onclose=null;pbxWs.close();}catch{}}
+    pbxWs=new WebSocket('wss://'+domain+':3342/?key='+encodeURIComponent(apiKey));
+    pbxWs.onopen=function(){
+      pbxWs.send(JSON.stringify({command:'subscribe',reqId:'sub'+Date.now(),data:{eventGroups:['calls']}}));
+    };
+    pbxWs.onmessage=function(ev){
+      let msg;try{msg=JSON.parse(ev.data);}catch(e){return;}
+      handlePbxEvent(msg);
+    };
+    pbxWs.onclose=function(){
+      pbxWs=null;
+      clearTimeout(pbxReconnectTimer);
+      pbxReconnectTimer=setTimeout(function(){
+        const s=dbGet('settings');
+        if(s.pbxDomain&&s.pbxApiKey)connectPbxWs(s.pbxDomain,s.pbxApiKey);
+      },5000);
+    };
+    pbxWs.onerror=function(){};
+  }catch(e){}
+}
+
+function handlePbxEvent(msg){
+  const type=msg.event;
+  const data=msg.data||{};
+  const s=dbGet('settings');
+  const myExt=(s.pbxExtension||'').trim();
+
+  if(type==='channel_create'){
+    if(data.direction!=='inbound')return;
+    if(myExt&&data.destination_number&&data.destination_number!==myExt)return;
+    if(callState!=='idle')return; // band bo'lsa ustiga chiqarmaymiz
+    pbxActiveChannel={uuid:data.uuid,call_uuid:data.call_uuid};
+    callState='incoming';
+    const num=data.caller_number||"Noma'lum";
+    const el=callEl('caller-number');if(el)el.textContent=num+(data.caller_name?' ('+data.caller_name+')':'');
+    const ph=document.getElementById('f-phone');if(ph)ph.value=num;
+    callShow('incoming-call-badge');
+    callShow('btn-answer');
+    callShow('btn-reject');
+    startPbxRingTone();
+    addCallLog('in',num,'Kiruvchi qo’ng’iroq (PBX)');
+  }
+  else if(type==='channel_answer'){
+    if(!pbxActiveChannel||data.uuid!==pbxActiveChannel.uuid)return;
+    stopPbxRingTone();
+    callState='active';
+    callHide('incoming-call-badge');
+    callHide('btn-answer');
+    callHide('btn-reject');
+    callShow('call-duration-badge');
+    callShow('btn-end');
+    callSeconds=0;
+    clearInterval(callInterval);
+    callInterval=setInterval(function(){
+      callSeconds++;
+      const e=callEl('call-timer');if(e)e.textContent=callFmtTime(callSeconds);
+    },1000);
+  }
+  else if(type==='channel_destroy'||type==='call_end'){
+    if(!pbxActiveChannel)return;
+    if(type==='channel_destroy'&&data.uuid!==pbxActiveChannel.uuid)return;
+    if(type==='call_end'&&data.uuid!==pbxActiveChannel.call_uuid)return;
+    stopPbxRingTone();
+    const wasIncoming=callState==='incoming';
+    const wasActive=callState==='active';
+    callState='idle';
+    clearInterval(callInterval);
+    callHide('incoming-call-badge');callHide('btn-answer');callHide('btn-reject');
+    callHide('call-duration-badge');callHide('btn-end');
+    const num=callEl('caller-number')?.textContent||'';
+    if(wasIncoming)addCallLog('missed',num,'Ko’tarilmadi');
+    else if(wasActive)addCallLog('end',num,'Suhbat: '+callFmtTime(callSeconds));
+    pbxActiveChannel=null;
+    callSeconds=0;
+  }
+}
+
+function pbxHangup(){
+  if(pbxActiveChannel&&pbxWs&&pbxWs.readyState===1){
+    pbxWs.send(JSON.stringify({command:'hangup_channel',reqId:'hup'+Date.now(),data:{uuid:pbxActiveChannel.uuid}}));
+  }
+}
+
+function startPbxRingTone(){
+  stopPbxRingTone();
+  try{
+    pbxRingAudioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    const ring=function(){
+      if(!pbxRingAudioCtx)return;
+      const ctx=pbxRingAudioCtx;
+      [0,0.35].forEach(function(delay){
+        const osc=ctx.createOscillator();const gain=ctx.createGain();
+        osc.frequency.value=440;osc.type='sine';
+        gain.gain.setValueAtTime(0,ctx.currentTime+delay);
+        gain.gain.linearRampToValueAtTime(0.25,ctx.currentTime+delay+0.02);
+        gain.gain.linearRampToValueAtTime(0,ctx.currentTime+delay+0.3);
+        osc.connect(gain);gain.connect(ctx.destination);
+        osc.start(ctx.currentTime+delay);osc.stop(ctx.currentTime+delay+0.3);
+      });
+    };
+    ring();
+    pbxRingInterval=setInterval(ring,1500);
+  }catch(e){}
+}
+
+function stopPbxRingTone(){
+  clearInterval(pbxRingInterval);pbxRingInterval=null;
+  if(pbxRingAudioCtx){try{pbxRingAudioCtx.close();}catch(e){}pbxRingAudioCtx=null;}
 }
 
 
@@ -7145,6 +7318,7 @@ function startDashboardDataSync(){
 startDashboardDataSync();
 startGlobalOrdersListener();
 startGlobalDriversListener();
+startPbxCallListener();
 </script>
 </body>
 </html>
