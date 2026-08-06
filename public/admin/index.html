@@ -1764,66 +1764,71 @@ function afterRenderOrders(){
   }
 }
 
+async function runPhoneAutoFill(phone){
+  phone=(phone||'').trim();
+  if(phone.length<9)return;
+  if(!window.fetchLastOrderByPhone){console.warn('fetchLastOrderByPhone hali tayyor emas');return;}
+  try{
+    const last=await window.fetchLastOrderByPhone(phone);
+    if(!last)return;
+
+    // 1. Mijoz ismi
+    const clientInp=document.getElementById('f-client');
+    if(clientInp&&last.customerName&&last.customerName!=="Noma'lum mijoz"){
+      clientInp.value=last.customerName;
+    }
+
+    // 2. Filial
+    if(last.branchId){
+      const branchSel=document.getElementById('f-branch');
+      if(branchSel)branchSel.value=last.branchId;
+    }
+
+    // 3. Ta'rif — select'ning value'si tarif ID'si, nomi emas, shuning
+    // uchun nomdan ID'ni topib qo'yamiz (aks holda hech qachon mos kelmaydi).
+    if(last.tariffName){
+      const tariffSel=document.getElementById('f-tariff');
+      if(tariffSel){
+        const tariffs=dbGet('tariffs');
+        const match=tariffs.find(t=>t.name===last.tariffName);
+        if(match)tariffSel.value=match.id;
+        calcTotal();
+      }
+    }
+
+    // 4. Qayerdan - manzil guruhi va manzil
+    if(last.fromAddress){
+      const addresses=dbGet('addresses');
+      const fromAddr=addresses.find(a=>a.name===last.fromAddress);
+      if(fromAddr&&fromAddr.group){
+        const groupSel=document.getElementById('f-group');
+        if(groupSel){groupSel.value=fromAddr.group;filterAddrs();}
+      }
+      const fromSel=document.getElementById('f-from');
+      if(fromSel)fromSel.value=last.fromAddress;
+    }
+
+    // 5. Qayerga - manzil guruhi va manzil
+    if(last.toAddress){
+      const addresses=dbGet('addresses');
+      const toAddr=addresses.find(a=>a.name===last.toAddress);
+      if(toAddr&&toAddr.group){
+        const groupToSel=document.getElementById('f-group-to');
+        if(groupToSel){groupToSel.value=toAddr.group;filterAddrsTo();}
+      }
+      const toSel=document.getElementById('f-to');
+      if(toSel)toSel.value=last.toAddress;
+    }
+
+    calcTotal();
+  }catch(e){console.warn('Oxirgi buyurtma xato:',e);}
+}
+
 function attachPhoneAutoFill(){
   const inp=document.getElementById('f-phone');
   if(!inp||inp._afl)return;
   inp._afl=true;
-  inp.addEventListener('blur',async function(){
-    const phone=this.value.trim();
-    if(phone.length<9)return;
-    if(!window.fetchLastOrderByPhone){console.warn('fetchLastOrderByPhone hali tayyor emas');return;}
-    try{
-      const last=await window.fetchLastOrderByPhone(phone);
-      if(!last)return;
-
-      // 1. Mijoz ismi
-      const clientInp=document.getElementById('f-client');
-      if(clientInp&&last.customerName&&last.customerName!=="Noma'lum mijoz"){
-        clientInp.value=last.customerName;
-      }
-
-      // 2. Filial
-      if(last.branchId){
-        const branchSel=document.getElementById('f-branch');
-        if(branchSel)branchSel.value=last.branchId;
-      }
-
-      // 3. Ta'rif
-      if(last.tariffName){
-        const tariffSel=document.getElementById('f-tariff');
-        if(tariffSel){
-          tariffSel.value=last.tariffName;
-          calcTotal();
-        }
-      }
-
-      // 4. Qayerdan - manzil guruhi va manzil
-      if(last.fromAddress){
-        const addresses=dbGet('addresses');
-        const fromAddr=addresses.find(a=>a.name===last.fromAddress);
-        if(fromAddr&&fromAddr.group){
-          const groupSel=document.getElementById('f-group');
-          if(groupSel){groupSel.value=fromAddr.group;filterAddrs();}
-        }
-        const fromSel=document.getElementById('f-from');
-        if(fromSel)fromSel.value=last.fromAddress;
-      }
-
-      // 5. Qayerga - manzil guruhi va manzil
-      if(last.toAddress){
-        const addresses=dbGet('addresses');
-        const toAddr=addresses.find(a=>a.name===last.toAddress);
-        if(toAddr&&toAddr.group){
-          const groupToSel=document.getElementById('f-group-to');
-          if(groupToSel){groupToSel.value=toAddr.group;filterAddrsTo();}
-        }
-        const toSel=document.getElementById('f-to');
-        if(toSel)toSel.value=last.toAddress;
-      }
-
-      calcTotal();
-    }catch(e){console.warn('Oxirgi buyurtma xato:',e);}
-  });
+  inp.addEventListener('blur',function(){runPhoneAutoFill(this.value);});
 }
 function renderMiniStats(){
   const orders=firestoreOrdersList;
@@ -6944,6 +6949,7 @@ function handlePbxEvent(msg){
     const num=pbxFormatNumber(data.caller_number)||"Noma'lum";
     const el=callEl('caller-number');if(el)el.textContent=num+(data.caller_name?' ('+data.caller_name+')':'');
     const ph=document.getElementById('f-phone');if(ph)ph.value=num;
+    runPhoneAutoFill(num); // blur hodisasi kutilmaydi — darhol chaqiramiz
     callShow('incoming-call-badge');
     callShow('btn-answer');
     callShow('btn-reject');
