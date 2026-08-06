@@ -78,6 +78,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const lastSeenNotifAtRef = useRef(0);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [tripStage, setTripStage] = useState<TripStage>(null);
+  // Ikkinchi manzilli (multi-stop) buyurtmalarda qaysi "oyoq"da
+  // ekanligini bildiradi — 1: A dan 1-manzilgacha, 2: 1-manzildan
+  // 2-manzilgacha. Ikkinchi manzili yo'q buyurtmalarda hech qachon
+  // 2ga o'zgarmaydi.
+  const [activeLeg, setActiveLeg] = useState<1 | 2>(1);
   const [currentRegion, setCurrentRegion] = useState<Region | null>(null);
   const [poolVisible, setPoolVisible] = useState(false);
   const [poolOrders, setPoolOrders] = useState<FirestoreOrder[]>([]);
@@ -296,12 +301,23 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           perKm: typeof data.perKm === 'number' ? data.perKm : 0,
           minDistance: typeof data.minDistance === 'number' ? data.minDistance : 0,
           minDistancePrice: typeof data.minDistancePrice === 'number' ? data.minDistancePrice : (typeof data.price === 'number' ? data.price : 0),
+          tieredPricing: !!data.tieredPricing,
+          priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
           note: data.note || '',
           source: data.source || 'dashboard',
           pickupLat: data.pickupLat ?? null,
           pickupLng: data.pickupLng ?? null,
           dropoffLat: data.dropoffLat ?? null,
           dropoffLng: data.dropoffLng ?? null,
+          entranceNumber: data.entranceNumber || undefined,
+          serviceType: data.serviceType === 'delivery' ? 'delivery' : data.serviceType === 'taxi' ? 'taxi' : undefined,
+          toAddress2: data.toAddress2 || undefined,
+          dropoff2Lat: typeof data.dropoff2Lat === 'number' ? data.dropoff2Lat : null,
+          dropoff2Lng: typeof data.dropoff2Lng === 'number' ? data.dropoff2Lng : null,
+          distanceKm2: typeof data.distanceKm2 === 'number' ? data.distanceKm2 : undefined,
+          recipientName: data.recipientName || undefined,
+          recipientPhone: data.recipientPhone || undefined,
+          packageDescription: data.packageDescription || undefined,
         };
 
         // Zaxira: agar native tomon negadir yozmagan bo'lsa, shu yerda ham urinamiz
@@ -312,6 +328,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         activeOrderSourceId.current = orderId;
         startWatchingOrderCancellation(orderId);
         setActiveOrder(firestoreOrderToOrder(fo, location));
+        setActiveLeg(1);
         setIsOnline(true);
         setTripStage('ready_to_start');
         startPan.setValue(0);
@@ -371,8 +388,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const ROUTE_REFRESH_MS = 15000;
 
   useEffect(() => {
+    const currentDropoff = activeLeg === 2 && activeOrder?.dropoff2Location
+      ? activeOrder.dropoff2Location
+      : activeOrder?.dropoffLocation;
     const target = activeOrder && activeOrder.toAddress !== '' && (tripStage === 'to_pickup' || tripStage === 'in_progress')
-      ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : activeOrder.dropoffLocation)
+      ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : currentDropoff)
       : null;
 
     if (!target || !location) {
@@ -394,7 +414,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       }
     });
     return () => { cancelled = true; };
-  }, [tripStage, activeOrder?.id, location]);
+  }, [tripStage, activeOrder?.id, activeLeg, location]);
 
   const isNavigatingRef = useRef(false);
   // Boshlang'ich "fitToCoordinates" dan keyin, necha marta location
@@ -407,7 +427,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     if (!activeOrder || !location || !mapRef.current) { isNavigatingRef.current = false; navUpdateCount.current = 0; return; }
     if (tripStage !== 'to_pickup' && tripStage !== 'in_progress') { isNavigatingRef.current = false; navUpdateCount.current = 0; return; }
 
-    const target = tripStage === 'to_pickup' ? activeOrder.pickupLocation : activeOrder.dropoffLocation;
+    const currentDropoffForNav = activeLeg === 2 && activeOrder.dropoff2Location ? activeOrder.dropoff2Location : activeOrder.dropoffLocation;
+    const target = tripStage === 'to_pickup' ? activeOrder.pickupLocation : currentDropoffForNav;
     if (!isNavigatingRef.current) {
       // MUHIM: avval butun yo'lni ko'rsatish uchun uzoqdan
       // zumlanardi (fitToCoordinates) — bu manzil uzoq bo'lsa xarita
@@ -434,7 +455,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         mapRef.current.animateCamera({ center: location, zoom: 17 }, { duration: 600 });
       }
     }
-  }, [tripStage, activeOrder?.id, location, heading]);
+  }, [tripStage, activeOrder?.id, activeLeg, location, heading]);
 
   const panResponder = useRef(
     PanResponder.create({
@@ -486,6 +507,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       stopWatchingOrderCancellation();
       setTripStage(null);
       setActiveOrder(null);
+      setActiveLeg(1);
       activeOrderSourceId.current = null;
       processedAcceptId.current = null;
       pan.setValue(0);
@@ -496,6 +518,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
 
   function goOffline() {
     setIsOnline(false); setActiveOrder(null); setTripStage(null);
+    setActiveLeg(1);
     setSkippedOrderIds(new Set());
     activeOrderSourceId.current = null;
     processedAcceptId.current = null;
@@ -665,7 +688,17 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     tripDistanceRef.current = 0;
     lastTripPointRef.current = location;
     setLiveTripDistanceKm(0);
+    setActiveLeg(1);
     setTripStage('in_progress');
+  }
+  // Ikkinchi manzilli buyurtmada 1-manzilga yetib kelgach chaqiriladi —
+  // buyurtma holati hali "in_progress"ligicha qoladi (mijoz hali
+  // mashinada, xolos yo'nalish 2-manzilga almashadi), shuning uchun
+  // Firestore holatini o'zgartirmaymiz, faqat mahalliy "oyoq"ni almashtiramiz.
+  function handleReachedStop1() {
+    setActiveLeg(2);
+    lastRouteFetchAt.current = 0;
+    setRouteCoords([]);
   }
   // "Safarni yakunlash" bosilganda darhol buyurtmani tugatmaymiz —
   // avval xulosa ko'rsatiladi. "Davom etish" bossa, GPS kuzatuvi
@@ -689,6 +722,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     stopWatchingOrderCancellation();
     setShowTripSummary(false);
     setTripStage(null); setActiveOrder(null);
+    setActiveLeg(1);
     activeOrderSourceId.current = null;
     processedAcceptId.current = null;
     setDriverBusyStatus(driverId, false).catch(() => {});
@@ -705,6 +739,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setCancelModalVisible(false);
     setTripStage(null);
     setActiveOrder(null);
+    setActiveLeg(1);
     activeOrderSourceId.current = null;
     processedAcceptId.current = null;
     startPan.setValue(0);
@@ -724,6 +759,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     processedAcceptId.current = order.id;
     setPoolVisible(false);
     setActiveOrder(order);
+    setActiveLeg(1);
     setTripStage('ready_to_start');
     startPan.setValue(0);
     setDriverBusyStatus(driverId, true).catch(() => {});
@@ -745,8 +781,12 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     );
   }
 
+  const hasSecondStop = !!(activeOrder?.toAddress2 && activeOrder?.dropoff2Location);
+  const currentDropoffLocation = activeLeg === 2 && activeOrder?.dropoff2Location
+    ? activeOrder.dropoff2Location
+    : activeOrder?.dropoffLocation;
   const routeTarget = activeOrder && activeOrder.toAddress !== '' && (tripStage === 'to_pickup' || tripStage === 'in_progress')
-    ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : activeOrder.dropoffLocation)
+    ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : currentDropoffLocation)
     : null;
   const fallbackDistanceKm = routeTarget ? getDistanceKm(location, routeTarget) : 0;
   const liveDistanceKm = routeDistanceKm > 0 ? routeDistanceKm : fallbackDistanceKm;
@@ -790,7 +830,9 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           <>
             <Polyline coordinates={routeCoords.length > 1 ? routeCoords : [location, routeTarget]}
               strokeColor={COLORS.primary} strokeWidth={5} />
-            <Marker coordinate={routeTarget} pinColor={tripStage === 'to_pickup' ? COLORS.success : COLORS.danger} />
+            <Marker coordinate={routeTarget} pinColor={
+              tripStage === 'to_pickup' ? COLORS.success : (hasSecondStop && activeLeg === 1 ? COLORS.warning : COLORS.danger)
+            } />
           </>
         )}
         {tripStage === 'waiting' && activeOrder && (
@@ -919,8 +961,20 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
                 <Text style={styles.readyRouteAddress} numberOfLines={2}>
                   {activeOrder.toAddress || "Manzil ko'rsatilmagan"}
                 </Text>
+                {!!activeOrder.toAddress2 && (
+                  <>
+                    <View style={styles.readyRouteGap} />
+                    <Text style={styles.readyRouteAddress} numberOfLines={2}>
+                      {activeOrder.toAddress2}
+                    </Text>
+                  </>
+                )}
               </View>
             </View>
+
+            {!!activeOrder.packageDescription && (
+              <Text style={styles.readyPackageText} numberOfLines={2}>📦 {activeOrder.packageDescription}</Text>
+            )}
 
             <View style={styles.readyDivider} />
 
@@ -972,8 +1026,23 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       )}
       {tripStage === 'in_progress' && activeOrder && (
         <View style={[styles.orderOverlay, { bottom: bottomSafeOffset }]}>
-          <TripCard order={activeOrder} stage="in_progress" distanceKm={liveDistanceKm}
-            durationMin={liveDurationMin} price={livePrice} onPrimaryAction={openTripSummary} />
+          <TripCard
+            order={
+              hasSecondStop && activeLeg === 2
+                // 2-oyoqda: "qayerdan" endi 1-manzil bo'ladi, "qayerga"
+                // esa haqiqiy 2-manzil — shu tariqa karta ikkinchi
+                // yo'nalishni ko'rsatadi.
+                ? { ...activeOrder, fromAddress: activeOrder.toAddress || activeOrder.fromAddress, toAddress: activeOrder.toAddress2 || '' }
+                : activeOrder
+            }
+            stage="in_progress" distanceKm={liveDistanceKm}
+            durationMin={liveDurationMin} price={livePrice}
+            stageNote={hasSecondStop ? (activeLeg === 1 ? '1/2-manzil' : '2/2-manzil') : undefined}
+            primaryLabel={hasSecondStop && activeLeg === 1 ? '1-manzilga yetdim, davom etamiz' : undefined}
+            recipientName={activeOrder.serviceType === 'delivery' && (activeLeg === 2 || !hasSecondStop) ? activeOrder.recipientName : undefined}
+            recipientPhone={activeOrder.serviceType === 'delivery' && (activeLeg === 2 || !hasSecondStop) ? activeOrder.recipientPhone : undefined}
+            packageDescription={activeOrder.serviceType === 'delivery' ? activeOrder.packageDescription : undefined}
+            onPrimaryAction={hasSecondStop && activeLeg === 1 ? handleReachedStop1 : openTripSummary} />
         </View>
       )}
 
@@ -1232,6 +1301,7 @@ const styles = StyleSheet.create({
   readyRouteTexts: { flex: 1 },
   readyRouteAddress: { fontSize: 15, fontWeight: '600', color: COLORS.dark },
   readyRouteGap: { height: 16 },
+  readyPackageText: { fontSize: 13, color: COLORS.dark, fontWeight: '600', marginTop: 12 },
   readyCustomerRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   readyCustomerAvatar: { width: 40, height: 40, borderRadius: 20, backgroundColor: COLORS.primary, alignItems: 'center', justifyContent: 'center' },
   readyCustomerInfo: { flex: 1 },

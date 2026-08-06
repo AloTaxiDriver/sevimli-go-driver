@@ -134,6 +134,17 @@ export type FirestoreOrder = {
   finalPrice?: number;
   bonusUsed?: number;
   extrasTotal?: number;
+  // Mijoz ilovasidan (E:\sevimli-go-customer) kelgan qo'shimcha
+  // maydonlar — dashboard'dan yaratilgan buyurtmalarda bo'lmaydi.
+  entranceNumber?: string;
+  serviceType?: 'taxi' | 'delivery';
+  toAddress2?: string;
+  dropoff2Lat?: number | null;
+  dropoff2Lng?: number | null;
+  distanceKm2?: number;
+  recipientName?: string;
+  recipientPhone?: string;
+  packageDescription?: string;
 };
 
 export function mapDocToOrder(
@@ -177,6 +188,15 @@ export function mapDocToOrder(
     finalPrice: typeof data.finalPrice === 'number' ? data.finalPrice : undefined,
     bonusUsed: typeof data.bonusUsed === 'number' ? data.bonusUsed : undefined,
     extrasTotal: typeof data.extrasTotal === 'number' ? data.extrasTotal : undefined,
+    entranceNumber: data.entranceNumber || undefined,
+    serviceType: data.serviceType === 'delivery' ? 'delivery' : data.serviceType === 'taxi' ? 'taxi' : undefined,
+    toAddress2: data.toAddress2 || undefined,
+    dropoff2Lat: typeof data.dropoff2Lat === 'number' ? data.dropoff2Lat : null,
+    dropoff2Lng: typeof data.dropoff2Lng === 'number' ? data.dropoff2Lng : null,
+    distanceKm2: typeof data.distanceKm2 === 'number' ? data.distanceKm2 : undefined,
+    recipientName: data.recipientName || undefined,
+    recipientPhone: data.recipientPhone || undefined,
+    packageDescription: data.packageDescription || undefined,
   };
 }
 
@@ -413,9 +433,32 @@ export function firestoreOrderToOrder(
       ? randomNearbyPoint(driverLocation)
       : pickupLocation;
 
+  // Ikkinchi manzil (mavjud bo'lsa) — faqat koordinatasi ham
+  // berilgan bo'lsa hisobga olinadi, aks holda xaritada soxta
+  // nuqta chizilmasin deb butunlay o'tkazib yuboriladi.
+  const dropoff2Location =
+    fo.toAddress2 && fo.dropoff2Lat != null && fo.dropoff2Lng != null
+      ? { latitude: fo.dropoff2Lat, longitude: fo.dropoff2Lng }
+      : undefined;
+
+  // Mijoz ilovasi olib ketish nuqtasidagi kirish (podъезд) raqamini
+  // yozgan bo'lsa — mavjud "fromAddress" maydoniga qo'shib
+  // ko'rsatamiz, shunda alohida UI o'zgarishisiz barcha kartalarda
+  // (OrderCard/WaitingCard/TripCard) avtomatik ko'rinadi.
+  const fromAddress = fo.entranceNumber
+    ? `${fo.fromAddress} (kirish ${fo.entranceNumber})`
+    : fo.fromAddress;
+
+  // Dostavka buyurtmalari sarlavhasida ajralib tursin — shu tariqa
+  // OrderCard/PoolOrderItem/readyCard kabi mavjud kartalarda alohida
+  // o'zgarishsiz "Dostavka" belgisi ko'rinadi.
+  const type = fo.serviceType === 'delivery'
+    ? `Dostavka${fo.tariffName ? ' — ' + fo.tariffName : ''}`
+    : fo.tariffName || "Yo'lovchi";
+
   return {
     id: fo.id,
-    type: fo.tariffName || "Yo'lovchi",
+    type,
     distanceKm: fo.distanceKm,
     durationMin: Math.max(3, Math.round(fo.distanceKm * 2.2)),
     // Mijoz bonus/qo'shimcha xizmat ishlatgan bo'lsa, haydovchi
@@ -426,7 +469,14 @@ export function firestoreOrderToOrder(
     minDistancePrice: fo.minDistancePrice || fo.price,
     tieredPricing: !!fo.tieredPricing,
     priceTiers: fo.priceTiers,
-    fromAddress: fo.fromAddress,
+    serviceType: fo.serviceType,
+    toAddress2: fo.toAddress2,
+    dropoff2Location,
+    distanceKm2: fo.distanceKm2,
+    recipientName: fo.recipientName,
+    recipientPhone: fo.recipientPhone,
+    packageDescription: fo.packageDescription,
+    fromAddress,
     toAddress: fo.toAddress,
     pickupCount: 1,
     dropoffCount: 1,

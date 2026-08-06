@@ -29,6 +29,16 @@ type Props = {
   // o'tirganidan keyin (in_progress) bekor qilish tugmasi
   // ko'rsatilmaydi, chunki safar allaqachon boshlangan bo'ladi.
   onCancel?: () => void;
+  // Asosiy tugma matnini standart ("Yetib keldim"/"Safarni yakunlash")
+  // o'rniga almashtiradi — ikkinchi manzilli buyurtmaning 1-oyog'ida
+  // ishlatiladi ("Safarni yakunlash" o'rniga "1-manzilga yetdim...").
+  primaryLabel?: string;
+  // Sarlavha yonida ko'rsatiladigan qisqa izoh, masalan "1/2-manzil".
+  stageNote?: string;
+  // Dostavka buyurtmalarida — qabul qiluvchi va yuk tavsifi.
+  recipientName?: string;
+  recipientPhone?: string;
+  packageDescription?: string;
 };
 
 // Karta to'liq ochiq holatda taxminan shuncha balandlikni egallaydi —
@@ -38,7 +48,10 @@ const FALLBACK_SHEET_HEIGHT = 420;
 // Yopiq holatda shuncha balandlik (tutqich + ozgina sarlavha) ko'rinib tursin
 const VISIBLE_WHEN_COLLAPSED = 56;
 
-export default function TripCard({ order, stage, distanceKm, durationMin, price, onPrimaryAction, onCancel }: Props) {
+export default function TripCard({
+  order, stage, distanceKm, durationMin, price, onPrimaryAction, onCancel,
+  primaryLabel, stageNote, recipientName, recipientPhone, packageDescription,
+}: Props) {
   const isToPickup = stage === 'to_pickup';
 
   // 0 = to'liq ochiq, collapsedOffset = deyarli yopiq (faqat tutqich + sarlavha)
@@ -125,6 +138,7 @@ export default function TripCard({ order, stage, distanceKm, durationMin, price,
         <View style={styles.stageRow}>
           <Text style={styles.stageLabel}>
             {isToPickup ? 'Manzilga ketayapsiz' : 'Safar davom etmoqda'}
+            {!!stageNote && `  •  ${stageNote}`}
           </Text>
           {isToPickup && !!onCancel && (
             <TouchableOpacity onPress={onCancel} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -169,6 +183,28 @@ export default function TripCard({ order, stage, distanceKm, durationMin, price,
           </View>
         )}
 
+        {(!!packageDescription || !!recipientName) && (
+          <View style={styles.deliveryBox}>
+            {!!packageDescription && (
+              <View style={styles.deliveryRow}>
+                <Ionicons name="cube" size={16} color={COLORS.textMuted} />
+                <Text style={styles.deliveryText} numberOfLines={2}>{packageDescription}</Text>
+              </View>
+            )}
+            {!!recipientName && (
+              <View style={styles.deliveryRow}>
+                <Ionicons name="person-circle" size={16} color={COLORS.textMuted} />
+                <Text style={styles.deliveryText} numberOfLines={1}>Qabul qiluvchi: {recipientName}</Text>
+                {!!recipientPhone && (
+                  <TouchableOpacity onPress={() => Linking.openURL(`tel:${recipientPhone}`)}>
+                    <Ionicons name="call" size={18} color={COLORS.success} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
+        )}
+
         <View style={styles.metaRow}>
           <View style={styles.metaItem}>
             <Ionicons name="navigate" size={18} color={COLORS.primary} />
@@ -183,7 +219,7 @@ export default function TripCard({ order, stage, distanceKm, durationMin, price,
 
         <TouchableOpacity style={styles.primaryBtn} onPress={onPrimaryAction}>
           <Text style={styles.primaryBtnText}>
-            {isToPickup ? 'Yetib keldim' : 'Safarni yakunlash'}
+            {primaryLabel ?? (isToPickup ? 'Yetib keldim' : 'Safarni yakunlash')}
           </Text>
         </TouchableOpacity>
       </GlassPanel>
@@ -288,6 +324,19 @@ const styles = StyleSheet.create({
   },
   priceLabel: { fontSize: 13, fontWeight: '700', color: COLORS.textMuted },
   priceValue: { fontSize: 22, fontWeight: '900', color: COLORS.primary },
+
+  deliveryBox: {
+    backgroundColor: '#F4F4F6',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 12,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: '#E8E8EC',
+  },
+  deliveryRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  deliveryText: { flex: 1, fontSize: 13, color: COLORS.dark, fontWeight: '600' },
 
   metaRow: {
     flexDirection: 'row',

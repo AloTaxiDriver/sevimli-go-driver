@@ -34,6 +34,9 @@ export default function OrderCard({ order, onAccept, onSkip }: Props) {
       <Text style={styles.subMeta}>
         {order.pickupCount} olish, {order.dropoffCount} topshirish
       </Text>
+      {!!order.packageDescription && (
+        <Text style={styles.packageText} numberOfLines={2}>📦 {order.packageDescription}</Text>
+      )}
 
       <View style={styles.cashRow}>
         <Text style={styles.cashLabel}>Naqd pul olish</Text>
@@ -117,6 +120,7 @@ const styles = StyleSheet.create({
   },
 
   subMeta: { fontSize: 14, color: COLORS.textMuted, marginTop: 10 },
+  packageText: { fontSize: 13, color: COLORS.dark, fontWeight: '600', marginTop: 6 },
 
   cashRow: {
     flexDirection: 'row',

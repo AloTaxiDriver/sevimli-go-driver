@@ -24,6 +24,20 @@ export type Order = {
   // bo'yicha hisoblanadi (MapScreen.tsx'dagi livePrice).
   tieredPricing?: boolean;
   priceTiers?: { km?: number; pricePerKm: number }[];
+  // "taxi" (standart) yoki "delivery" (Dostavka) — mijoz ilovasidan
+  // kelgan buyurtmalar uchun (E:\sevimli-go-customer dagi NewOrderInput
+  // bilan bir xil). Dashboard'dan yaratilgan buyurtmalarda yo'q.
+  serviceType?: 'taxi' | 'delivery';
+  // Ikkinchi manzil (bitta buyurtma ichida, xuddi shu haydovchi bilan
+  // davom etadi) — mavjud bo'lsa MapScreen'da ikkinchi "oyoq" sifatida
+  // ishlatiladi (birinchi manzilga yetgach, haydovchi shu manzilga davom etadi).
+  toAddress2?: string;
+  dropoff2Location?: { latitude: number; longitude: number };
+  distanceKm2?: number;
+  // Faqat serviceType === 'delivery' bo'lganda to'ldiriladi.
+  recipientName?: string;
+  recipientPhone?: string;
+  packageDescription?: string;
   fromAddress: string;
   // B nuqtasi (qayerga boriladi). Mock buyurtmalarda har doim
   // mavjud bo'lgani uchun ixtiyoriy emas, lekin Firestore'dan
