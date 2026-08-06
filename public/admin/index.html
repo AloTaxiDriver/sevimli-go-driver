@@ -2120,17 +2120,48 @@ function showAddSvc(){
   const f=document.getElementById('add-svc-form');
   if(f)f.style.display=f.style.display==='flex'?'none':'flex';
 }
+// Bosqichli (pog'onali) km-narxlash: har bir bosqich o'ziga tegishli
+// km-oralig'ida (oldingi bosqich chegarasidan shu bosqichning "km"
+// qiymatigacha) alohida narx/km bo'yicha hisoblanadi. Oxirgi bosqichda
+// "km" ko'rsatilmaydi — u "va undan keyin" (cheksiz) sifatida ishlaydi.
+function tieredDistanceSurcharge(distanceBeyondMin,tiers){
+  if(!Array.isArray(tiers)||tiers.length===0)return 0;
+  let remaining=distanceBeyondMin;
+  let prevBoundary=0;
+  let total=0;
+  for(let i=0;i<tiers.length&&remaining>1e-9;i++){
+    const tier=tiers[i];
+    const isLast=i===tiers.length-1;
+    const tierWidth=isLast?Infinity:Math.max(0,(tier.km||0)-prevBoundary);
+    const segment=Math.min(remaining,tierWidth);
+    if(segment>0){
+      total+=segment*(tier.pricePerKm||0);
+      remaining-=segment;
+    }
+    prevBoundary=tier.km||prevBoundary;
+  }
+  return total;
+}
+// Tarif va masofaga qarab xom (yaxlitlanmagan) bazaviy narxni hisoblaydi
+// — bosqichli narxlash yoqilgan bo'lsa priceTiers, aks holda eski flat
+// perKm formulasi ishlatiladi. calcTotal() va submitOrder()da bir xil
+// natija chiqishi uchun ikkalasi shu funksiyani chaqiradi.
+function computeTariffRawBase(trf,routeDistanceKm){
+  const minDistance=trf?.minDistance||0;
+  const distanceBeyondMin=Math.max(0,routeDistanceKm-minDistance);
+  const distanceSurcharge=trf?.tieredPricing
+    ?tieredDistanceSurcharge(distanceBeyondMin,trf.priceTiers)
+    :distanceBeyondMin*(trf?.perKm||0);
+  return (trf?.minDistancePrice||0)+distanceSurcharge;
+}
 function calcTotal(){
   const tariffs=dbGet('tariffs');
   const sel=document.getElementById('f-tariff')?.value;
   const trf=tariffs.find(t=>t.id===sel)||tariffs[0]||{minDistancePrice:0};
   const routeDistanceKm=getRouteDistanceKm();
-  const minDistance=trf.minDistance||0;
-  const perKm=trf.perKm||0;
-  const distanceSurcharge=Math.max(0,routeDistanceKm-minDistance)*perKm;
   // MUHIM: narx 1000 so'mlikka yuqoriga yaxlitlanadi (masalan 20916.6
   // -> 21000), shunda kasrli, "chiroyli bo'lmagan" summa chiqmaydi.
-  const rawBase=(trf.minDistancePrice||0)+distanceSurcharge;
+  const rawBase=computeTariffRawBase(trf,routeDistanceKm);
   const base=Math.ceil(rawBase/1000)*1000;
   const extras=selectedExtras.reduce((s,e)=>s+e.price,0);
   const bonus=useBonus?Math.min(parseInt(document.getElementById('bonus-amt')?.value)||0,base+extras):0;
@@ -2173,10 +2204,7 @@ function submitOrder(){
   const sel=document.getElementById('f-tariff')?.value;
   const trf=tariffs.find(t=>t.id===sel)||tariffs[0]||{minDistancePrice:0};
   const routeDistanceKm=getRouteDistanceKm();
-  const minDistanceVal=trf?.minDistance||0;
-  const perKmVal=trf?.perKm||0;
-  const distanceSurcharge=Math.max(0,routeDistanceKm-minDistanceVal)*perKmVal;
-  const rawBase=(trf?.minDistancePrice||0)+distanceSurcharge;
+  const rawBase=computeTariffRawBase(trf,routeDistanceKm);
   const base=Math.ceil(rawBase/1000)*1000;
   const extras=[...selectedExtras];
   const extrasTotal=extras.reduce((s,e)=>s+e.price,0);
@@ -2226,6 +2254,10 @@ function submitOrder(){
       perKm: trf?.perKm || 0,
       minDistance: trf?.minDistance || 0,
       minDistancePrice: trf?.minDistancePrice || 0,
+      // Bosqichli narxlash yoqilgan tariflar uchun — mobil ilova safar
+      // davomida jonli narxni shu bosqichlar asosida hisoblaydi.
+      tieredPricing: !!trf?.tieredPricing,
+      priceTiers: Array.isArray(trf?.priceTiers) ? trf.priceTiers : [],
       pickupLat: fromAddr?.lat ?? null,
       pickupLng: fromAddr?.lng ?? null,
       dropoffLat: toAddr?.lat ?? null,
@@ -4277,10 +4309,11 @@ function renderTariffCards(query){
       <span style="font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:7px;background:${groupColor[t.group]}15;color:${groupColor[t.group]}">${groupLabel[t.group]||t.group}</span>
       ${sdot(t.status)}
       ${t.bordur?`<span style="font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:7px;background:#FFF7ED;color:#D97706">Bordyur</span>`:''}
+      ${t.tieredPricing?`<span style="font-size:10.5px;font-weight:600;padding:3px 9px;border-radius:7px;background:#EFF6FF;color:#2563EB">Bosqichli narx</span>`:''}
     </div>
 
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      ${[['1 km',t.perKm],['Minimal masofa',t.minDistancePrice],['Tig\u2019izda 1 km',t.peakPerKm],['Komissiya',t.commissionType==='percent'?(t.driverCommission+'%'):null]]
+      ${[[t.tieredPricing?'Bosqichlar':'1 km',t.tieredPricing?(Array.isArray(t.priceTiers)?t.priceTiers.length+' ta':'0 ta'):t.perKm],['Minimal masofa',t.minDistancePrice],['Tig\u2019izda 1 km',t.peakPerKm],['Komissiya',t.commissionType==='percent'?(t.driverCommission+'%'):null]]
         .map(([l,v])=>`<div style="background:#F4F4F4;border-radius:10px;padding:9px 10px">
           <div style="font-size:9.5px;color:rgba(0,0,0,0.4);margin-bottom:2px">${l}</div>
           <div style="font-size:13px;font-weight:700">${v==null?'\u2014':(typeof v==='number'?v.toLocaleString()+' <span style="font-size:9px;color:rgba(0,0,0,0.4)">so\u2019m</span>':v)}</div>
@@ -4300,6 +4333,8 @@ function openTariffModal(tariffId){
   window._tariffBordur=t?!!t.bordur:false;
   window._tariffCarImage=t?t.carImage||null:null;
   window._tariffCommissionType=t?t.commissionType||'percent':'percent';
+  window._tariffTiered=t?!!t.tieredPricing:false;
+  window._tariffTiers=t&&Array.isArray(t.priceTiers)?JSON.parse(JSON.stringify(t.priceTiers)):[];
 
   const modal=document.createElement('div');
   modal.id='tariff-modal';
@@ -4351,16 +4386,19 @@ function cacheCurrentTariffTabFields(){
     }
   }
   if(tariffModalActiveTab==='pricing'){
-    const perKmEl=document.getElementById('tariff-per-km');
-    if(perKmEl){
+    const minDistPriceEl=document.getElementById('tariff-min-distance-price');
+    if(minDistPriceEl){
+      const perKmEl=document.getElementById('tariff-per-km');
       Object.assign(cache,{
-        perKm:parseFloat(perKmEl.value),
-        minDistancePrice:parseFloat(document.getElementById('tariff-min-distance-price')?.value),
+        minDistancePrice:parseFloat(minDistPriceEl.value),
         minDistance:parseFloat(document.getElementById('tariff-min-distance')?.value),
         outOfCityPerKm:parseFloat(document.getElementById('tariff-outcity-per-km')?.value),
         peakPerKm:parseFloat(document.getElementById('tariff-peak-per-km')?.value),
         longDistanceMinPrice:parseFloat(document.getElementById('tariff-longdist-min-price')?.value),
+        tieredPricing:!!window._tariffTiered,
+        priceTiers:window._tariffTiers||[],
       });
+      if(perKmEl)cache.perKm=parseFloat(perKmEl.value);
     }
   }
   if(tariffModalActiveTab==='waiting'){
@@ -4386,6 +4424,38 @@ function cacheCurrentTariffTabFields(){
   window._tariffFormCache=cache;
 }
 
+function toggleTariffTiered(checked){
+  cacheCurrentTariffTabFields();
+  window._tariffTiered=checked;
+  if(checked&&(!window._tariffTiers||window._tariffTiers.length===0)){
+    window._tariffTiers=[{km:1,pricePerKm:0},{pricePerKm:0}];
+  }
+  renderTariffTabContent();
+}
+function addTariffTier(){
+  cacheCurrentTariffTabFields();
+  const tiers=window._tariffTiers||[];
+  // Oxirgi (cheksiz) bosqichdan oldin, undan avvalgi bosqich km
+  // chegarasidan boshlab yangi oraliq qo'shiladi.
+  const prevBoundary=tiers.length>=2?(tiers[tiers.length-2].km||0):0;
+  tiers.splice(tiers.length-1,0,{km:prevBoundary+1,pricePerKm:0});
+  window._tariffTiers=tiers;
+  renderTariffTabContent();
+}
+function removeTariffTier(index){
+  cacheCurrentTariffTabFields();
+  const tiers=window._tariffTiers||[];
+  if(tiers.length<=1)return;
+  tiers.splice(index,1);
+  window._tariffTiers=tiers;
+  renderTariffTabContent();
+}
+function updateTariffTier(index,field,value){
+  const tiers=window._tariffTiers||[];
+  if(!tiers[index])return;
+  tiers[index]={...tiers[index],[field]:parseFloat(value)};
+  window._tariffTiers=tiers;
+}
 function switchTariffTab(key){
   cacheCurrentTariffTabFields();
   tariffModalActiveTab=key;
@@ -4439,12 +4509,39 @@ function renderTariffTabContent(){
   }
 
   if(tariffModalActiveTab==='pricing'){
+    const tiered=!!window._tariffTiered;
+    const tiers=window._tariffTiers||[];
     wrap.innerHTML=`<div style="display:flex;flex-direction:column;gap:13px">
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-        <div class="form-field"><label class="form-label">1 km uchun narx</label><input class="form-input" id="tariff-per-km" type="number" value="${t.perKm??''}"></div>
-        <div class="form-field"><label class="form-label">Minimal masofa narxi</label><input class="form-input" id="tariff-min-distance-price" type="number" value="${t.minDistancePrice??''}"></div>
-      </div>
+      <div class="form-field"><label class="form-label">Minimal masofa narxi <span style="color:rgba(0,0,0,0.35);font-weight:400">(boshlang\u2019ich/minimal narx)</span></label><input class="form-input" id="tariff-min-distance-price" type="number" value="${t.minDistancePrice??''}" oninput="calcTotal&&calcTotal()"></div>
       <div class="form-field"><label class="form-label">Minimal masofa (km)</label><input class="form-input" id="tariff-min-distance" type="number" step="0.1" value="${t.minDistance??''}"></div>
+
+      <div style="display:flex;align-items:center;gap:9px;padding:11px 13px;background:#FAFAFA;border-radius:10px;border:1px solid rgba(0,0,0,0.07)">
+        <input type="checkbox" id="tariff-tiered-toggle" ${tiered?'checked':''} onchange="toggleTariffTiered(this.checked)" style="width:17px;height:17px;cursor:pointer">
+        <label for="tariff-tiered-toggle" style="font-size:12.5px;font-weight:700;cursor:pointer;flex:1">Bosqichli (pog\u2019onali) km-narxlash</label>
+      </div>
+
+      ${tiered?`
+      <div id="tariff-tiers-wrap" style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:11px;color:rgba(0,0,0,0.45)">Har bir bosqich \u201cnecha km gacha\u201d va shu km oralig\u2019idagi 1 km narxini belgilaydi. Oxirgi bosqich \u201cva undan keyin\u201d sifatida cheksiz davom etadi.</div>
+        ${tiers.map((tier,i)=>{
+          const isLast=i===tiers.length-1;
+          return `<div style="display:flex;gap:8px;align-items:center">
+            <div style="flex:1">
+              ${isLast
+                ?`<div style="font-size:12px;font-weight:600;color:rgba(0,0,0,0.5);padding:9px 0">va undan keyin</div>`
+                :`<input class="form-input" type="number" step="0.1" placeholder="Necha km gacha" value="${tier.km??''}" oninput="updateTariffTier(${i},'km',this.value)">`
+              }
+            </div>
+            <div style="flex:1"><input class="form-input" type="number" placeholder="1 km narxi" value="${tier.pricePerKm??''}" oninput="updateTariffTier(${i},'pricePerKm',this.value)"></div>
+            <button type="button" onclick="removeTariffTier(${i})" style="width:32px;height:32px;flex-shrink:0;border-radius:8px;background:#FEF2F2;border:1px solid rgba(22,163,74,0.15);cursor:pointer;display:flex;align-items:center;justify-content:center">${ic('x',13,'#16A34A')}</button>
+          </div>`;
+        }).join('')}
+        <button type="button" onclick="addTariffTier()" class="btn btn-light" style="justify-content:center;font-size:12px;padding:8px">+ Bosqich qo\u2019shish</button>
+      </div>
+      `:`
+      <div class="form-field"><label class="form-label">1 km uchun narx</label><input class="form-input" id="tariff-per-km" type="number" value="${t.perKm??''}"></div>
+      `}
+
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
         <div class="form-field"><label class="form-label">Shahar tashqarisida 1 km</label><input class="form-input" id="tariff-outcity-per-km" type="number" value="${t.outOfCityPerKm??''}"></div>
         <div class="form-field"><label class="form-label">Tig\u2019izda 1 km uchun narx</label><input class="form-input" id="tariff-peak-per-km" type="number" value="${t.peakPerKm??''}"></div>
@@ -4576,6 +4673,8 @@ function closeTariffModal(){
   if(m)m.remove();
   window._tariffFormCache=null;
   window._tariffCarImage=null;
+  window._tariffTiered=false;
+  window._tariffTiers=null;
 }
 
 function saveTariff(tariffId){
@@ -4610,6 +4709,8 @@ function saveTariff(tariffId){
     commissionType:window._tariffCommissionType||'percent',
     bordur:!!window._tariffBordur,
     carImage:window._tariffCarImage||null,
+    tieredPricing:!!window._tariffTiered,
+    priceTiers:window._tariffTiered&&Array.isArray(window._tariffTiers)?window._tariffTiers:[],
   };
 
   let finalTariffId=tariffId;
@@ -4632,6 +4733,8 @@ function saveTariff(tariffId){
       carImage:finalData.carImage||null,
       driverCommission:finalData.driverCommission,
       commissionType:finalData.commissionType,
+      tieredPricing:finalData.tieredPricing,
+      priceTiers:finalData.priceTiers,
     });
   }
   window._tariffFormCache=null;

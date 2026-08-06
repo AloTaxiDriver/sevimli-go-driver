@@ -19,6 +19,11 @@ export type Order = {
   perKm?: number;
   minDistance?: number;
   minDistancePrice?: number;
+  // Bosqichli (pog'onali) km-narxlash yoqilgan tariflar uchun — mavjud
+  // bo'lsa jonli narx shu bosqichlar asosida, aks holda flat perKm
+  // bo'yicha hisoblanadi (MapScreen.tsx'dagi livePrice).
+  tieredPricing?: boolean;
+  priceTiers?: { km?: number; pricePerKm: number }[];
   fromAddress: string;
   // B nuqtasi (qayerga boriladi). Mock buyurtmalarda har doim
   // mavjud bo'lgani uchun ixtiyoriy emas, lekin Firestore'dan

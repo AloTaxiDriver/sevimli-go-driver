@@ -28,7 +28,7 @@ import { Order } from './data/mockOrders';
 import { COLORS } from './theme/colors';
 import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
-  DispatcherNotification, FirestoreOrder, acceptOrder, cancelOrder, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
+  DispatcherNotification, FirestoreOrder, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
@@ -762,8 +762,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const tariffMinPrice = activeOrder?.minDistancePrice ?? activeOrder?.price ?? 0;
   const tariffMinDistance = activeOrder?.minDistance ?? 0;
   const tariffPerKm = activeOrder?.perKm ?? 0;
-  const rawLivePrice =
-    tariffMinPrice + Math.max(0, liveTripDistanceKm - tariffMinDistance) * tariffPerKm;
+  const distanceBeyondMin = Math.max(0, liveTripDistanceKm - tariffMinDistance);
+  const distanceSurcharge = activeOrder?.tieredPricing
+    ? computeTieredDistanceSurcharge(distanceBeyondMin, activeOrder?.priceTiers)
+    : distanceBeyondMin * tariffPerKm;
+  const rawLivePrice = tariffMinPrice + distanceSurcharge;
   const livePrice = Math.ceil(rawLivePrice / 1000) * 1000;
 
   const bottomSafeOffset = TAB_BAR_HEIGHT + insets.bottom;

@@ -72,6 +72,37 @@ export async function testFirebaseConnection(): Promise<{
 // BUYURTMALAR (ORDERS)
 // ============================================================
 
+/** Bosqichli (pog'onali) km-narxlash bosqichi. `km` — shu bosqich
+ * tugaydigan masofa chegarasi (oldingi bosqichdan boshlab); oxirgi
+ * bosqichda `km` bo'lmaydi — u "va undan keyin" (cheksiz) hisoblanadi. */
+export type PriceTier = { km?: number; pricePerKm: number };
+
+/** Tarifning (yoki undan nusxa olingan buyurtmaning) bosqichli
+ * masofa ustama narxini hisoblaydi. `tieredPricing` yoqilmagan yoki
+ * bosqichlar bo'sh bo'lsa, chaqiruvchi tomon flat `perKm` formulasiga
+ * qaytishi kerak. */
+export function computeTieredDistanceSurcharge(
+  distanceBeyondMin: number,
+  tiers: PriceTier[] | undefined
+): number {
+  if (!tiers || tiers.length === 0) return 0;
+  let remaining = distanceBeyondMin;
+  let prevBoundary = 0;
+  let total = 0;
+  for (let i = 0; i < tiers.length && remaining > 1e-9; i++) {
+    const tier = tiers[i];
+    const isLast = i === tiers.length - 1;
+    const tierWidth = isLast ? Infinity : Math.max(0, (tier.km || 0) - prevBoundary);
+    const segment = Math.min(remaining, tierWidth);
+    if (segment > 0) {
+      total += segment * (tier.pricePerKm || 0);
+      remaining -= segment;
+    }
+    prevBoundary = tier.km ?? prevBoundary;
+  }
+  return total;
+}
+
 export type FirestoreOrder = {
   id: string;
   status: 'pending' | 'accepted' | 'arrived' | 'in_progress' | 'completed' | 'cancelled';
@@ -92,6 +123,8 @@ export type FirestoreOrder = {
   perKm?: number;
   minDistance?: number;
   minDistancePrice?: number;
+  tieredPricing?: boolean;
+  priceTiers?: PriceTier[];
   createdAtMillis?: number;
   cancelReason?: string;
   cancelledBy?: 'driver' | 'dispatcher';
@@ -132,6 +165,8 @@ export function mapDocToOrder(
         : typeof data.price === 'number'
         ? data.price
         : 0,
+    tieredPricing: !!data.tieredPricing,
+    priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
     createdAtMillis: data.createdAt?.toMillis
       ? data.createdAt.toMillis()
       : data.createdAt?.seconds
@@ -389,6 +424,8 @@ export function firestoreOrderToOrder(
     perKm: fo.perKm || 0,
     minDistance: fo.minDistance || 0,
     minDistancePrice: fo.minDistancePrice || fo.price,
+    tieredPricing: !!fo.tieredPricing,
+    priceTiers: fo.priceTiers,
     fromAddress: fo.fromAddress,
     toAddress: fo.toAddress,
     pickupCount: 1,
@@ -654,6 +691,8 @@ export type FirestoreTariff = {
   perKm: number;
   minDistance: number;
   minDistancePrice: number;
+  tieredPricing?: boolean;
+  priceTiers?: PriceTier[];
 };
 
 export async function fetchBordurTariff(): Promise<FirestoreTariff | null> {
@@ -673,6 +712,8 @@ export async function fetchBordurTariff(): Promise<FirestoreTariff | null> {
       perKm: typeof data.perKm === 'number' ? data.perKm : 0,
       minDistance: typeof data.minDistance === 'number' ? data.minDistance : 0,
       minDistancePrice: typeof data.minDistancePrice === 'number' ? data.minDistancePrice : 0,
+      tieredPricing: !!data.tieredPricing,
+      priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
     };
   } catch (error) {
     console.warn('Bordyur tarifini olishda xato:', error);
@@ -701,6 +742,8 @@ export async function startBordurTrip(
     perKm: tariff.perKm,
     minDistance: tariff.minDistance,
     minDistancePrice: tariff.minDistancePrice,
+    tieredPricing: !!tariff.tieredPricing,
+    priceTiers: tariff.priceTiers || [],
     pickupLat: location.latitude,
     pickupLng: location.longitude,
     dropoffLat: location.latitude,
