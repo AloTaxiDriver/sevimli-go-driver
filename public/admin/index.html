@@ -6871,11 +6871,39 @@ let pbxReconnectTimer=null;
 let pbxRingAudioCtx=null;
 let pbxRingInterval=null;
 let pbxActiveChannel=null; // {uuid, call_uuid}
+let pbxUnlockedAudioCtx=null;
+
+// Brauzerlar (Chrome va h.k.) foydalanuvchi hech narsa bosmagan sahifada
+// ovoz ijro etishni bloklaydi ("autoplay policy"). Shuning uchun sahifadagi
+// BIRINCHI bosish/tugma paytida bitta AudioContext ochib, uni saqlab
+// qo'yamiz — keyin real qo'ng'iroq kelganda shu (allaqachon ochilgan)
+// context orqali jarang chalinadi.
+function pbxUnlockAudio(){
+  if(pbxUnlockedAudioCtx)return;
+  try{
+    pbxUnlockedAudioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    if(pbxUnlockedAudioCtx.state==='suspended')pbxUnlockedAudioCtx.resume();
+  }catch(e){}
+}
+['click','keydown','touchstart'].forEach(function(evt){
+  document.addEventListener(evt,pbxUnlockAudio,{once:true,capture:true});
+});
 
 function startPbxCallListener(){
   const s=dbGet('settings');
   if(!s.pbxDomain||!s.pbxApiKey)return;
   connectPbxWs(s.pbxDomain,s.pbxApiKey);
+}
+
+// Qo'ng'iroq qiluvchining raqamini +998 formatiga keltiradi (PBX ba'zan
+// prefiksiz, faqat 9 xonali raqam yuboradi).
+function pbxFormatNumber(num){
+  if(!num)return num;
+  const digits=String(num).replace(/\D/g,'');
+  if(String(num).trim().startsWith('+'))return num;
+  if(digits.length===9)return '+998'+digits;
+  if(digits.length===12&&digits.startsWith('998'))return '+'+digits;
+  return num;
 }
 
 function connectPbxWs(domain,apiKey){
@@ -6913,7 +6941,7 @@ function handlePbxEvent(msg){
     if(callState!=='idle')return; // band bo'lsa ustiga chiqarmaymiz
     pbxActiveChannel={uuid:data.uuid,call_uuid:data.call_uuid};
     callState='incoming';
-    const num=data.caller_number||"Noma'lum";
+    const num=pbxFormatNumber(data.caller_number)||"Noma'lum";
     const el=callEl('caller-number');if(el)el.textContent=num+(data.caller_name?' ('+data.caller_name+')':'');
     const ph=document.getElementById('f-phone');if(ph)ph.value=num;
     callShow('incoming-call-badge');
@@ -6966,7 +6994,8 @@ function pbxHangup(){
 function startPbxRingTone(){
   stopPbxRingTone();
   try{
-    pbxRingAudioCtx=new (window.AudioContext||window.webkitAudioContext)();
+    pbxRingAudioCtx=pbxUnlockedAudioCtx||new (window.AudioContext||window.webkitAudioContext)();
+    if(pbxRingAudioCtx.state==='suspended')pbxRingAudioCtx.resume();
     const ring=function(){
       if(!pbxRingAudioCtx)return;
       const ctx=pbxRingAudioCtx;
@@ -6987,7 +7016,12 @@ function startPbxRingTone(){
 
 function stopPbxRingTone(){
   clearInterval(pbxRingInterval);pbxRingInterval=null;
-  if(pbxRingAudioCtx){try{pbxRingAudioCtx.close();}catch(e){}pbxRingAudioCtx=null;}
+  // Agar bu umumiy (allaqachon "unlock" qilingan) context bo'lsa, uni
+  // yopmaymiz — keyingi qo'ng'iroqlar uchun qayta ishlatiladi.
+  if(pbxRingAudioCtx&&pbxRingAudioCtx!==pbxUnlockedAudioCtx){
+    try{pbxRingAudioCtx.close();}catch(e){}
+  }
+  pbxRingAudioCtx=null;
 }
 
 
