@@ -2765,13 +2765,19 @@ function renderDriverTabContent(){
           return;
         }
         el.style.padding='0';
-        el.innerHTML=list.map(h=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 2px;border-bottom:1px solid rgba(0,0,0,0.06)">
+        el.innerHTML=list.map(h=>{
+          const isWeekly=h.period==='weekly';
+          return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 2px;border-bottom:1px solid rgba(0,0,0,0.06)">
           <div>
-            <div style="font-size:13px;font-weight:700;color:#16181D">${esc(h.date||'')}</div>
-            <div style="font-size:11px;color:rgba(0,0,0,0.4)">${h.tripCount||0} safar bajarildi</div>
+            <div style="font-size:13px;font-weight:700;color:#16181D;display:flex;align-items:center;gap:6px">
+              ${esc(h.date||'')}
+              <span style="font-size:10px;font-weight:700;padding:2px 7px;border-radius:20px;background:${isWeekly?'#EEF2FF':'#F0FDF4'};color:${isWeekly?'#4338CA':'#166534'}">${isWeekly?'Haftalik':'Kunlik'}</span>
+            </div>
+            <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:2px">${h.tripCount||0} safar bajarildi</div>
           </div>
           <div style="font-size:14px;font-weight:800;color:#16A34A">+${(h.amount||0).toLocaleString()} so'm</div>
-        </div>`).join('');
+        </div>`;
+        }).join('');
       });
     }
   }
@@ -6200,6 +6206,19 @@ function renderBonusSettings(){
         <div class="form-field">
           <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa (km)</label>
           <input class="form-input" id="dbs-min-distance" type="number" min="0" step="0.5" placeholder="Masalan: 2">
+          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu masofa chegarasi kunlik VA haftalik bonus uchun umumiy qo'llaniladi.</div>
+        </div>
+
+        <div style="height:1px;background:rgba(0,0,0,0.08);margin:2px 0"></div>
+
+        <div class="form-field">
+          <label class="form-label">Haftalik safar chegarasi (ta)</label>
+          <input class="form-input" id="dbs-weekly-trip-threshold" type="number" min="0" step="1" placeholder="Masalan: 80 (0 = o'chirilgan)">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Haftalik bonus summasi (so'm)</label>
+          <input class="form-input" id="dbs-weekly-bonus-amount" type="number" min="0" step="1000" placeholder="Masalan: 150000">
         </div>
       </div>
 
@@ -6245,9 +6264,13 @@ async function loadDriverBonusSettingsForm(){
   const thEl=document.getElementById('dbs-trip-threshold');
   const amtEl=document.getElementById('dbs-bonus-amount');
   const distEl=document.getElementById('dbs-min-distance');
+  const weeklyThEl=document.getElementById('dbs-weekly-trip-threshold');
+  const weeklyAmtEl=document.getElementById('dbs-weekly-bonus-amount');
   if(thEl&&typeof cfg.dailyTripThreshold==='number')thEl.value=cfg.dailyTripThreshold;
   if(amtEl&&typeof cfg.bonusAmount==='number')amtEl.value=cfg.bonusAmount;
   if(distEl&&typeof cfg.minTripDistanceKm==='number')distEl.value=cfg.minTripDistanceKm;
+  if(weeklyThEl&&typeof cfg.weeklyTripThreshold==='number')weeklyThEl.value=cfg.weeklyTripThreshold;
+  if(weeklyAmtEl&&typeof cfg.weeklyBonusAmount==='number')weeklyAmtEl.value=cfg.weeklyBonusAmount;
 }
 
 async function saveDriverBonusSettingsForm(){
@@ -6255,6 +6278,8 @@ async function saveDriverBonusSettingsForm(){
     dailyTripThreshold:parseInt(document.getElementById('dbs-trip-threshold')?.value,10)||15,
     bonusAmount:parseFloat(document.getElementById('dbs-bonus-amount')?.value)||0,
     minTripDistanceKm:parseFloat(document.getElementById('dbs-min-distance')?.value)||0,
+    weeklyTripThreshold:parseInt(document.getElementById('dbs-weekly-trip-threshold')?.value,10)||0,
+    weeklyBonusAmount:parseFloat(document.getElementById('dbs-weekly-bonus-amount')?.value)||0,
   };
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg);

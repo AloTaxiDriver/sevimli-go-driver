@@ -303,6 +303,7 @@ export type DriverBonusHistoryEntry = {
   date: string;
   amount: number;
   tripCount: number;
+  period?: 'daily' | 'weekly';
   createdAtMillis?: number;
 };
 
@@ -325,6 +326,7 @@ export function listenToDriverBonusHistory(
               date: data.date,
               amount: typeof data.amount === 'number' ? data.amount : 0,
               tripCount: typeof data.tripCount === 'number' ? data.tripCount : 0,
+              period: data.period === 'weekly' ? 'weekly' : 'daily',
               createdAtMillis: data.createdAt?.toMillis?.() ?? undefined,
             } as DriverBonusHistoryEntry;
           })

@@ -165,7 +165,14 @@ export default function MoneyScreen() {
               </View>
               {bonusHistory.map((entry) => (
                 <View key={entry.id} style={styles.bonusRow}>
-                  <Text style={styles.bonusDate}>{formatBonusDate(entry.date)}</Text>
+                  <View style={styles.bonusDateRow}>
+                    <Text style={styles.bonusDate}>{formatBonusDate(entry.date)}</Text>
+                    <View style={[styles.bonusBadge, entry.period === 'weekly' && styles.bonusBadgeWeekly]}>
+                      <Text style={[styles.bonusBadgeText, entry.period === 'weekly' && styles.bonusBadgeTextWeekly]}>
+                        {entry.period === 'weekly' ? 'Haftalik' : 'Kunlik'}
+                      </Text>
+                    </View>
+                  </View>
                   <Text style={styles.bonusTrips}>{entry.tripCount} safar</Text>
                   <Text style={styles.bonusAmount}>+{entry.amount.toLocaleString()} so'm</Text>
                 </View>
@@ -271,7 +278,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginTop: 10,
   },
-  bonusDate: { fontSize: 13, fontWeight: '700', color: COLORS.dark, width: 50 },
+  bonusDateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  bonusDate: { fontSize: 13, fontWeight: '700', color: COLORS.dark },
+  bonusBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 20, backgroundColor: COLORS.successLight },
+  bonusBadgeWeekly: { backgroundColor: '#EEF2FF' },
+  bonusBadgeText: { fontSize: 9, fontWeight: '700', color: COLORS.primary },
+  bonusBadgeTextWeekly: { color: '#4338CA' },
   bonusTrips: { fontSize: 12, color: COLORS.textMuted, flex: 1, textAlign: 'center' },
   bonusAmount: { fontSize: 14, fontWeight: '800', color: COLORS.primary },
 

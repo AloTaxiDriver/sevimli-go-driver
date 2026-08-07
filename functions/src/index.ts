@@ -158,17 +158,22 @@ function computePerOrderBonusCap(
     : Math.floor((price * settings.perOrderCapValue) / 100);
 }
 
-// Admin dashboard'ning "Haydovchilar uchun kunlik bonus" bo'limida
-// sozlanadi (settings/driverBonus hujjati).
+// Admin dashboard'ning "Haydovchilar uchun kunlik/haftalik bonus"
+// bo'limida sozlanadi (settings/driverBonus hujjati). Haftalik bonus
+// ixtiyoriy — weeklyTripThreshold 0 bo'lsa, o'chirilgan hisoblanadi.
 async function getDriverBonusSettings(): Promise<{
   dailyTripThreshold: number;
   bonusAmount: number;
   minTripDistanceKm: number;
+  weeklyTripThreshold: number;
+  weeklyBonusAmount: number;
 }> {
   const fallback = {
     dailyTripThreshold: 15,
     bonusAmount: 20000,
     minTripDistanceKm: 2,
+    weeklyTripThreshold: 0,
+    weeklyBonusAmount: 0,
   };
   try {
     const doc = await db.collection("settings").doc("driverBonus").get();
@@ -184,6 +189,14 @@ async function getDriverBonusSettings(): Promise<{
         typeof data.minTripDistanceKm === "number"
           ? data.minTripDistanceKm
           : fallback.minTripDistanceKm,
+      weeklyTripThreshold:
+        typeof data.weeklyTripThreshold === "number"
+          ? data.weeklyTripThreshold
+          : fallback.weeklyTripThreshold,
+      weeklyBonusAmount:
+        typeof data.weeklyBonusAmount === "number"
+          ? data.weeklyBonusAmount
+          : fallback.weeklyBonusAmount,
     };
   } catch {
     return fallback;
@@ -196,6 +209,17 @@ async function getDriverBonusSettings(): Promise<{
 function tashkentDateStr(d: Date = new Date()): string {
   const shifted = new Date(d.getTime() + 5 * 60 * 60 * 1000);
   return shifted.toISOString().slice(0, 10);
+}
+
+// Haftaning boshlanishi (Dushanba, Toshkent kalendari) — haftalik bonus
+// hisob-kitobi shu sana bo'yicha guruhlanadi.
+function tashkentWeekStartStr(d: Date = new Date()): string {
+  const shifted = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  const day = shifted.getUTCDay(); // 0=Yakshanba, 1=Dushanba, ...
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const monday = new Date(shifted);
+  monday.setUTCDate(shifted.getUTCDate() - diffToMonday);
+  return monday.toISOString().slice(0, 10);
 }
 
 async function isOrderStillPending(orderId: string): Promise<boolean> {
@@ -745,12 +769,14 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
 );
 
 // ============================================================
-// HAYDOVCHI KUNLIK BONUSI — buyurtma "completed" bo'lganda, agar
-// masofa admin belgilagan minimal kilometrdan (minTripDistanceKm)
-// kam bo'lmasa, shu kunga haydovchining "haqiqiy" safarlar hisobiga
-// qo'shiladi (drivers/{id}/dailyBonusStats/{sana} hujjatida). Hisob
-// kunlik chegaraga (dailyTripThreshold) yetganda, bonusAmount BIR
-// MARTA haydovchi balansiga qo'shiladi.
+// HAYDOVCHI KUNLIK/HAFTALIK BONUSI — buyurtma "completed" bo'lganda,
+// agar masofa admin belgilagan minimal kilometrdan (minTripDistanceKm)
+// kam bo'lmasa, shu kun VA shu hafta uchun haydovchining "haqiqiy"
+// safarlar hisobiga qo'shiladi (drivers/{id}/dailyBonusStats/{sana} va
+// drivers/{id}/weeklyBonusStats/{hafta boshi}). Har biri o'z chegarasiga
+// (dailyTripThreshold / weeklyTripThreshold) yetganda, mos bonusAmount
+// BIR MARTA haydovchi balansiga qo'shiladi. Haftalik bonus ixtiyoriy —
+// weeklyTripThreshold 0 bo'lsa, o'chirilgan hisoblanadi.
 //
 // Nega masofa cheklovi bor: aks holda haydovchi o'ziga-o'ziga (yoki
 // tanishiga) soniyalik, bo'sh buyurtma yaratib, haqiqatda safar
@@ -770,7 +796,9 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
     const orderRef = after.ref;
     const driverRef = db.collection("drivers").doc(driverId);
     const dateStr = tashkentDateStr();
+    const weekStartStr = tashkentWeekStartStr();
     const dailyStatsRef = driverRef.collection("dailyBonusStats").doc(dateStr);
+    const weeklyStatsRef = driverRef.collection("weeklyBonusStats").doc(weekStartStr);
     const driverBonusSettings = await getDriverBonusSettings();
 
     try {
@@ -796,7 +824,22 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         const newCount = qualifies ? currentCount + 1 : currentCount;
         const willAward = qualifies && !alreadyAwarded && newCount >= driverBonusSettings.dailyTripThreshold;
 
-        const driverDoc = willAward ? await tx.get(driverRef) : null;
+        const weeklyEnabled = driverBonusSettings.weeklyTripThreshold > 0;
+        const weeklyStatsSnap = await tx.get(weeklyStatsRef);
+        const weeklyStatsData = weeklyStatsSnap.data();
+        const weeklyCurrentCount =
+          typeof weeklyStatsData?.qualifyingTripCount === "number"
+            ? weeklyStatsData.qualifyingTripCount
+            : 0;
+        const weeklyAlreadyAwarded = weeklyStatsData?.bonusAwarded === true;
+        const weeklyNewCount = qualifies ? weeklyCurrentCount + 1 : weeklyCurrentCount;
+        const weeklyWillAward =
+          weeklyEnabled &&
+          qualifies &&
+          !weeklyAlreadyAwarded &&
+          weeklyNewCount >= driverBonusSettings.weeklyTripThreshold;
+
+        const driverDoc = willAward || weeklyWillAward ? await tx.get(driverRef) : null;
 
         // ---- shu nuqtadan e'tiboran faqat yozishlar ----
         tx.set(orderRef, { driverBonusChecked: true }, { merge: true });
@@ -807,44 +850,81 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
             { qualifyingTripCount: newCount, date: dateStr, updatedAt: FieldValue.serverTimestamp() },
             { merge: true }
           );
-        }
-
-        if (willAward && driverDoc) {
-          const currentBalance =
-            typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
-          const newBalance = currentBalance + driverBonusSettings.bonusAmount;
-
-          tx.set(driverRef, { balance: newBalance }, { merge: true });
           tx.set(
-            dailyStatsRef,
-            { bonusAwarded: true, bonusAmount: driverBonusSettings.bonusAmount },
+            weeklyStatsRef,
+            {
+              qualifyingTripCount: weeklyNewCount,
+              weekStart: weekStartStr,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
             { merge: true }
           );
-          tx.set(driverRef.collection("bonusHistory").doc(dateStr), {
-            date: dateStr,
-            amount: driverBonusSettings.bonusAmount,
-            tripCount: newCount,
-            createdAt: FieldValue.serverTimestamp(),
-          });
+        }
 
-          logger.info(
-            `Haydovchi ${driverId}: kunlik bonus (${dateStr}) berildi — ${newCount} safar, ` +
-              `+${driverBonusSettings.bonusAmount} so'm, yangi balans: ${newBalance}`
-          );
+        if ((willAward || weeklyWillAward) && driverDoc) {
+          const currentBalance =
+            typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
+          const totalBonus =
+            (willAward ? driverBonusSettings.bonusAmount : 0) +
+            (weeklyWillAward ? driverBonusSettings.weeklyBonusAmount : 0);
+          const newBalance = currentBalance + totalBonus;
+
+          tx.set(driverRef, { balance: newBalance }, { merge: true });
+
+          if (willAward) {
+            tx.set(
+              dailyStatsRef,
+              { bonusAwarded: true, bonusAmount: driverBonusSettings.bonusAmount },
+              { merge: true }
+            );
+            tx.set(driverRef.collection("bonusHistory").doc(dateStr), {
+              period: "daily",
+              date: dateStr,
+              amount: driverBonusSettings.bonusAmount,
+              tripCount: newCount,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            logger.info(
+              `Haydovchi ${driverId}: kunlik bonus (${dateStr}) berildi — ${newCount} safar, ` +
+                `+${driverBonusSettings.bonusAmount} so'm`
+            );
+          }
+
+          if (weeklyWillAward) {
+            tx.set(
+              weeklyStatsRef,
+              { bonusAwarded: true, bonusAmount: driverBonusSettings.weeklyBonusAmount },
+              { merge: true }
+            );
+            tx.set(driverRef.collection("bonusHistory").doc(`week-${weekStartStr}`), {
+              period: "weekly",
+              date: weekStartStr,
+              amount: driverBonusSettings.weeklyBonusAmount,
+              tripCount: weeklyNewCount,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            logger.info(
+              `Haydovchi ${driverId}: haftalik bonus (${weekStartStr}) berildi — ${weeklyNewCount} safar, ` +
+                `+${driverBonusSettings.weeklyBonusAmount} so'm`
+            );
+          }
+
+          logger.info(`Haydovchi ${driverId}: yangi balans ${newBalance}`);
         } else if (qualifies) {
           logger.info(
-            `Buyurtma ${orderId}: haydovchi ${driverId} kunlik hisobga qo'shildi ` +
-              `(${newCount}/${driverBonusSettings.dailyTripThreshold})`
+            `Buyurtma ${orderId}: haydovchi ${driverId} hisobga qo'shildi — ` +
+              `kunlik ${newCount}/${driverBonusSettings.dailyTripThreshold}` +
+              (weeklyEnabled ? `, haftalik ${weeklyNewCount}/${driverBonusSettings.weeklyTripThreshold}` : "")
           );
         } else {
           logger.info(
             `Buyurtma ${orderId}: masofa (${distanceKm}km) minimal chegaradan ` +
-              `(${driverBonusSettings.minTripDistanceKm}km) kam — kunlik hisobga kirmadi`
+              `(${driverBonusSettings.minTripDistanceKm}km) kam — hisobga kirmadi`
           );
         }
       });
     } catch (error) {
-      logger.error(`Haydovchi kunlik bonus tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
+      logger.error(`Haydovchi bonus tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
     }
   }
 );
