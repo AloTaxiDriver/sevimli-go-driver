@@ -158,6 +158,46 @@ function computePerOrderBonusCap(
     : Math.floor((price * settings.perOrderCapValue) / 100);
 }
 
+// Admin dashboard'ning "Haydovchilar uchun kunlik bonus" bo'limida
+// sozlanadi (settings/driverBonus hujjati).
+async function getDriverBonusSettings(): Promise<{
+  dailyTripThreshold: number;
+  bonusAmount: number;
+  minTripDistanceKm: number;
+}> {
+  const fallback = {
+    dailyTripThreshold: 15,
+    bonusAmount: 20000,
+    minTripDistanceKm: 2,
+  };
+  try {
+    const doc = await db.collection("settings").doc("driverBonus").get();
+    const data = doc.data();
+    if (!data) return fallback;
+    return {
+      dailyTripThreshold:
+        typeof data.dailyTripThreshold === "number"
+          ? data.dailyTripThreshold
+          : fallback.dailyTripThreshold,
+      bonusAmount: typeof data.bonusAmount === "number" ? data.bonusAmount : fallback.bonusAmount,
+      minTripDistanceKm:
+        typeof data.minTripDistanceKm === "number"
+          ? data.minTripDistanceKm
+          : fallback.minTripDistanceKm,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+// Cloud Functions UTC'da ishlaydi — Toshkent (UTC+5) kalendar sanasini
+// olish uchun soddagina 5 soat qo'shib, ISO sanasini kesib olamiz
+// (kunlik bonus hisob-kitobi shu "kun" bo'yicha guruhlanadi).
+function tashkentDateStr(d: Date = new Date()): string {
+  const shifted = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  return shifted.toISOString().slice(0, 10);
+}
+
 async function isOrderStillPending(orderId: string): Promise<boolean> {
   try {
     const doc = await db.collection("orders").doc(orderId).get();
@@ -700,6 +740,105 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
       });
     } catch (error) {
       logger.error(`Komissiya tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
+    }
+  }
+);
+
+// ============================================================
+// HAYDOVCHI KUNLIK BONUSI — buyurtma "completed" bo'lganda, agar
+// masofa admin belgilagan minimal kilometrdan (minTripDistanceKm)
+// kam bo'lmasa, shu kunga haydovchining "haqiqiy" safarlar hisobiga
+// qo'shiladi (drivers/{id}/dailyBonusStats/{sana} hujjatida). Hisob
+// kunlik chegaraga (dailyTripThreshold) yetganda, bonusAmount BIR
+// MARTA haydovchi balansiga qo'shiladi.
+//
+// Nega masofa cheklovi bor: aks holda haydovchi o'ziga-o'ziga (yoki
+// tanishiga) soniyalik, bo'sh buyurtma yaratib, haqiqatda safar
+// qilmasdan turib safar sonini sun'iy oshirishi mumkin edi.
+// ============================================================
+
+export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const after = event.data?.after;
+    if (!after || after.data()?.status !== "completed") return;
+
+    const orderId = event.params.orderId;
+    const driverId: string | undefined = after.data()?.driverId;
+    if (!driverId) return;
+
+    const orderRef = after.ref;
+    const driverRef = db.collection("drivers").doc(driverId);
+    const dateStr = tashkentDateStr();
+    const dailyStatsRef = driverRef.collection("dailyBonusStats").doc(dateStr);
+    const driverBonusSettings = await getDriverBonusSettings();
+
+    try {
+      await db.runTransaction(async (tx) => {
+        // MUHIM: Firestore tranzaksiyalarida barcha o'qishlar (get)
+        // barcha yozishlardan (set) OLDIN bajarilishi shart — shuning
+        // uchun kerak bo'lishi mumkin bo'lgan hujjatlarning HAMMASINI
+        // avval o'qib olamiz, keyingina yozishga o'tamiz.
+        const orderSnap = await tx.get(orderRef);
+        const orderData = orderSnap.data();
+        if (!orderData || orderData.status !== "completed" || orderData.driverBonusChecked) {
+          return;
+        }
+
+        const distanceKm = typeof orderData.distanceKm === "number" ? orderData.distanceKm : 0;
+        const qualifies = distanceKm >= driverBonusSettings.minTripDistanceKm;
+
+        const statsSnap = await tx.get(dailyStatsRef);
+        const statsData = statsSnap.data();
+        const currentCount =
+          typeof statsData?.qualifyingTripCount === "number" ? statsData.qualifyingTripCount : 0;
+        const alreadyAwarded = statsData?.bonusAwarded === true;
+        const newCount = qualifies ? currentCount + 1 : currentCount;
+        const willAward = qualifies && !alreadyAwarded && newCount >= driverBonusSettings.dailyTripThreshold;
+
+        const driverDoc = willAward ? await tx.get(driverRef) : null;
+
+        // ---- shu nuqtadan e'tiboran faqat yozishlar ----
+        tx.set(orderRef, { driverBonusChecked: true }, { merge: true });
+
+        if (qualifies) {
+          tx.set(
+            dailyStatsRef,
+            { qualifyingTripCount: newCount, date: dateStr, updatedAt: FieldValue.serverTimestamp() },
+            { merge: true }
+          );
+        }
+
+        if (willAward && driverDoc) {
+          const currentBalance =
+            typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
+          const newBalance = currentBalance + driverBonusSettings.bonusAmount;
+
+          tx.set(driverRef, { balance: newBalance }, { merge: true });
+          tx.set(
+            dailyStatsRef,
+            { bonusAwarded: true, bonusAmount: driverBonusSettings.bonusAmount },
+            { merge: true }
+          );
+
+          logger.info(
+            `Haydovchi ${driverId}: kunlik bonus (${dateStr}) berildi — ${newCount} safar, ` +
+              `+${driverBonusSettings.bonusAmount} so'm, yangi balans: ${newBalance}`
+          );
+        } else if (qualifies) {
+          logger.info(
+            `Buyurtma ${orderId}: haydovchi ${driverId} kunlik hisobga qo'shildi ` +
+              `(${newCount}/${driverBonusSettings.dailyTripThreshold})`
+          );
+        } else {
+          logger.info(
+            `Buyurtma ${orderId}: masofa (${distanceKm}km) minimal chegaradan ` +
+              `(${driverBonusSettings.minTripDistanceKm}km) kam — kunlik hisobga kirmadi`
+          );
+        }
+      });
+    } catch (error) {
+      logger.error(`Haydovchi kunlik bonus tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
     }
   }
 );
