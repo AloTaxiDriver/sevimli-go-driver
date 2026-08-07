@@ -6,9 +6,12 @@ import GlassPanel from '../components/GlassPanel';
 import { useAuth } from '../context/AuthContext';
 import { COLORS } from '../theme/colors';
 import {
-  DriverBonusHistoryEntry,
+  DriverBonusGoal,
+  DriverBonusSettings,
   FirestoreOrder,
-  listenToDriverBonusHistory,
+  getDriverBonusSettings,
+  listenToDriverDailyBonusStats,
+  listenToDriverWeeklyBonusStats,
   listenToOrderHistory,
 } from '../utils/firebase';
 
@@ -48,10 +51,86 @@ function buildWeekEarnings(orders: FirestoreOrder[]): DayEarning[] {
   return days;
 }
 
-function formatBonusDate(dateStr: string): string {
-  const parts = dateStr?.split('-');
-  if (!parts || parts.length !== 3) return dateStr || '';
-  return `${parts[2]}.${parts[1]}`;
+// Cloud Function (onOrderCompletedCheckDriverBonus) bilan BIR XIL
+// mantiq — Toshkent (UTC+5) kalendar sanasi/hafta boshi (Dushanba),
+// aks holda "faol maqsad" bu yerda boshqa kun/hafta bo'lib qolar edi.
+function tashkentDateStr(d: Date = new Date()): string {
+  const shifted = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  return shifted.toISOString().slice(0, 10);
+}
+function tashkentWeekStartStr(d: Date = new Date()): string {
+  const shifted = new Date(d.getTime() + 5 * 60 * 60 * 1000);
+  const day = shifted.getUTCDay();
+  const diffToMonday = day === 0 ? 6 : day - 1;
+  const monday = new Date(shifted);
+  monday.setUTCDate(shifted.getUTCDate() - diffToMonday);
+  return monday.toISOString().slice(0, 10);
+}
+
+const UZ_MONTHS = [
+  'yanvar', 'fevral', 'mart', 'aprel', 'may', 'iyun',
+  'iyul', 'avgust', 'sentabr', 'oktabr', 'noyabr', 'dekabr',
+];
+
+function formatUzDate(dateStr?: string): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr + 'T00:00:00Z');
+  return `${d.getUTCDate()}-${UZ_MONTHS[d.getUTCMonth()]}`;
+}
+
+function formatUzWeekRange(weekStartStr?: string): string {
+  if (!weekStartStr) return '';
+  const start = new Date(weekStartStr + 'T00:00:00Z');
+  const end = new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
+  const sameMonth = start.getUTCMonth() === end.getUTCMonth();
+  return sameMonth
+    ? `${start.getUTCDate()}–${end.getUTCDate()} ${UZ_MONTHS[start.getUTCMonth()]}`
+    : `${start.getUTCDate()} ${UZ_MONTHS[start.getUTCMonth()]} – ${end.getUTCDate()} ${UZ_MONTHS[end.getUTCMonth()]}`;
+}
+
+type GoalCardProps = {
+  label: string;
+  dateLabel: string;
+  count: number;
+  threshold: number;
+  amount: number;
+  isPast?: boolean;
+  achieved?: boolean;
+};
+
+function GoalCard({ label, dateLabel, count, threshold, amount, isPast, achieved }: GoalCardProps) {
+  if (!threshold || threshold <= 0) return null;
+  const pct = Math.min(100, Math.round((count / threshold) * 100));
+  return (
+    <View style={[styles.goalCard, isPast ? styles.goalCardPast : styles.goalCardActive]}>
+      <View style={styles.goalHeaderRow}>
+        <View>
+          <Text style={styles.goalLabel}>{label}</Text>
+          <View style={styles.goalDateRow}>
+            <Text style={styles.goalDate}>{dateLabel}</Text>
+            {isPast && (
+              <View style={[styles.goalBadge, achieved ? styles.goalBadgeWon : styles.goalBadgeLost]}>
+                <Ionicons name={achieved ? 'checkmark' : 'close'} size={9} color="#fff" />
+              </View>
+            )}
+          </View>
+        </View>
+        <Text style={[styles.goalAmount, isPast && !achieved && styles.goalAmountMuted]}>
+          {amount.toLocaleString()} so'm
+        </Text>
+      </View>
+      <View style={styles.progressTrack}>
+        <View
+          style={[
+            styles.progressFill,
+            { width: `${pct}%` },
+            isPast && !achieved && styles.progressFillMuted,
+          ]}
+        />
+      </View>
+      <Text style={styles.goalCountText}>{count} / {threshold} buyurtma</Text>
+    </View>
+  );
 }
 
 export default function MoneyScreen() {
@@ -61,7 +140,9 @@ export default function MoneyScreen() {
   const [orders, setOrders] = useState<FirestoreOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(6); // bugun
-  const [bonusHistory, setBonusHistory] = useState<DriverBonusHistoryEntry[]>([]);
+  const [dailyGoals, setDailyGoals] = useState<DriverBonusGoal[]>([]);
+  const [weeklyGoals, setWeeklyGoals] = useState<DriverBonusGoal[]>([]);
+  const [bonusSettings, setBonusSettings] = useState<DriverBonusSettings | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -73,9 +154,17 @@ export default function MoneyScreen() {
   }, [driverId]);
 
   useEffect(() => {
-    const unsubscribe = listenToDriverBonusHistory(driverId, setBonusHistory);
-    return unsubscribe;
+    const unsubDaily = listenToDriverDailyBonusStats(driverId, setDailyGoals);
+    const unsubWeekly = listenToDriverWeeklyBonusStats(driverId, setWeeklyGoals);
+    return () => {
+      unsubDaily();
+      unsubWeekly();
+    };
   }, [driverId]);
+
+  useEffect(() => {
+    getDriverBonusSettings().then(setBonusSettings);
+  }, []);
 
   const weekEarnings = useMemo(() => buildWeekEarnings(orders), [orders]);
   const maxEarning = Math.max(1, ...weekEarnings.map((d) => d.amount));
@@ -85,6 +174,13 @@ export default function MoneyScreen() {
     () => orders.filter((o) => o.status === 'completed').reduce((sum, o) => sum + o.price, 0),
     [orders]
   );
+
+  const todayStr = useMemo(() => tashkentDateStr(), []);
+  const weekStartStr = useMemo(() => tashkentWeekStartStr(), []);
+  const todayGoal = dailyGoals.find((g) => g.id === todayStr);
+  const weekGoal = weeklyGoals.find((g) => g.id === weekStartStr);
+  const pastDailyGoals = dailyGoals.filter((g) => g.id !== todayStr).slice(0, 7);
+  const pastWeeklyGoals = weeklyGoals.filter((g) => g.id !== weekStartStr).slice(0, 6);
 
   const isSelectedToday = selected.date.toDateString() === new Date().toDateString();
   const selectedDateLabel = `${selected.day.toString().padStart(2, '0')}.${(selected.date.getMonth() + 1)
@@ -157,27 +253,60 @@ export default function MoneyScreen() {
             </View>
           </GlassPanel>
 
-          {bonusHistory.length > 0 && (
-            <GlassPanel intensity={75} style={[styles.card, styles.glassLight]}>
-              <View style={styles.cardIconLabel}>
-                <Ionicons name="gift" size={18} color={COLORS.textMuted} />
-                <Text style={styles.cardLabel}>Bonus tarixi</Text>
-              </View>
-              {bonusHistory.map((entry) => (
-                <View key={entry.id} style={styles.bonusRow}>
-                  <View style={styles.bonusDateRow}>
-                    <Text style={styles.bonusDate}>{formatBonusDate(entry.date)}</Text>
-                    <View style={[styles.bonusBadge, entry.period === 'weekly' && styles.bonusBadgeWeekly]}>
-                      <Text style={[styles.bonusBadgeText, entry.period === 'weekly' && styles.bonusBadgeTextWeekly]}>
-                        {entry.period === 'weekly' ? 'Haftalik' : 'Kunlik'}
-                      </Text>
-                    </View>
-                  </View>
-                  <Text style={styles.bonusTrips}>{entry.tripCount} safar</Text>
-                  <Text style={styles.bonusAmount}>+{entry.amount.toLocaleString()} so'm</Text>
-                </View>
+          {(bonusSettings?.dailyTripThreshold || bonusSettings?.weeklyTripThreshold) ? (
+            <>
+              <Text style={styles.sectionTitle}>Faol maqsadlar</Text>
+              <GoalCard
+                label="Bugungi maqsad"
+                dateLabel="Bugun"
+                count={todayGoal?.qualifyingTripCount || 0}
+                threshold={todayGoal?.tripThreshold || bonusSettings?.dailyTripThreshold || 0}
+                amount={todayGoal?.targetBonusAmount || bonusSettings?.bonusAmount || 0}
+              />
+              <GoalCard
+                label="Haftalik maqsad"
+                dateLabel={formatUzWeekRange(weekStartStr)}
+                count={weekGoal?.qualifyingTripCount || 0}
+                threshold={weekGoal?.tripThreshold || bonusSettings?.weeklyTripThreshold || 0}
+                amount={weekGoal?.targetBonusAmount || bonusSettings?.weeklyBonusAmount || 0}
+              />
+            </>
+          ) : null}
+
+          {pastDailyGoals.length > 0 && (
+            <>
+              <Text style={styles.sectionTitle}>O'tgan kunlar</Text>
+              {pastDailyGoals.map((g) => (
+                <GoalCard
+                  key={g.id}
+                  label="Kunlik"
+                  dateLabel={formatUzDate(g.date || g.id)}
+                  count={g.qualifyingTripCount}
+                  threshold={g.tripThreshold || bonusSettings?.dailyTripThreshold || 0}
+                  amount={g.targetBonusAmount || bonusSettings?.bonusAmount || 0}
+                  isPast
+                  achieved={g.bonusAwarded}
+                />
               ))}
-            </GlassPanel>
+            </>
+          )}
+
+          {pastWeeklyGoals.length > 0 && (
+            <>
+              <Text style={styles.sectionTitle}>O'tgan haftalar</Text>
+              {pastWeeklyGoals.map((g) => (
+                <GoalCard
+                  key={g.id}
+                  label="Haftalik"
+                  dateLabel={formatUzWeekRange(g.weekStart || g.id)}
+                  count={g.qualifyingTripCount}
+                  threshold={g.tripThreshold || bonusSettings?.weeklyTripThreshold || 0}
+                  amount={g.targetBonusAmount || bonusSettings?.weeklyBonusAmount || 0}
+                  isPast
+                  achieved={g.bonusAwarded}
+                />
+              ))}
+            </>
           )}
 
           {loading && orders.length === 0 && (
@@ -272,20 +401,50 @@ const styles = StyleSheet.create({
   cardValue: { fontSize: 16, fontWeight: '800', color: COLORS.dark },
   cardValueBig: { fontSize: 22, fontWeight: '800', color: COLORS.dark },
 
-  bonusRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginTop: 10,
+  sectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+    marginBottom: 8,
+    marginTop: 4,
   },
-  bonusDateRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  bonusDate: { fontSize: 13, fontWeight: '700', color: COLORS.dark },
-  bonusBadge: { paddingHorizontal: 7, paddingVertical: 2, borderRadius: 20, backgroundColor: COLORS.successLight },
-  bonusBadgeWeekly: { backgroundColor: '#EEF2FF' },
-  bonusBadgeText: { fontSize: 9, fontWeight: '700', color: COLORS.primary },
-  bonusBadgeTextWeekly: { color: '#4338CA' },
-  bonusTrips: { fontSize: 12, color: COLORS.textMuted, flex: 1, textAlign: 'center' },
-  bonusAmount: { fontSize: 14, fontWeight: '800', color: COLORS.primary },
+
+  goalCard: {
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 10,
+    borderWidth: 1,
+  },
+  goalCardActive: { backgroundColor: COLORS.successLight, borderColor: 'rgba(22,163,74,0.15)' },
+  goalCardPast: { backgroundColor: '#FAFAFA', borderColor: 'rgba(0,0,0,0.06)' },
+  goalHeaderRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
+  goalLabel: { fontSize: 10.5, fontWeight: '700', color: COLORS.textMuted, textTransform: 'uppercase', letterSpacing: 0.3 },
+  goalDateRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  goalDate: { fontSize: 13, fontWeight: '700', color: COLORS.dark },
+  goalBadge: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  goalBadgeWon: { backgroundColor: COLORS.primary },
+  goalBadgeLost: { backgroundColor: 'rgba(0,0,0,0.2)' },
+  goalAmount: { fontSize: 13, fontWeight: '800', color: COLORS.primary },
+  goalAmountMuted: { color: 'rgba(0,0,0,0.35)' },
+  progressTrack: {
+    height: 6,
+    backgroundColor: 'rgba(0,0,0,0.08)',
+    borderRadius: 3,
+    overflow: 'hidden',
+    marginTop: 10,
+    marginBottom: 6,
+  },
+  progressFill: { height: '100%', backgroundColor: COLORS.primary, borderRadius: 3 },
+  progressFillMuted: { backgroundColor: 'rgba(0,0,0,0.2)' },
+  goalCountText: { fontSize: 11.5, color: COLORS.textMuted, fontWeight: '600' },
 
   loadingText: { fontSize: 13, color: COLORS.textMuted, fontWeight: '600', textAlign: 'center', marginTop: 8 },
 });

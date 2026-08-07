@@ -341,6 +341,102 @@ export function listenToDriverBonusHistory(
   return unsubscribe;
 }
 
+export type DriverBonusGoal = {
+  id: string;
+  qualifyingTripCount: number;
+  tripThreshold?: number;
+  targetBonusAmount?: number;
+  bonusAwarded?: boolean;
+  date?: string;
+  weekStart?: string;
+};
+
+function mapBonusGoalDoc(doc: FirebaseFirestoreTypes.QueryDocumentSnapshot): DriverBonusGoal {
+  const data = doc.data();
+  return {
+    id: doc.id,
+    qualifyingTripCount: typeof data.qualifyingTripCount === 'number' ? data.qualifyingTripCount : 0,
+    tripThreshold: typeof data.tripThreshold === 'number' ? data.tripThreshold : undefined,
+    targetBonusAmount: typeof data.targetBonusAmount === 'number' ? data.targetBonusAmount : undefined,
+    bonusAwarded: data.bonusAwarded === true,
+    date: data.date,
+    weekStart: data.weekStart,
+  };
+}
+
+// "Bugungi maqsad" / "O'tgan kunlar" (Pul ekrani) uchun — Cloud Function
+// (onOrderCompletedCheckDriverBonus) har safar shu kunga yozib turadigan
+// drivers/{id}/dailyBonusStats hujjatlarini tinglaydi.
+export function listenToDriverDailyBonusStats(
+  driverId: string,
+  onChange: (stats: DriverBonusGoal[]) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const unsubscribe = firestore()
+    .collection('drivers')
+    .doc(driverId)
+    .collection('dailyBonusStats')
+    .orderBy('date', 'desc')
+    .limit(14)
+    .onSnapshot(
+      (snapshot) => onChange(snapshot.docs.map(mapBonusGoalDoc)),
+      (error) => {
+        console.warn('Kunlik bonus maqsadlarini tinglashda xato:', error);
+        onError?.(error);
+      }
+    );
+  return unsubscribe;
+}
+
+// "Haftalik maqsad" / "O'tgan haftalar" uchun — xuddi shu naqshda,
+// drivers/{id}/weeklyBonusStats hujjatlarini tinglaydi.
+export function listenToDriverWeeklyBonusStats(
+  driverId: string,
+  onChange: (stats: DriverBonusGoal[]) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const unsubscribe = firestore()
+    .collection('drivers')
+    .doc(driverId)
+    .collection('weeklyBonusStats')
+    .orderBy('weekStart', 'desc')
+    .limit(8)
+    .onSnapshot(
+      (snapshot) => onChange(snapshot.docs.map(mapBonusGoalDoc)),
+      (error) => {
+        console.warn('Haftalik bonus maqsadlarini tinglashda xato:', error);
+        onError?.(error);
+      }
+    );
+  return unsubscribe;
+}
+
+export type DriverBonusSettings = {
+  dailyTripThreshold: number;
+  bonusAmount: number;
+  minTripDistanceKm: number;
+  weeklyTripThreshold: number;
+  weeklyBonusAmount: number;
+};
+
+export async function getDriverBonusSettings(): Promise<DriverBonusSettings | null> {
+  try {
+    const doc = await firestore().collection('settings').doc('driverBonus').get();
+    const data = doc.data();
+    if (!data) return null;
+    return {
+      dailyTripThreshold: data.dailyTripThreshold || 0,
+      bonusAmount: data.bonusAmount || 0,
+      minTripDistanceKm: data.minTripDistanceKm || 0,
+      weeklyTripThreshold: data.weeklyTripThreshold || 0,
+      weeklyBonusAmount: data.weeklyBonusAmount || 0,
+    };
+  } catch (error) {
+    console.warn('Haydovchi bonus sozlamalarini o\'qishda xato:', error);
+    return null;
+  }
+}
+
 export async function acceptOrder(
   orderId: string,
   driverId: string

@@ -847,7 +847,13 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         if (qualifies) {
           tx.set(
             dailyStatsRef,
-            { qualifyingTripCount: newCount, date: dateStr, updatedAt: FieldValue.serverTimestamp() },
+            {
+              qualifyingTripCount: newCount,
+              date: dateStr,
+              tripThreshold: driverBonusSettings.dailyTripThreshold,
+              targetBonusAmount: driverBonusSettings.bonusAmount,
+              updatedAt: FieldValue.serverTimestamp(),
+            },
             { merge: true }
           );
           tx.set(
@@ -855,6 +861,8 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
             {
               qualifyingTripCount: weeklyNewCount,
               weekStart: weekStartStr,
+              tripThreshold: driverBonusSettings.weeklyTripThreshold,
+              targetBonusAmount: driverBonusSettings.weeklyBonusAmount,
               updatedAt: FieldValue.serverTimestamp(),
             },
             { merge: true }
