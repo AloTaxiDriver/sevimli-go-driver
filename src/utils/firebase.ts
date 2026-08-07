@@ -412,9 +412,11 @@ export function listenToDriverWeeklyBonusStats(
 }
 
 export type DriverBonusSettings = {
+  dailyEnabled: boolean;
   dailyTripThreshold: number;
   bonusAmount: number;
   minTripDistanceKm: number;
+  weeklyEnabled: boolean;
   weeklyTripThreshold: number;
   weeklyBonusAmount: number;
 };
@@ -425,9 +427,15 @@ export async function getDriverBonusSettings(): Promise<DriverBonusSettings | nu
     const data = doc.data();
     if (!data) return null;
     return {
+      dailyEnabled: data.dailyEnabled !== false,
       dailyTripThreshold: data.dailyTripThreshold || 0,
       bonusAmount: data.bonusAmount || 0,
       minTripDistanceKm: data.minTripDistanceKm || 0,
+      // Eski hujjatlarda weeklyEnabled maydoni yo'q — bu holda ESKI
+      // qoida (weeklyTripThreshold > 0 bo'lsa faol) bo'yicha xulosa
+      // chiqaramiz, aks holda allaqachon ishlayotgan haftalik bonus
+      // bu deploy'dan keyin "jim" o'chib qolar edi.
+      weeklyEnabled: typeof data.weeklyEnabled === 'boolean' ? data.weeklyEnabled : (data.weeklyTripThreshold || 0) > 0,
       weeklyTripThreshold: data.weeklyTripThreshold || 0,
       weeklyBonusAmount: data.weeklyBonusAmount || 0,
     };

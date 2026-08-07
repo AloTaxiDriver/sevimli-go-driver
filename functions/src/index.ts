@@ -158,20 +158,24 @@ function computePerOrderBonusCap(
     : Math.floor((price * settings.perOrderCapValue) / 100);
 }
 
-// Admin dashboard'ning "Haydovchilar uchun kunlik/haftalik bonus"
-// bo'limida sozlanadi (settings/driverBonus hujjati). Haftalik bonus
-// ixtiyoriy — weeklyTripThreshold 0 bo'lsa, o'chirilgan hisoblanadi.
+// Admin dashboard'ning "Haydovchilar uchun kunlik bonus" va "Haydovchilar
+// uchun haftalik bonus" (alohida kartalar, har birida Faol/Nofaol
+// vklyuchateli) bo'limlarida sozlanadi (settings/driverBonus hujjati).
 async function getDriverBonusSettings(): Promise<{
+  dailyEnabled: boolean;
   dailyTripThreshold: number;
   bonusAmount: number;
   minTripDistanceKm: number;
+  weeklyEnabled: boolean;
   weeklyTripThreshold: number;
   weeklyBonusAmount: number;
 }> {
   const fallback = {
+    dailyEnabled: true,
     dailyTripThreshold: 15,
     bonusAmount: 20000,
     minTripDistanceKm: 2,
+    weeklyEnabled: false,
     weeklyTripThreshold: 0,
     weeklyBonusAmount: 0,
   };
@@ -179,7 +183,12 @@ async function getDriverBonusSettings(): Promise<{
     const doc = await db.collection("settings").doc("driverBonus").get();
     const data = doc.data();
     if (!data) return fallback;
+    const weeklyTripThreshold =
+      typeof data.weeklyTripThreshold === "number"
+        ? data.weeklyTripThreshold
+        : fallback.weeklyTripThreshold;
     return {
+      dailyEnabled: typeof data.dailyEnabled === "boolean" ? data.dailyEnabled : fallback.dailyEnabled,
       dailyTripThreshold:
         typeof data.dailyTripThreshold === "number"
           ? data.dailyTripThreshold
@@ -189,10 +198,13 @@ async function getDriverBonusSettings(): Promise<{
         typeof data.minTripDistanceKm === "number"
           ? data.minTripDistanceKm
           : fallback.minTripDistanceKm,
-      weeklyTripThreshold:
-        typeof data.weeklyTripThreshold === "number"
-          ? data.weeklyTripThreshold
-          : fallback.weeklyTripThreshold,
+      // Eski hujjatlarda weeklyEnabled maydoni yo'q — bu holda ESKI
+      // qoida (weeklyTripThreshold > 0 bo'lsa faol) bo'yicha xulosa
+      // chiqaramiz, aks holda allaqachon ishlayotgan haftalik bonus
+      // shu deploy'dan keyin "jim" o'chib qolar edi.
+      weeklyEnabled:
+        typeof data.weeklyEnabled === "boolean" ? data.weeklyEnabled : weeklyTripThreshold > 0,
+      weeklyTripThreshold,
       weeklyBonusAmount:
         typeof data.weeklyBonusAmount === "number"
           ? data.weeklyBonusAmount
@@ -814,17 +826,21 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         }
 
         const distanceKm = typeof orderData.distanceKm === "number" ? orderData.distanceKm : 0;
-        const qualifies = distanceKm >= driverBonusSettings.minTripDistanceKm;
+        const distanceOk = distanceKm >= driverBonusSettings.minTripDistanceKm;
+        const dailyActive = driverBonusSettings.dailyEnabled && driverBonusSettings.dailyTripThreshold > 0;
+        const weeklyActive = driverBonusSettings.weeklyEnabled && driverBonusSettings.weeklyTripThreshold > 0;
+        const dailyQualifies = dailyActive && distanceOk;
+        const weeklyQualifies = weeklyActive && distanceOk;
 
         const statsSnap = await tx.get(dailyStatsRef);
         const statsData = statsSnap.data();
         const currentCount =
           typeof statsData?.qualifyingTripCount === "number" ? statsData.qualifyingTripCount : 0;
         const alreadyAwarded = statsData?.bonusAwarded === true;
-        const newCount = qualifies ? currentCount + 1 : currentCount;
-        const willAward = qualifies && !alreadyAwarded && newCount >= driverBonusSettings.dailyTripThreshold;
+        const newCount = dailyQualifies ? currentCount + 1 : currentCount;
+        const willAward =
+          dailyQualifies && !alreadyAwarded && newCount >= driverBonusSettings.dailyTripThreshold;
 
-        const weeklyEnabled = driverBonusSettings.weeklyTripThreshold > 0;
         const weeklyStatsSnap = await tx.get(weeklyStatsRef);
         const weeklyStatsData = weeklyStatsSnap.data();
         const weeklyCurrentCount =
@@ -832,19 +848,16 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
             ? weeklyStatsData.qualifyingTripCount
             : 0;
         const weeklyAlreadyAwarded = weeklyStatsData?.bonusAwarded === true;
-        const weeklyNewCount = qualifies ? weeklyCurrentCount + 1 : weeklyCurrentCount;
+        const weeklyNewCount = weeklyQualifies ? weeklyCurrentCount + 1 : weeklyCurrentCount;
         const weeklyWillAward =
-          weeklyEnabled &&
-          qualifies &&
-          !weeklyAlreadyAwarded &&
-          weeklyNewCount >= driverBonusSettings.weeklyTripThreshold;
+          weeklyQualifies && !weeklyAlreadyAwarded && weeklyNewCount >= driverBonusSettings.weeklyTripThreshold;
 
         const driverDoc = willAward || weeklyWillAward ? await tx.get(driverRef) : null;
 
         // ---- shu nuqtadan e'tiboran faqat yozishlar ----
         tx.set(orderRef, { driverBonusChecked: true }, { merge: true });
 
-        if (qualifies) {
+        if (dailyQualifies) {
           tx.set(
             dailyStatsRef,
             {
@@ -856,6 +869,8 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
             },
             { merge: true }
           );
+        }
+        if (weeklyQualifies) {
           tx.set(
             weeklyStatsRef,
             {
@@ -918,17 +933,19 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
           }
 
           logger.info(`Haydovchi ${driverId}: yangi balans ${newBalance}`);
-        } else if (qualifies) {
+        } else if (dailyQualifies || weeklyQualifies) {
           logger.info(
             `Buyurtma ${orderId}: haydovchi ${driverId} hisobga qo'shildi — ` +
-              `kunlik ${newCount}/${driverBonusSettings.dailyTripThreshold}` +
-              (weeklyEnabled ? `, haftalik ${weeklyNewCount}/${driverBonusSettings.weeklyTripThreshold}` : "")
+              (dailyQualifies ? `kunlik ${newCount}/${driverBonusSettings.dailyTripThreshold}` : "kunlik o'chirilgan") +
+              (weeklyQualifies ? `, haftalik ${weeklyNewCount}/${driverBonusSettings.weeklyTripThreshold}` : "")
           );
-        } else {
+        } else if (!distanceOk) {
           logger.info(
             `Buyurtma ${orderId}: masofa (${distanceKm}km) minimal chegaradan ` +
               `(${driverBonusSettings.minTripDistanceKm}km) kam — hisobga kirmadi`
           );
+        } else {
+          logger.info(`Buyurtma ${orderId}: kunlik va haftalik bonus ikkalasi ham o'chirilgan`);
         }
       });
     } catch (error) {

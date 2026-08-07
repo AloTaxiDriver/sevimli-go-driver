@@ -2844,6 +2844,8 @@ function renderDriverTabContent(){
 
         const todayStr=dashboardTashkentDateStr();
         const weekStartStr=dashboardTashkentWeekStartStr();
+        const dailyIsActive=settings?.dailyEnabled!==false;
+        const weeklyIsActive=typeof settings?.weeklyEnabled==='boolean'?settings.weeklyEnabled:((settings?.weeklyTripThreshold||0)>0);
         const fallbackDailyThreshold=settings?.dailyTripThreshold||0;
         const fallbackDailyAmount=settings?.bonusAmount||0;
         const fallbackWeeklyThreshold=settings?.weeklyTripThreshold||0;
@@ -2858,13 +2860,13 @@ function renderDriverTabContent(){
           driverGoalCard({
             label:'Bugungi maqsad',dateLabel:'Bugun',isPast:false,
             count:todayDoc?.qualifyingTripCount||0,
-            threshold:todayDoc?.tripThreshold||fallbackDailyThreshold,
+            threshold:dailyIsActive?(todayDoc?.tripThreshold||fallbackDailyThreshold):0,
             amount:todayDoc?.targetBonusAmount||fallbackDailyAmount,
           }),
           driverGoalCard({
             label:'Haftalik maqsad',dateLabel:formatUzWeekRange(weekStartStr),isPast:false,
             count:weekDoc?.qualifyingTripCount||0,
-            threshold:weekDoc?.tripThreshold||fallbackWeeklyThreshold,
+            threshold:weeklyIsActive?(weekDoc?.tripThreshold||fallbackWeeklyThreshold):0,
             amount:weekDoc?.targetBonusAmount||fallbackWeeklyAmount,
           }),
         ].filter(Boolean).join('');
@@ -6299,7 +6301,13 @@ function renderBonusSettings(){
     </div>
 
     <div class="card" style="padding:20px">
-      <div style="font-weight:700;font-size:15px;margin-bottom:4px">Haydovchilar uchun kunlik bonus</div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div style="font-weight:700;font-size:15px">Haydovchilar uchun kunlik bonus</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="dbs-daily-toggle-label" style="font-size:12px;font-weight:700;color:rgba(0,0,0,0.4)">Nofaol</span>
+          ${bonusToggleHtml('dbs-daily-toggle',false,'toggleDbsDaily()')}
+        </div>
+      </div>
       <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:16px">Bir kunda kamida "Chegara" safarni yakunlagan haydovchiga bonus summasi avtomatik balansiga qo'shiladi. Faqat kamida "Minimal masofa"dan uzoq safarlar hisobga olinadi — bo'sh/soxta buyurtmalar bilan bonusni "urib olish"ning oldini olish uchun.</div>
 
       <div style="display:flex;flex-direction:column;gap:14px">
@@ -6318,12 +6326,25 @@ function renderBonusSettings(){
           <input class="form-input" id="dbs-min-distance" type="number" min="0" step="0.5" placeholder="Masalan: 2">
           <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu masofa chegarasi kunlik VA haftalik bonus uchun umumiy qo'llaniladi.</div>
         </div>
+      </div>
 
-        <div style="height:1px;background:rgba(0,0,0,0.08);margin:2px 0"></div>
+      <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="saveDailyBonusSettingsForm()">Saqlash</button>
+    </div>
 
+    <div class="card" style="padding:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div style="font-weight:700;font-size:15px">Haydovchilar uchun haftalik bonus</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="dbs-weekly-toggle-label" style="font-size:12px;font-weight:700;color:rgba(0,0,0,0.4)">Nofaol</span>
+          ${bonusToggleHtml('dbs-weekly-toggle',false,'toggleDbsWeekly()')}
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:16px">Bir haftada (Dushanbadan Yakshanbagacha) kamida "Chegara" safarni yakunlagan haydovchiga bonus summasi avtomatik balansiga qo'shiladi. Kunlik bonusdagi bilan bir xil minimal masofa qoidasi qo'llaniladi.</div>
+
+      <div style="display:flex;flex-direction:column;gap:14px">
         <div class="form-field">
           <label class="form-label">Haftalik safar chegarasi (ta)</label>
-          <input class="form-input" id="dbs-weekly-trip-threshold" type="number" min="0" step="1" placeholder="Masalan: 80 (0 = o'chirilgan)">
+          <input class="form-input" id="dbs-weekly-trip-threshold" type="number" min="1" step="1" placeholder="Masalan: 80">
         </div>
 
         <div class="form-field">
@@ -6332,9 +6353,35 @@ function renderBonusSettings(){
         </div>
       </div>
 
-      <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="saveDriverBonusSettingsForm()">Saqlash</button>
+      <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="saveWeeklyBonusSettingsForm()">Saqlash</button>
     </div>
   </div>`;
+}
+
+function bonusToggleHtml(id,checked,onclick){
+  return `<div id="${id}" onclick="${onclick}" style="width:42px;height:23px;border-radius:12px;background:${checked?'#16A34A':'rgba(0,0,0,0.15)'};position:relative;cursor:pointer;transition:background 0.15s;flex-shrink:0">
+    <div style="width:17px;height:17px;border-radius:50%;background:#fff;position:absolute;top:3px;left:${checked?'22px':'3px'};transition:left 0.15s;box-shadow:0 1px 3px rgba(0,0,0,0.2)"></div>
+  </div>`;
+}
+function renderDbsToggle(id,checked){
+  const el=document.getElementById(id);
+  if(!el)return;
+  el.style.background=checked?'#16A34A':'rgba(0,0,0,0.15)';
+  const knob=el.firstElementChild;
+  if(knob)knob.style.left=checked?'22px':'3px';
+  const label=document.getElementById(id+'-label');
+  if(label){
+    label.textContent=checked?'Faol':'Nofaol';
+    label.style.color=checked?'#16A34A':'rgba(0,0,0,0.4)';
+  }
+}
+function toggleDbsDaily(){
+  window._dbsDailyEnabled=!window._dbsDailyEnabled;
+  renderDbsToggle('dbs-daily-toggle',window._dbsDailyEnabled);
+}
+function toggleDbsWeekly(){
+  window._dbsWeeklyEnabled=!window._dbsWeeklyEnabled;
+  renderDbsToggle('dbs-weekly-toggle',window._dbsWeeklyEnabled);
 }
 
 async function loadBonusSettingsForm(){
@@ -6381,19 +6428,37 @@ async function loadDriverBonusSettingsForm(){
   if(distEl&&typeof cfg.minTripDistanceKm==='number')distEl.value=cfg.minTripDistanceKm;
   if(weeklyThEl&&typeof cfg.weeklyTripThreshold==='number')weeklyThEl.value=cfg.weeklyTripThreshold;
   if(weeklyAmtEl&&typeof cfg.weeklyBonusAmount==='number')weeklyAmtEl.value=cfg.weeklyBonusAmount;
+  // Eski sozlamalarda dailyEnabled/weeklyEnabled maydoni bo'lmasligi
+  // mumkin — kunlik bonus ilgari har doim faol edi (standart true),
+  // haftalik esa ESKI qoida (weeklyTripThreshold>0) bo'yicha faol edi.
+  window._dbsDailyEnabled=cfg.dailyEnabled!==false;
+  window._dbsWeeklyEnabled=typeof cfg.weeklyEnabled==='boolean'?cfg.weeklyEnabled:(cfg.weeklyTripThreshold>0);
+  renderDbsToggle('dbs-daily-toggle',window._dbsDailyEnabled);
+  renderDbsToggle('dbs-weekly-toggle',window._dbsWeeklyEnabled);
 }
 
-async function saveDriverBonusSettingsForm(){
+async function saveDailyBonusSettingsForm(){
   const cfg={
+    dailyEnabled:window._dbsDailyEnabled!==false,
     dailyTripThreshold:parseInt(document.getElementById('dbs-trip-threshold')?.value,10)||15,
     bonusAmount:parseFloat(document.getElementById('dbs-bonus-amount')?.value)||0,
     minTripDistanceKm:parseFloat(document.getElementById('dbs-min-distance')?.value)||0,
+  };
+  if(window.saveDriverBonusSettings){
+    await window.saveDriverBonusSettings(cfg);
+    alert('Kunlik bonus sozlamalari saqlandi!');
+  }
+}
+
+async function saveWeeklyBonusSettingsForm(){
+  const cfg={
+    weeklyEnabled:window._dbsWeeklyEnabled===true,
     weeklyTripThreshold:parseInt(document.getElementById('dbs-weekly-trip-threshold')?.value,10)||0,
     weeklyBonusAmount:parseFloat(document.getElementById('dbs-weekly-bonus-amount')?.value)||0,
   };
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg);
-    alert('Haydovchilar uchun bonus sozlamalari saqlandi!');
+    alert('Haftalik bonus sozlamalari saqlandi!');
   }
 }
 

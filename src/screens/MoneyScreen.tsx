@@ -253,21 +253,21 @@ export default function MoneyScreen() {
             </View>
           </GlassPanel>
 
-          {(bonusSettings?.dailyTripThreshold || bonusSettings?.weeklyTripThreshold) ? (
+          {(bonusSettings?.dailyEnabled || bonusSettings?.weeklyEnabled) ? (
             <>
               <Text style={styles.sectionTitle}>Faol maqsadlar</Text>
               <GoalCard
                 label="Bugungi maqsad"
                 dateLabel="Bugun"
                 count={todayGoal?.qualifyingTripCount || 0}
-                threshold={todayGoal?.tripThreshold || bonusSettings?.dailyTripThreshold || 0}
+                threshold={bonusSettings?.dailyEnabled ? (todayGoal?.tripThreshold || bonusSettings.dailyTripThreshold || 0) : 0}
                 amount={todayGoal?.targetBonusAmount || bonusSettings?.bonusAmount || 0}
               />
               <GoalCard
                 label="Haftalik maqsad"
                 dateLabel={formatUzWeekRange(weekStartStr)}
                 count={weekGoal?.qualifyingTripCount || 0}
-                threshold={weekGoal?.tripThreshold || bonusSettings?.weeklyTripThreshold || 0}
+                threshold={bonusSettings?.weeklyEnabled ? (weekGoal?.tripThreshold || bonusSettings.weeklyTripThreshold || 0) : 0}
                 amount={weekGoal?.targetBonusAmount || bonusSettings?.weeklyBonusAmount || 0}
               />
             </>
