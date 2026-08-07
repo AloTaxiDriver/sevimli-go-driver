@@ -616,6 +616,22 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   };
 
+  // Haydovchi modalidagi "Bonus" tabi uchun — Cloud Function
+  // (onOrderCompletedCheckDriverBonus) yozgan drivers/{id}/bonusHistory
+  // ro'yxatini o'qiydi, eng yangisidan boshlab.
+  window.getDriverBonusHistory = async function (driverId) {
+    if (!driverId) return [];
+    try {
+      const snap = await getDocs(
+        query(collection(db, "drivers", driverId, "bonusHistory"), orderBy("date", "desc"))
+      );
+      return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+    } catch (err) {
+      console.error("Haydovchi bonus tarixini o'qishda xato:", err);
+      return [];
+    }
+  };
+
   window.saveTariffToFirestore = async function (tariffId, tariffData) {
     if (!tariffId) return;
     try {
@@ -2464,6 +2480,7 @@ function showDriverModal(id){
   // topilmasa, eski lokal yozuvlarga (agar bo'lsa) qaytamiz.
   const d=id?(firestoreDriversList.find(x=>x.id===id)||dbGet('drivers').find(x=>x.id===id)):null;
   const isEdit=!!d;
+  window._driverModalIsEdit=isEdit;
   driverModalActiveTab='personal';
   window._driverFormCache=null;
   window._driverPhotos={
@@ -2487,10 +2504,7 @@ function showDriverModal(id){
           <button onclick="closeModal('driver-modal')" style="background:transparent;border:none;cursor:pointer;color:#999;display:flex">${ic('x',18,'#999')}</button>
         </div>
         <div id="driver-tabs" style="display:flex;gap:4px;border-bottom:1px solid rgba(0,0,0,0.08);overflow-x:auto">
-          ${driverTabBtn('personal','Shaxsiy ma\u2019lumot')}
-          ${driverTabBtn('vehicle','Avtomobil')}
-          ${driverTabBtn('documents','Hujjat rasmlari')}
-          ${driverTabBtn('password','Parol')}
+          ${driverTabButtons()}
         </div>
       </div>
 
@@ -2503,6 +2517,12 @@ function showDriverModal(id){
     </div>
   </div>`;
   renderDriverTabContent();
+}
+
+function driverTabButtons(){
+  return driverTabBtn('personal','Shaxsiy ma\u2019lumot')+driverTabBtn('vehicle','Avtomobil')+driverTabBtn('documents','Hujjat rasmlari')
+    +(window._driverModalIsEdit?driverTabBtn('bonus','Bonus'):'')
+    +driverTabBtn('password','Parol');
 }
 
 function driverTabBtn(key,label){
@@ -2597,8 +2617,7 @@ function cacheCurrentDriverTabFields(){
 function switchDriverTab(key){
   cacheCurrentDriverTabFields();
   driverModalActiveTab=key;
-  document.getElementById('driver-tabs').innerHTML=
-    driverTabBtn('personal','Shaxsiy ma\u2019lumot')+driverTabBtn('vehicle','Avtomobil')+driverTabBtn('documents','Hujjat rasmlari')+driverTabBtn('password','Parol');
+  document.getElementById('driver-tabs').innerHTML=driverTabButtons();
   renderDriverTabContent();
 }
 
@@ -2724,6 +2743,37 @@ function renderDriverTabContent(){
       <div class="form-field"><label class="form-label">Parolni takrorlang</label><input class="form-input" id="driver-password-confirm" type="password" value="${d.password?esc(d.password):''}" placeholder="Parolni qaytadan kiriting"></div>
       <div style="font-size:11px;color:rgba(0,0,0,0.4)">Bu parol orqali haydovchi mobil ilovaga kiradi.</div>
     </div>`;
+  }
+
+  if(driverModalActiveTab==='bonus'){
+    const balance=typeof d.balance==='number'?d.balance:0;
+    wrap.innerHTML=`<div style="display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:14px;background:#F0FDF4;border-radius:12px;border:1px solid rgba(22,163,74,0.15)">
+        <span style="font-size:13px;font-weight:700;color:#166534">Joriy balans</span>
+        <span style="font-size:18px;font-weight:800;color:#166534">${balance.toLocaleString()} so'm</span>
+      </div>
+      <div id="driver-bonus-history-list" style="font-size:13px;color:rgba(0,0,0,0.4);text-align:center;padding:20px 0">Yuklanmoqda...</div>
+    </div>`;
+    const driverId=d.id;
+    if(driverId&&window.getDriverBonusHistory){
+      window.getDriverBonusHistory(driverId).then(list=>{
+        if(driverModalActiveTab!=='bonus')return;
+        const el=document.getElementById('driver-bonus-history-list');
+        if(!el)return;
+        if(!list.length){
+          el.innerHTML=`<div style="text-align:center;padding:10px 0;color:rgba(0,0,0,0.35);font-size:12px">Hali bonus tarixi yo’q</div>`;
+          return;
+        }
+        el.style.padding='0';
+        el.innerHTML=list.map(h=>`<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 2px;border-bottom:1px solid rgba(0,0,0,0.06)">
+          <div>
+            <div style="font-size:13px;font-weight:700;color:#16181D">${esc(h.date||'')}</div>
+            <div style="font-size:11px;color:rgba(0,0,0,0.4)">${h.tripCount||0} safar bajarildi</div>
+          </div>
+          <div style="font-size:14px;font-weight:800;color:#16A34A">+${(h.amount||0).toLocaleString()} so'm</div>
+        </div>`).join('');
+      });
+    }
   }
 }
 
