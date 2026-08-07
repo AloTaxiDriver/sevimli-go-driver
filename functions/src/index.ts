@@ -820,6 +820,12 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
             { bonusAwarded: true, bonusAmount: driverBonusSettings.bonusAmount },
             { merge: true }
           );
+          tx.set(driverRef.collection("bonusHistory").doc(dateStr), {
+            date: dateStr,
+            amount: driverBonusSettings.bonusAmount,
+            tripCount: newCount,
+            createdAt: FieldValue.serverTimestamp(),
+          });
 
           logger.info(
             `Haydovchi ${driverId}: kunlik bonus (${dateStr}) berildi — ${newCount} safar, ` +

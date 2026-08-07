@@ -5,7 +5,12 @@ import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } fr
 import GlassPanel from '../components/GlassPanel';
 import { useAuth } from '../context/AuthContext';
 import { COLORS } from '../theme/colors';
-import { FirestoreOrder, listenToOrderHistory } from '../utils/firebase';
+import {
+  DriverBonusHistoryEntry,
+  FirestoreOrder,
+  listenToDriverBonusHistory,
+  listenToOrderHistory,
+} from '../utils/firebase';
 
 const CHART_HEIGHT = 120;
 const WEEKDAY_LABELS = ['Yak', 'Dush', 'Sesh', 'Chor', 'Pay', 'Jum', 'Shan'];
@@ -43,6 +48,12 @@ function buildWeekEarnings(orders: FirestoreOrder[]): DayEarning[] {
   return days;
 }
 
+function formatBonusDate(dateStr: string): string {
+  const parts = dateStr?.split('-');
+  if (!parts || parts.length !== 3) return dateStr || '';
+  return `${parts[2]}.${parts[1]}`;
+}
+
 export default function MoneyScreen() {
   const { driver } = useAuth();
   const driverId = driver?.id || driver?.phone || 'unknown_driver';
@@ -50,6 +61,7 @@ export default function MoneyScreen() {
   const [orders, setOrders] = useState<FirestoreOrder[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedIndex, setSelectedIndex] = useState(6); // bugun
+  const [bonusHistory, setBonusHistory] = useState<DriverBonusHistoryEntry[]>([]);
 
   useEffect(() => {
     setLoading(true);
@@ -57,6 +69,11 @@ export default function MoneyScreen() {
       setOrders(result);
       setLoading(false);
     });
+    return unsubscribe;
+  }, [driverId]);
+
+  useEffect(() => {
+    const unsubscribe = listenToDriverBonusHistory(driverId, setBonusHistory);
     return unsubscribe;
   }, [driverId]);
 
@@ -139,6 +156,22 @@ export default function MoneyScreen() {
               <Text style={styles.cardValueBig}>{totalAllTime.toLocaleString()} so'm</Text>
             </View>
           </GlassPanel>
+
+          {bonusHistory.length > 0 && (
+            <GlassPanel intensity={75} style={[styles.card, styles.glassLight]}>
+              <View style={styles.cardIconLabel}>
+                <Ionicons name="gift" size={18} color={COLORS.textMuted} />
+                <Text style={styles.cardLabel}>Bonus tarixi</Text>
+              </View>
+              {bonusHistory.map((entry) => (
+                <View key={entry.id} style={styles.bonusRow}>
+                  <Text style={styles.bonusDate}>{formatBonusDate(entry.date)}</Text>
+                  <Text style={styles.bonusTrips}>{entry.tripCount} safar</Text>
+                  <Text style={styles.bonusAmount}>+{entry.amount.toLocaleString()} so'm</Text>
+                </View>
+              ))}
+            </GlassPanel>
+          )}
 
           {loading && orders.length === 0 && (
             <Text style={styles.loadingText}>Yuklanmoqda...</Text>
@@ -231,6 +264,16 @@ const styles = StyleSheet.create({
   cardSubLabel: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
   cardValue: { fontSize: 16, fontWeight: '800', color: COLORS.dark },
   cardValueBig: { fontSize: 22, fontWeight: '800', color: COLORS.dark },
+
+  bonusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 10,
+  },
+  bonusDate: { fontSize: 13, fontWeight: '700', color: COLORS.dark, width: 50 },
+  bonusTrips: { fontSize: 12, color: COLORS.textMuted, flex: 1, textAlign: 'center' },
+  bonusAmount: { fontSize: 14, fontWeight: '800', color: COLORS.primary },
 
   loadingText: { fontSize: 13, color: COLORS.textMuted, fontWeight: '600', textAlign: 'center', marginTop: 8 },
 });

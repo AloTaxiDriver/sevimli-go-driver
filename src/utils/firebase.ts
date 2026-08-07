@@ -298,6 +298,47 @@ export function listenToOrderHistory(
   return unsubscribe;
 }
 
+export type DriverBonusHistoryEntry = {
+  id: string;
+  date: string;
+  amount: number;
+  tripCount: number;
+  createdAtMillis?: number;
+};
+
+export function listenToDriverBonusHistory(
+  driverId: string,
+  onChange: (entries: DriverBonusHistoryEntry[]) => void,
+  onError?: (error: Error) => void
+): () => void {
+  const unsubscribe = firestore()
+    .collection('drivers')
+    .doc(driverId)
+    .collection('bonusHistory')
+    .onSnapshot(
+      (snapshot) => {
+        const entries = snapshot.docs
+          .map((doc) => {
+            const data = doc.data();
+            return {
+              id: doc.id,
+              date: data.date,
+              amount: typeof data.amount === 'number' ? data.amount : 0,
+              tripCount: typeof data.tripCount === 'number' ? data.tripCount : 0,
+              createdAtMillis: data.createdAt?.toMillis?.() ?? undefined,
+            } as DriverBonusHistoryEntry;
+          })
+          .sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+        onChange(entries);
+      },
+      (error) => {
+        console.warn('Bonus tarixini tinglashda xato:', error);
+        onError?.(error);
+      }
+    );
+  return unsubscribe;
+}
+
 export async function acceptOrder(
   orderId: string,
   driverId: string
