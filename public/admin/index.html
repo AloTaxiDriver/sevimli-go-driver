@@ -311,8 +311,9 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   }
 </style>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<!-- Barcha xaritalar (haydovchilar xaritasi + manzil tanlash) Yandex Maps
+     orqali ishlaydi (O'zbekiston bo'yicha aniqroq xarita ma'lumoti uchun). -->
+<script src="https://api-maps.yandex.ru/2.1/?apikey=cef18291-271b-42cc-81e4-09f84ae88383&lang=ru_RU" type="text/javascript"></script>
 <script type="module">
   // Firebase SDK — Firestore orqali buyurtmalarni haydovchi ilovasiga
   // real vaqtda yetkazish uchun. Bu modul localStorage'ni almashtirmaydi,
@@ -5779,40 +5780,40 @@ setTimeout(()=>{initAddressMap(defaultLat,defaultLng,!!a?.lat);if(!a&&document.g
 
 function initAddressMap(lat,lng,hasExistingPin){
   const mapEl=document.getElementById('address-map');
-  if(!mapEl||typeof L==='undefined')return;
+  if(!mapEl||typeof ymaps==='undefined')return;
 
-  if(addressModalMap){addressModalMap.remove();addressModalMap=null;}
+  if(addressModalMap){addressModalMap.destroy();addressModalMap=null;}
 
-  const map=L.map('address-map',{zoomControl:true}).setView([lat,lng],hasExistingPin?15:12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    attribution:'&copy; OpenStreetMap contributors',
-    maxZoom:19,
-  }).addTo(map);
-  addressModalMap=map;
+  ymaps.ready(()=>{
+    // Modal ochilgach yopilgan bo'lishi mumkin (tez bosilsa) — shu holatda
+    // xaritani chizmaymiz.
+    if(!document.getElementById('address-map'))return;
 
-  const icon=L.divIcon({
-    className:'address-pin',
-    html:`<div style="width:30px;height:30px;position:relative">
-      <svg width="30" height="30" viewBox="0 0 24 24" fill="#16A34A" stroke="#fff" stroke-width="1"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3" fill="#fff"/></svg>
-    </div>`,
-    iconSize:[30,30],
-    iconAnchor:[15,28],
+    const map=new ymaps.Map('address-map',{center:[lat,lng],zoom:hasExistingPin?15:12,controls:['zoomControl']});
+    addressModalMap=map;
+
+    const pinSvg='<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 24 24" fill="#16A34A" stroke="#fff" stroke-width="1"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3" fill="#fff"/></svg>';
+    const marker=new ymaps.Placemark([lat,lng],{},{
+      iconLayout:'default#image',
+      iconImageHref:'data:image/svg+xml;base64,'+btoa(pinSvg),
+      iconImageSize:[30,30],
+      iconImageOffset:[-15,-28],
+      draggable:true,
+    });
+    addressModalMarker=marker;
+    map.geoObjects.add(marker);
+
+    marker.events.add('dragend',()=>{
+      const coords=marker.geometry.getCoordinates();
+      setAddressLatLngInputs(coords[0],coords[1]);
+    });
+
+    map.events.add('click',(e)=>{
+      const coords=e.get('coords');
+      marker.geometry.setCoordinates(coords);
+      setAddressLatLngInputs(coords[0],coords[1]);
+    });
   });
-
-  const marker=L.marker([lat,lng],{icon,draggable:true}).addTo(map);
-  addressModalMarker=marker;
-
-  marker.on('dragend',()=>{
-    const pos=marker.getLatLng();
-    setAddressLatLngInputs(pos.lat,pos.lng);
-  });
-
-  map.on('click',(e)=>{
-    marker.setLatLng(e.latlng);
-    setAddressLatLngInputs(e.latlng.lat,e.latlng.lng);
-  });
-
-  setTimeout(()=>{map.invalidateSize();},100);
 }
 
 function setAddressLatLngInputs(lat,lng){
@@ -5826,8 +5827,8 @@ function updateAddressMapFromInputs(){
   const lat=parseFloat(document.getElementById('am-lat')?.value);
   const lng=parseFloat(document.getElementById('am-lng')?.value);
   if(isNaN(lat)||isNaN(lng)||!addressModalMap||!addressModalMarker)return;
-  addressModalMarker.setLatLng([lat,lng]);
-  addressModalMap.setView([lat,lng],addressModalMap.getZoom());
+  addressModalMarker.geometry.setCoordinates([lat,lng]);
+  addressModalMap.setCenter([lat,lng],addressModalMap.getZoom());
 }
 function onAddressBranchChange(){
   const branchId=document.getElementById('am-branch')?.value;
@@ -5837,15 +5838,15 @@ function onAddressBranchChange(){
   if(!branch||branch.lat==null||branch.lng==null)return;
   setAddressLatLngInputs(branch.lat,branch.lng);
   if(addressModalMap&&addressModalMarker){
-    addressModalMarker.setLatLng([branch.lat,branch.lng]);
-    addressModalMap.setView([branch.lat,branch.lng],14,{animate:true});
+    addressModalMarker.geometry.setCoordinates([branch.lat,branch.lng]);
+    addressModalMap.setCenter([branch.lat,branch.lng],14);
   }
 }
 
 function closeAddressModal(){
   const el=document.getElementById('address-modal');
   if(el)el.innerHTML='';
-  if(addressModalMap){addressModalMap.remove();addressModalMap=null;}
+  if(addressModalMap){addressModalMap.destroy();addressModalMap=null;}
   addressModalMarker=null;
 }
 
@@ -5954,7 +5955,7 @@ function sendSMS(){
   dbAdd('sms',{to,text,status:'sent',date:now(),count});
   closeModal('sms-modal');navigate('sms');
 }
-// Real vaqtli haydovchilar ma'lumoti (Firestore'dan) — initLeafletMap()
+// Real vaqtli haydovchilar ma'lumoti (Firestore'dan) — initYandexMap()
 // ichidagi listener har o'zgarishda shu massivni yangilaydi.
 let liveDriversData=[];
 
@@ -6044,7 +6045,7 @@ function renderMap(){
     </div>
 
     <div class="card" style="padding:0;overflow:hidden;height:560px;position:relative">
-      <div id="leaflet-map" style="width:100%;height:100%"></div>
+      <div id="yandex-map" style="width:100%;height:100%"></div>
     </div>
 
   </div>`;
@@ -6098,10 +6099,10 @@ function selectMapDriver(driverId){
   const dd=document.getElementById('map-search-dropdown');
   if(dd)dd.style.display='none';
 
-  if(leafletMapInstance&&drv.lat!=null&&drv.lng!=null){
-    leafletMapInstance.setView([drv.lat,drv.lng],16,{animate:true});
-    const marker=driverMarkers[drv.id];
-    if(marker)setTimeout(()=>marker.openPopup(),400);
+  if(yandexMapInstance&&drv.lat!=null&&drv.lng!=null){
+    yandexMapInstance.setCenter([drv.lat,drv.lng],16,{checkZoomRange:true,duration:400});
+    const placemark=yandexPlacemarks[drv.id];
+    if(placemark)setTimeout(()=>placemark.balloon.open(),400);
   }
 }
 
@@ -6116,66 +6117,52 @@ document.addEventListener('click',(e)=>{
 function afterRenderMap(){
   // Load map only once per page visit, then start live driver tracking
   setTimeout(()=>{
-    if(typeof L==='undefined'){
-      const el=document.getElementById('leaflet-map');
+    if(typeof ymaps==='undefined'){
+      const el=document.getElementById('yandex-map');
       if(el)el.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#aaa;font-size:13px">Xarita kutubxonasi yuklanmadi (internet aloqasini tekshiring)</div>';
       return;
     }
-    initLeafletMap();
+    ymaps.ready(initYandexMap);
   },50);
 }
 
-let leafletMapInstance=null;
-let driverMarkers={};
+let yandexMapInstance=null;
+let yandexPlacemarks={};
 let driversUnsubscribe=null;
 
-function initLeafletMap(){
-  const mapEl=document.getElementById('leaflet-map');
+function initYandexMap(){
+  const mapEl=document.getElementById('yandex-map');
   if(!mapEl)return;
 
   // Clean up old instance if exists
-  if(leafletMapInstance){
-    leafletMapInstance.remove();
-    leafletMapInstance=null;
+  if(yandexMapInstance){
+    yandexMapInstance.destroy();
+    yandexMapInstance=null;
   }
   if(driversUnsubscribe){driversUnsubscribe();driversUnsubscribe=null;}
 
-  const map=L.map('leaflet-map',{zoomControl:true}).setView([41.3111,69.2797],12);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-    attribution:'&copy; OpenStreetMap contributors',
-    maxZoom:19,
-  }).addTo(map);
+  const map=new ymaps.Map('yandex-map',{center:[41.3111,69.2797],zoom:12,controls:['zoomControl']});
 
-  leafletMapInstance=map;
-  driverMarkers={};
+  yandexMapInstance=map;
+  yandexPlacemarks={};
   let boundsFitted=false;
+
+  const DriverPlacemarkLayout=ymaps.templateLayoutFactory.createClass(
+    '<div style="position:relative;width:34px;height:34px">'+
+      '<div style="position:absolute;inset:0;border-radius:50%;background:$[properties.color];opacity:0.25;animation:pulse-ring 2s infinite"></div>'+
+      '<div style="position:absolute;top:3px;left:3px;width:28px;height:28px;border-radius:50%;background:$[properties.color];border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center">'+
+        '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v5"/><circle cx="9" cy="17" r="2"/><circle cx="19" cy="17" r="2"/><path d="M13 3l-2 5H3"/></svg>'+
+      '</div>'+
+    '</div>'
+  );
 
   // MUHIM: haydovchi profillari (ism, mashina, davlat raqami) hozircha
   // dashboard'ning o'z lokal ro'yxatida (localStorage) saqlanadi, GPS
   // koordinatalari esa Firestore'da (mobil ilova yozadi). Ularni
   // telefon raqami orqali bog'laymiz — mos profil topilmasa,
-  // shunchaki ID ko'rsatiladi.
-  const localDrivers=dbGet('drivers');
-  function findLocalProfile(driverId){
-    return localDrivers.find(d=>d.phone===driverId||d.id===driverId);
-  }
-
-  function makeDriverIcon(color){
-    return L.divIcon({
-      className:'driver-marker',
-      html:`<div style="position:relative;width:34px;height:34px">
-        <div style="position:absolute;inset:0;border-radius:50%;background:${color};opacity:0.25;animation:pulse-ring 2s infinite"></div>
-        <div style="position:absolute;top:3px;left:3px;width:28px;height:28px;border-radius:50%;background:${color};border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,0.25);display:flex;align-items:center;justify-content:center">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M5 17H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v5"/><circle cx="9" cy="17" r="2"/><circle cx="19" cy="17" r="2"/><path d="M13 3l-2 5H3"/></svg>
-        </div>
-      </div>`,
-      iconSize:[34,34],
-      iconAnchor:[17,17],
-    });
-  }
-
+  // shunchaki ID ko'rsatiladi (findLocalDriverProfile — top-level helper).
   function makePopupHtml(driverId,color,statusLabel){
-    const profile=findLocalProfile(driverId);
+    const profile=findLocalDriverProfile(driverId);
     const name=profile?profile.name:('Haydovchi '+driverId);
     const carLine=profile?`${esc(profile.car||'')} \u00b7 ${esc(profile.plate||'')}`:esc(driverId);
     return `<div style="font-family:Inter,sans-serif;min-width:160px">
@@ -6190,21 +6177,25 @@ function initLeafletMap(){
   function upsertMarker(driverId,d){
     const color=d.busy?'#16A34A':'#10B981';
     const statusLabel=d.busy?'Band':'Bo\u2019sh';
-    if(driverMarkers[driverId]){
-      driverMarkers[driverId].setLatLng([d.lat,d.lng]);
-      driverMarkers[driverId].setIcon(makeDriverIcon(color));
-      driverMarkers[driverId].setPopupContent(makePopupHtml(driverId,color,statusLabel));
+    const balloonContentBody=makePopupHtml(driverId,color,statusLabel);
+    if(yandexPlacemarks[driverId]){
+      yandexPlacemarks[driverId].geometry.setCoordinates([d.lat,d.lng]);
+      yandexPlacemarks[driverId].properties.set({color,balloonContentBody});
     }else{
-      const marker=L.marker([d.lat,d.lng],{icon:makeDriverIcon(color)}).addTo(map);
-      marker.bindPopup(makePopupHtml(driverId,color,statusLabel));
-      driverMarkers[driverId]=marker;
+      const placemark=new ymaps.Placemark([d.lat,d.lng],{color,balloonContentBody},{
+        iconLayout:DriverPlacemarkLayout,
+        iconShape:{type:'Circle',coordinates:[17,17],radius:17},
+        iconOffset:[-17,-17],
+      });
+      map.geoObjects.add(placemark);
+      yandexPlacemarks[driverId]=placemark;
     }
   }
 
   function removeMarker(driverId){
-    if(driverMarkers[driverId]){
-      map.removeLayer(driverMarkers[driverId]);
-      delete driverMarkers[driverId];
+    if(yandexPlacemarks[driverId]){
+      map.geoObjects.remove(yandexPlacemarks[driverId]);
+      delete yandexPlacemarks[driverId];
     }
   }
 
@@ -6221,12 +6212,11 @@ function initLeafletMap(){
           upsertMarker(d.id,d);
         }
       });
-      Object.keys(driverMarkers).forEach(id=>{
+      Object.keys(yandexPlacemarks).forEach(id=>{
         if(!visibleIds.has(id))removeMarker(id);
       });
-      if(!boundsFitted&&Object.keys(driverMarkers).length>0){
-        const bounds=L.latLngBounds(Object.values(driverMarkers).map(m=>m.getLatLng()));
-        map.fitBounds(bounds,{padding:[60,60],maxZoom:14});
+      if(!boundsFitted&&Object.keys(yandexPlacemarks).length>0){
+        map.setBounds(map.geoObjects.getBounds(),{checkZoomRange:true,zoomMargin:60});
         boundsFitted=true;
       }
       updateMapLegendAndSearch();
@@ -6235,7 +6225,7 @@ function initLeafletMap(){
     console.warn('listenToDriversLive topilmadi \u2014 sahifani to\u2018liq yangilang');
   }
 
-  setTimeout(()=>{map.invalidateSize();},100);
+  setTimeout(()=>{map.container.fitToViewport();},100);
 
   // Inject pulse animation once
   if(!document.getElementById('map-pulse-style')){
