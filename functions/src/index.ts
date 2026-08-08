@@ -234,6 +234,50 @@ function tashkentWeekStartStr(d: Date = new Date()): string {
   return monday.toISOString().slice(0, 10);
 }
 
+// Filiallar ro'yxati dashboard tomonida `dashboardData/branches`
+// hujjatida bitta JSON matn (`value`) sifatida saqlanadi (bir xil
+// ko'rinish uchun barcha kompyuterlarda). Buyurtma dispatch qilishda
+// eng yaqin filialni topish uchun shu yerdan o'qiymiz.
+async function getBranchesForDispatch(): Promise<
+  { id: string; lat?: number; lng?: number }[]
+> {
+  try {
+    const doc = await db.collection("dashboardData").doc("branches").get();
+    const raw = doc.data()?.value;
+    if (typeof raw !== "string") return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    logger.warn("Filiallar ro'yxatini o'qishda xato:", error);
+    return [];
+  }
+}
+
+// Buyurtma olib ketish nuqtasiga eng yaqin filialni topadi (to'g'ri
+// chiziq masofasi bo'yicha). Mijoz ilovasidan kelgan buyurtmalarda
+// filial tanlanmagan bo'ladi (mijoz ilovasida filial tushunchasi
+// yo'q) — shu funksiya orqali avtomatik aniqlanadi. Dispetcher
+// dashboard orqali qo'lda tanlagan filial (order.branchId allaqachon
+// mavjud bo'lsa) hech qachon bu funksiya bilan ustidan yozilmaydi.
+async function computeNearestBranchId(
+  lat: number | undefined,
+  lng: number | undefined
+): Promise<string | null> {
+  if (lat == null || lng == null) return null;
+  const branches = await getBranchesForDispatch();
+  let nearestId: string | null = null;
+  let nearestDist = Infinity;
+  for (const b of branches) {
+    if (!b.id || b.lat == null || b.lng == null) continue;
+    const dist = getDistanceMeters(lat, lng, b.lat, b.lng);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearestId = b.id;
+    }
+  }
+  return nearestId;
+}
+
 async function isOrderStillPending(orderId: string): Promise<boolean> {
   try {
     const doc = await db.collection("orders").doc(orderId).get();
@@ -283,6 +327,24 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     if (order.status !== "pending") {
       logger.info(`Buyurtma ${orderId} pending emas (${order.status}), o'tkazib yuborildi`);
       return;
+    }
+
+    // ── FILIAL ANIQLASH ───────────────────────────────────────
+    // Dispetcher dashboard orqali qo'lda yaratgan buyurtmada
+    // branchId allaqachon bor. Mijoz ilovasidan kelgan buyurtmada
+    // yo'q — bu holda olib ketish nuqtasiga eng yaqin filial
+    // avtomatik aniqlanadi va buyurtma hujjatiga yoziladi (shunda
+    // dashboard ham, keyingi dispatch qadamlari ham buni ko'radi).
+    let branchId: string | null = order.branchId || null;
+    if (!branchId) {
+      branchId = await computeNearestBranchId(order.pickupLat, order.pickupLng);
+      if (branchId) {
+        try {
+          await snapshot.ref.update({ branchId });
+        } catch (error) {
+          logger.warn(`Buyurtma ${orderId} uchun branchId yozishda xato:`, error);
+        }
+      }
     }
 
     const dataPayload: Record<string, string> = {
@@ -347,6 +409,13 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       const data = doc.data();
       if (!data.pushToken) return;
       if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) return;
+      // MUHIM: filial aniqlangan bo'lsa, faqat O'SHA filialga
+      // tegishli haydovchilar ko'rib chiqiladi — boshqa filialning
+      // buyurtmasi boshqa filial haydovchisiga bormasligi uchun.
+      // Filial aniqlanmagan (masalan hali birorta filial
+      // sozlanmagan) bo'lsa — cheklovsiz (fail open), eski xulq-atvor
+      // buzilmaydi.
+      if (branchId && data.branch !== branchId) return;
 
       allDrivers.push({ id: doc.id, token: data.pushToken });
 

@@ -1,0 +1,139 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ============================================================
+    // YORDAMCHI FUNKSIYALAR
+    // ============================================================
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    // Dashboard xodimining roli — adminRoles/{uid} hujjatidan.
+    // MUHIM: bu FAQAT dashboard xodimlari (admin/manager/depecher)
+    // uchun — mijoz va haydovchi ilovalari bu hujjatga ega emas.
+    function staffRole() {
+      return get(/databases/$(database)/documents/adminRoles/$(request.auth.uid)).data.role;
+    }
+    function staffBranches() {
+      return get(/databases/$(database)/documents/adminRoles/$(request.auth.uid)).data.branches;
+    }
+    function isAdmin() {
+      return isSignedIn() && staffRole() == 'admin';
+    }
+    function isStaff() {
+      return isSignedIn() && staffRole() in ['admin', 'manager', 'depecher'];
+    }
+
+    // ============================================================
+    // ORDERS / DRIVERS — MUHIM: bu ikkisi ATAYLAB ochiq qoldirilgan
+    // (o'zgartirilmagan). Haydovchi ilovasi hozircha Firebase Auth
+    // ISHLATMAYDI (telefon+parolni to'g'ridan-to'g'ri Firestore'dan
+    // tekshiradi) — shu sabab bu yerga autentifikatsiya talabi
+    // qo'yish haydovchi ilovasini (joylashuv yangilash, buyurtma
+    // qabul qilish/bekor qilish, holat o'zgartirish) butunlay
+    // buzadi. Filial bo'yicha izolyatsiya bu ikkisi uchun dashboard
+    // so'rovlari va buyurtma dispatch (Cloud Function) darajasida
+    // amalga oshirilgan. Haqiqiy himoya uchun haydovchi ilovasini
+    // real Firebase Auth'ga o'tkazish — alohida, kelajakdagi ish.
+    // ============================================================
+    match /orders/{orderId} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if true;
+      allow delete: if false;
+    }
+    match /drivers/{driverId} {
+      allow read: if true;
+      allow write: if true;
+      allow delete: if false;
+    }
+
+    // ============================================================
+    // SETTINGS — o'qish ochiq qoladi (haydovchi/mijoz ilovasi
+    // autentifikatsiyasiz turli sozlamalarni — masalan
+    // driverBonus — o'qiydi). Yozish endi FAQAT admin uchun —
+    // ilgari "istalgan kishi" yoza olardi.
+    // ============================================================
+    match /settings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ============================================================
+    // TARIFFS — mijoz/haydovchi ilovasi narx ko'rsatish uchun
+    // autentifikatsiyasiz o'qiydi, shu sabab o'qish ochiq qoladi.
+    // Yozish: admin cheklovsiz; menejer FAQAT o'z filial(lar)iga
+    // tegishli (branchIds maydoni to'liq o'zining filiallariga mos
+    // keladigan, bo'sh bo'lmagan) tarifni yarata/tahrirlay/o'chira
+    // oladi — "barcha filiallar uchun umumiy" (bo'sh branchIds)
+    // tarifni faqat admin yarata oladi.
+    // ============================================================
+    match /tariffs/{tariffId} {
+      allow read: if true;
+      allow create, update: if isAdmin() || (
+        isStaff() && staffRole() == 'manager' &&
+        request.resource.data.branchIds is list &&
+        request.resource.data.branchIds.size() > 0 &&
+        request.resource.data.branchIds.hasOnly(staffBranches())
+      );
+      allow delete: if isAdmin() || (
+        isStaff() && staffRole() == 'manager' &&
+        resource.data.branchIds is list &&
+        resource.data.branchIds.size() > 0 &&
+        resource.data.branchIds.hasOnly(staffBranches())
+      );
+    }
+
+    // ============================================================
+    // DASHBOARD DATA — filiallar/tariflar (dashboard nusxasi)/
+    // mijozlar/ishchilar/xizmatlar/manzillar/guruhlar/tranzaksiyalar
+    // kabi bo'limlar shu yerda bitta JSON matn (`value`) sifatida
+    // saqlanadi. Bu format qoidalar ICHKARIDAGI (masalan bitta
+    // filialga tegishli) elementlarni tekshirishga imkon bermaydi —
+    // shu sabab bu yerda faqat "tizimga kirgan xodimmi" tekshiriladi
+    // (ilgari — HAR KIM, hatto tizimga kirmasdan ham yoza olardi).
+    // Filial darajasidagi nozik cheklov dashboard ilovasining o'zida
+    // (public/admin/index.html) amalga oshiriladi.
+    // ============================================================
+    match /dashboardData/{docId} {
+      allow read, write: if isStaff();
+    }
+
+    // ============================================================
+    // CUSTOMERS / ADMIN ROLES — o'zgarishsiz (joriy jonli
+    // qoidalardan olingan, allaqachon to'g'ri auth-asosli).
+    // ============================================================
+    match /customers/{uid} {
+      allow read: if request.auth != null &&
+        (request.auth.uid == uid ||
+         request.auth.token.firebase.sign_in_provider == 'password');
+
+      allow create: if request.auth != null && request.auth.uid == uid &&
+        request.resource.data.bonusBalance == 0;
+
+      allow update: if request.auth != null &&
+        (
+          (request.auth.uid == uid &&
+           request.resource.data.bonusBalance == resource.data.bonusBalance) ||
+          request.auth.token.firebase.sign_in_provider == 'password'
+        );
+
+      match /bonusHistory/{historyId} {
+        allow read: if request.auth != null &&
+          (request.auth.uid == uid ||
+           request.auth.token.firebase.sign_in_provider == 'password');
+        allow create: if request.auth != null &&
+          request.auth.token.firebase.sign_in_provider == 'password';
+      }
+    }
+    match /adminRoles/{uid} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null &&
+        get(/databases/$(database)/documents/adminRoles/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

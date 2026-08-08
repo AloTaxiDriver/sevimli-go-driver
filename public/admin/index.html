@@ -428,6 +428,9 @@ input:focus,select:focus,textarea:focus{outline:none;}
       if (typeof window.applyRoleUIRestrictions === 'function') {
         window.applyRoleUIRestrictions();
       }
+      if (typeof window.refreshBranchScopedViews === 'function') {
+        window.refreshBranchScopedViews();
+      }
 
       // Rol bilan URL yo'li mos kelmasa (masalan manager /admin'ga
       // kirmoqchi bo'lsa), mos yo'lga qayta yo'naltiramiz — bu
@@ -1250,6 +1253,78 @@ function isPageAllowedForRole(page){
   return !allowed||allowed.includes(page);
 }
 
+// ============================================================
+// FILIAL (BRANCH) KO'LAMI — admin cheklovsiz (null qaytaradi),
+// manager/depecher esa faqat o'ziga (adminRoles/{uid}.branches)
+// biriktirilgan filial(lar) bilan cheklanadi. Bu FAQAT dashboard
+// darajasidagi himoya (interfeys+so'rovlar) — haqiqiy server
+// himoyasi qo'llanadigan joylarda (masalan tariflar) alohida
+// Firestore qoidalarida ham takrorlanadi.
+// ============================================================
+function getAllowedBranchIds(){
+  if(window.currentAdminRole==='admin')return null; // cheklovsiz
+  return Array.isArray(window.currentAdminBranches)?window.currentAdminBranches:[];
+}
+function isBranchAllowed(branchId){
+  const allowed=getAllowedBranchIds();
+  if(allowed===null)return true;
+  if(!branchId)return false;
+  return allowed.includes(branchId);
+}
+// Har bir element (order/driver/tariff...) uchun uning filial(lar)ini
+// hisoblab beruvchi `getIds(item)=>string|string[]|null` funksiyasi
+// orqali massivni joriy foydalanuvchiga ruxsat etilgan elementlargacha
+// qisqartiradi. `getIds` bo'sh/null qaytarsa (masalan filial
+// tanlanmagan tarif = "hammaga umumiy") — element hamma uchun ko'rinadi.
+function filterByAllowedBranches(list,getIds){
+  const allowed=getAllowedBranchIds();
+  if(allowed===null)return list; // admin
+  return (list||[]).filter(item=>{
+    let ids=getIds(item);
+    if(ids===null||ids===undefined||ids==='')return true; // umumiy/tayinlanmagan — hammaga ko'rinadi
+    if(!Array.isArray(ids))ids=[ids];
+    ids=ids.filter(Boolean);
+    if(ids.length===0)return true;
+    return ids.some(id=>allowed.includes(id));
+  });
+}
+// Yozuv/o'chirish oldidan chaqiriladi: menejer/depecher o'ziga
+// tegishli bo'lmagan filialning yozuvini o'zgartirishga urinsa,
+// ogohlantirib to'xtatadi. `branchIds` bitta id yoki id massivi
+// (yoki umumiy/tayinlanmagan bo'lsa null/bo'sh) bo'lishi mumkin.
+function guardBranchWrite(branchIds){
+  const allowed=getAllowedBranchIds();
+  if(allowed===null)return true; // admin
+  let ids=branchIds;
+  if(ids===null||ids===undefined||ids==='')return true; // umumiy — hammaga ochiq tahrirlash (masalan yangi umumiy tarif)
+  if(!Array.isArray(ids))ids=[ids];
+  ids=ids.filter(Boolean);
+  if(ids.length===0)return true;
+  const ok=ids.some(id=>allowed.includes(id));
+  if(!ok)alert("Bu yozuv sizning filialingizga tegishli emas — o'zgartira olmaysiz.");
+  return ok;
+}
+// Filial tanlash ro'yxatlarini (yangi haydovchi/buyurtma/tarif
+// yaratishda) joriy foydalanuvchiga ruxsat etilgan filiallar bilan
+// cheklaydi. Admin uchun to'liq ro'yxat qaytadi.
+function getSelectableBranches(){
+  const all=dbGet('branches')||[];
+  const allowed=getAllowedBranchIds();
+  if(allowed===null)return all;
+  return all.filter(b=>allowed.includes(b.id));
+}
+
+// Login tugab, rol/filial (currentAdminRole/currentAdminBranches)
+// ma'lum bo'lgach chaqiriladi — global Firestore tinglovchilari
+// (orders/drivers) login tugashidan OLDIN ham ishga tushishi mumkin
+// edi (filialsiz/noaniq holatda), shuning uchun ular endi qaytadan
+// filtrlanadi va joriy sahifa qaytadan chiziladi.
+function refreshBranchScopedViews(){
+  if(typeof recomputeOrdersView==='function')recomputeOrdersView();
+  if(typeof recomputeDriversView==='function')recomputeDriversView();
+  if(typeof navigate==='function'&&window.currentPage)navigate(window.currentPage);
+}
+
 // Rolga ruxsat berilmagan tugma/menyu bandlarini yashiradi. Login
 // tasdiqlangach bir marta chaqiriladi (rol o'zgarmasdan, sahifa qayta
 // chizilishi bilan yo'qolib qolmasligi uchun CSS orqali emas, DOM'dan
@@ -1587,11 +1662,11 @@ let orderFilter='all';
 let orderSearch='';
 
 function renderOrders(){
-  const tariffs=dbGet('tariffs');
-  const branches=dbGet('branches');
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
+  const branches=getSelectableBranches();
   const addresses=dbGet('addresses');
   const groups=dbGet('groups');
-  const drivers=dbGet('drivers');
+  const drivers=filterByAllowedBranches(dbGet('drivers'),d=>d.branch);
   const freeDrivers=drivers.filter(d=>d.status==='free');
   const tarifOpts=tariffs.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
   const branchOpts=branches.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('');
@@ -2285,6 +2360,7 @@ function submitOrder(){
   // tashlandi.
   const driver=document.getElementById('f-driver')?.value||'';
   const branchId=document.getElementById('f-branch')?.value||null;
+  if(branchId&&!guardBranchWrite(branchId))return;
   const note=document.getElementById('f-note')?.value||'';
   const distance=Math.round(routeDistanceKm*10)/10;
   // MUHIM: bu yerda ENDI localStorage'ga (dbAdd) yozilmaydi —
@@ -2348,7 +2424,11 @@ let driverSearchQuery='';
 // ro'yxatni ko'radi. localStorage endi faqat tahrirlash formasi uchun
 // qo'shimcha (fallback) manba sifatida ishlatiladi.
 let driversPageUnsubscribe=null;
-let firestoreDriversList=[];
+let firestoreDriversListRaw=[]; // Firestore'dan kelgan TO'LIQ (filialsiz) ro'yxat
+let firestoreDriversList=[]; // joriy foydalanuvchiga ruxsat etilgan filial(lar) bo'yicha filtrlangan ro'yxat
+function recomputeDriversView(){
+  firestoreDriversList=filterByAllowedBranches(firestoreDriversListRaw,d=>d.branch);
+}
 
 // Buyurtmalar sahifasi ham xuddi shu naqshda — real vaqtli Firestore
 // ro'yxati (firestoreOrdersList). MUHIM: bu tinglovchi drivers'dan
@@ -2357,8 +2437,12 @@ let firestoreDriversList=[];
 // har doim, istalgan sahifada, real ma'lumot ko'rsatishi kerak —
 // pastdagi startGlobalOrdersListener()ga qarang.
 let ordersPageUnsubscribe=null;
-let firestoreOrdersList=[];
+let firestoreOrdersListRaw=[]; // Firestore'dan kelgan TO'LIQ (filialsiz) ro'yxat
+let firestoreOrdersList=[]; // joriy foydalanuvchiga ruxsat etilgan filial(lar) bo'yicha filtrlangan ro'yxat
 let orderDriverNames={};
+function recomputeOrdersView(){
+  firestoreOrdersList=filterByAllowedBranches(firestoreOrdersListRaw,o=>o.branch);
+}
 
 // Dispetcher tomonidan buyurtmani bekor qilishda tanlanadigan
 // standart sabablar ro'yxati
@@ -2706,7 +2790,7 @@ function renderDriverTabContent(){
   const wrap=document.getElementById('driver-tab-content');
   if(!wrap)return;
 
-  const branches=dbGet('branches');
+  const branches=getSelectableBranches();
   const tariffs=dbGet('tariffs');
 
   if(driverModalActiveTab==='personal'){
@@ -2940,6 +3024,8 @@ async function saveDriver(id){
     return;
   }
 
+  if(!guardBranchWrite(merged.branch)||(orig.branch&&!guardBranchWrite(orig.branch)))return;
+
   if(merged.password&&merged.password!==merged.passwordConfirm){
     switchDriverTab('password');
     alert('Parollar bir xil emas!');
@@ -3064,13 +3150,30 @@ function updateClientStats(){
   const total=document.getElementById('clients-stat-total');
   const withBonus=document.getElementById('clients-stat-with-bonus');
   const bonusSum=document.getElementById('clients-stat-bonus-sum');
-  if(total)total.textContent=firestoreCustomersList.length;
-  if(withBonus)withBonus.textContent=firestoreCustomersList.filter(c=>(c.bonusBalance||0)>0).length;
-  if(bonusSum)bonusSum.textContent=firestoreCustomersList.reduce((s,c)=>s+(c.bonusBalance||0),0).toLocaleString();
+  let customers=firestoreCustomersList;
+  const allowedBranches=getAllowedBranchIds();
+  if(allowedBranches!==null){
+    const allowedPhones=new Set(firestoreOrdersList.map(o=>o.phone).filter(Boolean));
+    customers=customers.filter(c=>allowedPhones.has(c.phone));
+  }
+  if(total)total.textContent=customers.length;
+  if(withBonus)withBonus.textContent=customers.filter(c=>(c.bonusBalance||0)>0).length;
+  if(bonusSum)bonusSum.textContent=customers.reduce((s,c)=>s+(c.bonusBalance||0),0).toLocaleString();
 }
 function renderClientsTable(search=''){
   clientSearchQuery=search;
+  // MUHIM: mijoz (customers) hujjatida filial tushunchasi tabiiy
+  // ravishda yo'q — kimdir istalgan filialdan buyurtma berishi mumkin.
+  // Shu sabab menejer/depecher uchun ro'yxat, o'ziga ruxsat etilgan
+  // filial(lar)dan KAMIDA BITTA buyurtma bergan mijozlar bilan
+  // cheklanadi (allaqachon filial bo'yicha filtrlangan
+  // firestoreOrdersList orqali).
   let customers=firestoreCustomersList;
+  const allowedBranches=getAllowedBranchIds();
+  if(allowedBranches!==null){
+    const allowedPhones=new Set(firestoreOrdersList.map(o=>o.phone).filter(Boolean));
+    customers=customers.filter(c=>allowedPhones.has(c.phone));
+  }
   if(search){
     const q=search.toLowerCase();
     customers=customers.filter(c=>(c.name||'').toLowerCase().includes(q)||(c.phone||'').includes(q));
@@ -3493,7 +3596,24 @@ function renderBalance(){
 }
 
 function renderBalanceTable(filter){
-  const txns=dbGet('driverTxns')||[];
+  // MUHIM: eski yozuvlarda `branchId` bo'lmasligi (yoki noto'g'ri
+  // bo'lishi) mumkin — chunki ilgari filial har doim ro'yxatdagi
+  // birinchi filial deb yozilardi. Shu sabab filtrlashda avval
+  // `branchId`ga, u bo'lmasa haydovchining HOZIRGI haqiqiy filialiga
+  // qaraymiz. Filial umuman aniqlanmasa (haydovchiga filial
+  // biriktirilmagan) — tariflardan farqli o'laroq, bu yerda "hammaga
+  // umumiy" emas, balki faqat ADMIN ko'radi (moliyaviy ma'lumot uchun
+  // xavfsizroq standart).
+  const allowedBranches=getAllowedBranchIds();
+  const txns=(dbGet('driverTxns')||[]).filter(t=>{
+    if(allowedBranches===null)return true; // admin
+    let bId=t.branchId;
+    if(!bId){
+      const drv=firestoreDriversListRaw.find(d=>d.id===t.driverId);
+      bId=drv?drv.branch:null;
+    }
+    return bId&&allowedBranches.includes(bId);
+  });
   const f=(filter||'').toLowerCase();
   const filtered=f?txns.filter(t=>
     (t.driverName||'').toLowerCase().includes(f)||
@@ -3702,11 +3822,16 @@ function saveAccountTxn(){
   if(!amount){alert('Miqdorni kiriting!');return;}
   if(!reason){alert('Sababni tanlang!');return;}
 
-  const drv=firestoreDriversList.find(d=>d.id===driverId);
+  const drv=firestoreDriversListRaw.find(d=>d.id===driverId)||firestoreDriversList.find(d=>d.id===driverId);
   if(!drv)return;
+  if(!guardBranchWrite(drv.branch))return;
 
+  // MUHIM TUZATISH: ilgari filial har doim `branches[0].name` (ro'yxatdagi
+  // BIRINCHI filial) deb yozilar edi — haydovchining haqiqiy filialidan
+  // qat'i nazar. Endi haydovchining o'z `branch` (id) maydonidan olinadi.
   const branches=dbGet('branches');
-  const branch=branches[0]?branches[0].name:'—';
+  const branchObj=branches.find(b=>b.id===drv.branch);
+  const branch=branchObj?branchObj.name:'—';
 
   // Haydovchi haqiqiy Firestore hujjati (id = telefon raqami) — shu
   // yerga yozilmasa, o'zgarish faqat dashboard ekranida ko'rinib,
@@ -3721,6 +3846,7 @@ function saveAccountTxn(){
     driverId:drv.id,
     driverName:drv.name,
     branch,
+    branchId:drv.branch||null,
     type:accountTxnType==='add'?'income':'expense',
     amount,
     reason,
@@ -4040,9 +4166,10 @@ function saveWorker(id){
 }
 
 function renderBranches(){
-  const branches=dbGet('branches');
+  const branches=filterByAllowedBranches(dbGet('branches'),b=>b.id);
   const activeCount=branches.filter(b=>b.status==='active').length;
   const totalDrivers=branches.reduce((s,b)=>s+(b.drivers||0),0);
+  const canCreateBranch=window.currentAdminRole==='admin';
 
   return `<div style="display:flex;flex-direction:column;gap:14px">
 
@@ -4068,7 +4195,7 @@ function renderBranches(){
         ${ic('search',14,'rgba(26,26,26,0.4)')}
         <input id="branch-search" placeholder="Filial nomi yoki manzil..." oninput="filterBranches(this.value)">
       </div>
-      <button class="btn btn-coral" onclick="openBranchModal()">${ic('plus',14,'#fff')} Filial qo\u2019sh</button>
+      ${canCreateBranch?`<button class="btn btn-coral" onclick="openBranchModal()">${ic('plus',14,'#fff')} Filial qo\u2019sh</button>`:''}
     </div>
 
     <!-- BRANCH CARDS -->
@@ -4085,7 +4212,7 @@ function renderBranchCards(query){
   query=query||'';
   const grid=document.getElementById('branches-grid');
   if(!grid)return;
-  const branches=dbGet('branches').filter(b=>
+  const branches=filterByAllowedBranches(dbGet('branches'),b=>b.id).filter(b=>
     !query || b.name.toLowerCase().includes(query) || (b.address||'').toLowerCase().includes(query) || (b.manager||'').toLowerCase().includes(query)
   );
 
@@ -4107,9 +4234,9 @@ function renderBranchCards(query){
         <button onclick="openBranchModal('${b.id}')" title="Tahrirlash" style="width:26px;height:26px;border-radius:7px;background:#F4F4F4;border:1px solid rgba(0,0,0,0.07);cursor:pointer;display:flex;align-items:center;justify-content:center">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#555" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
-        <button onclick="deleteBranchConfirm('${b.id}')" title="O\u2019chirish" style="width:26px;height:26px;border-radius:7px;background:#FEF2F2;border:1px solid rgba(22,163,74,0.15);cursor:pointer;display:flex;align-items:center;justify-content:center">
+        ${window.currentAdminRole==='admin'?`<button onclick="deleteBranchConfirm('${b.id}')" title="O\u2019chirish" style="width:26px;height:26px;border-radius:7px;background:#FEF2F2;border:1px solid rgba(22,163,74,0.15);cursor:pointer;display:flex;align-items:center;justify-content:center">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#16A34A" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
-        </button>
+        </button>`:''}
       </div>
     </div>
     <div style="font-size:12px;color:rgba(0,0,0,0.5);display:flex;flex-direction:column;gap:6px">
@@ -4383,6 +4510,13 @@ function saveBranch(branchId){
     return;
   }
 
+  if(branchId){
+    if(!guardBranchWrite(branchId))return;
+  }else if(window.currentAdminRole!=='admin'){
+    alert('Faqat administrator yangi filial qo’sha oladi.');
+    return;
+  }
+
   let branches=dbGet('branches');
   const finalData={
     name:merged.name,address:merged.address,phone:merged.phone,manager:merged.manager||'',status:merged.status||'active',
@@ -4422,6 +4556,10 @@ function refreshBranchStats(){
 }
 
 function deleteBranchConfirm(branchId){
+  if(window.currentAdminRole!=='admin'){
+    alert('Faqat administrator filialni o’chira oladi.');
+    return;
+  }
   showConfirmModal(
     'Filialni o\u2019chirish',
     'Bu filial butunlay o\u2019chiriladi. Bu amalni qaytarib bo\u2019lmaydi.',
@@ -4472,7 +4610,7 @@ function renderTariffCards(query){
   query=query||'';
   const grid=document.getElementById('tariffs-grid');
   if(!grid)return;
-  const tariffs=dbGet('tariffs').filter(t=>!query||t.name.toLowerCase().includes(query));
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds).filter(t=>!query||t.name.toLowerCase().includes(query));
 
   if(!tariffs.length){
     grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:50px;color:rgba(0,0,0,0.3);font-size:13px">Tarif topilmadi</div>';
@@ -4531,6 +4669,10 @@ function openTariffModal(tariffId){
   window._tariffCommissionType=t?t.commissionType||'percent':'percent';
   window._tariffTiered=t?!!t.tieredPricing:false;
   window._tariffTiers=t&&Array.isArray(t.priceTiers)?JSON.parse(JSON.stringify(t.priceTiers)):[];
+  // Yangi tarif yaratilganda menejer/depecher uchun standart ravishda
+  // o'z filial(lar)iga bog'lanadi (admin uchun bo'sh — barcha
+  // filiallar uchun umumiy).
+  window._tariffSelectedBranches=t?[...(t.branchIds||[])]:(getAllowedBranchIds()||[]);
 
   const modal=document.createElement('div');
   modal.id='tariff-modal';
@@ -4561,6 +4703,56 @@ function openTariffModal(tariffId){
   </div>`;
   document.body.appendChild(modal);
   renderTariffTabContent();
+  document.addEventListener('click',tariffBranchOutsideClickHandler);
+}
+
+function tariffBranchOutsideClickHandler(e){
+  const dd=document.getElementById('tariff-branch-dropdown');
+  const btn=document.getElementById('tariff-branch-dropdown-btn');
+  if(dd&&btn&&!dd.contains(e.target)&&!btn.contains(e.target)){
+    dd.style.display='none';
+  }
+}
+
+function toggleTariffBranchDropdown(){
+  const dd=document.getElementById('tariff-branch-dropdown');
+  if(dd)dd.style.display=dd.style.display==='none'?'block':'none';
+}
+
+function toggleTariffBranch(branchId){
+  const sel=window._tariffSelectedBranches||[];
+  const idx=sel.indexOf(branchId);
+  if(idx>=0)sel.splice(idx,1);
+  else sel.push(branchId);
+  window._tariffSelectedBranches=sel;
+  refreshTariffBranchUI();
+}
+
+function refreshTariffBranchUI(){
+  const branches=dbGet('branches');
+  const sel=window._tariffSelectedBranches||[];
+
+  document.querySelectorAll('[data-tariff-branch-id]').forEach(row=>{
+    const bid=row.getAttribute('data-tariff-branch-id');
+    const chk=row.querySelector('.tariff-branch-chk');
+    const active=sel.includes(bid);
+    if(chk){
+      chk.style.background=active?'#16A34A':'transparent';
+      chk.style.borderColor=active?'#16A34A':'rgba(0,0,0,0.2)';
+      chk.innerHTML=active?ic('check',11,'#fff'):'';
+    }
+  });
+
+  const label=document.getElementById('tariff-branch-label');
+  if(label){
+    if(!sel.length){
+      label.textContent='Barcha filiallar uchun umumiy';
+      label.style.color='rgba(0,0,0,0.4)';
+    }else{
+      label.textContent=sel.map(id=>branches.find(b=>b.id===id)?.name||id).join(', ');
+      label.style.color='';
+    }
+  }
 }
 
 function tariffTabBtn(key,label){
@@ -4701,7 +4893,22 @@ function renderTariffTabContent(){
           <option value="inactive" ${t.status==='inactive'?'selected':''}>Faol emas</option>
         </select>
       </div>
+
+      <div class="form-field">
+        <label class="form-label">Filiallar <span style="color:rgba(0,0,0,0.35);font-weight:400">(bo'sh — barcha filiallar uchun umumiy)</span></label>
+        <div id="tariff-branch-dropdown-btn" onclick="toggleTariffBranchDropdown()" class="form-input" style="cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <span id="tariff-branch-label" style="color:rgba(0,0,0,0.4)">Barcha filiallar uchun umumiy</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;opacity:0.5"><polyline points="6 9 12 15 18 9"/></svg>
+        </div>
+        <div id="tariff-branch-dropdown" style="display:none;margin-top:6px;border:1px solid rgba(0,0,0,0.1);border-radius:10px;max-height:180px;overflow-y:auto;background:#fff">
+          ${getSelectableBranches().map(b=>`<div onclick="toggleTariffBranch('${b.id}')" data-tariff-branch-id="${b.id}" style="display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,0.04)">
+            <div class="tariff-branch-chk" style="width:17px;height:17px;border-radius:5px;border:1.5px solid rgba(0,0,0,0.2);display:flex;align-items:center;justify-content:center;flex-shrink:0"></div>
+            <span style="font-size:13px">${esc(b.name)}</span>
+          </div>`).join('')}
+        </div>
+      </div>
     </div>`;
+    refreshTariffBranchUI();
   }
 
   if(tariffModalActiveTab==='pricing'){
@@ -4871,6 +5078,8 @@ function closeTariffModal(){
   window._tariffCarImage=null;
   window._tariffTiered=false;
   window._tariffTiers=null;
+  window._tariffSelectedBranches=null;
+  document.removeEventListener('click',tariffBranchOutsideClickHandler);
 }
 
 function saveTariff(tariffId){
@@ -4886,6 +5095,15 @@ function saveTariff(tariffId){
     alert('Tarif nomini kiriting!');
     return;
   }
+
+  const newBranchIds=[...(window._tariffSelectedBranches||[])];
+  if(tariffId&&!guardBranchWrite(orig.branchIds))return;
+  if(window.currentAdminRole!=='admin'&&!newBranchIds.length){
+    switchTariffTab('basic');
+    alert('Filial tanlang — faqat administrator "barcha filiallar uchun umumiy" tarif yarata oladi.');
+    return;
+  }
+  if(!guardBranchWrite(newBranchIds.length?newBranchIds:null))return;
 
   let tariffs=dbGet('tariffs');
   const finalData={
@@ -4907,6 +5125,7 @@ function saveTariff(tariffId){
     carImage:window._tariffCarImage||null,
     tieredPricing:!!window._tariffTiered,
     priceTiers:window._tariffTiered&&Array.isArray(window._tariffTiers)?window._tariffTiers:[],
+    branchIds:newBranchIds,
   };
 
   let finalTariffId=tariffId;
@@ -4931,6 +5150,7 @@ function saveTariff(tariffId){
       commissionType:finalData.commissionType,
       tieredPricing:finalData.tieredPricing,
       priceTiers:finalData.priceTiers,
+      branchIds:finalData.branchIds,
     });
   }
   window._tariffFormCache=null;
@@ -4955,6 +5175,8 @@ function refreshTariffStats(){
 }
 
 function deleteTariffConfirm(tariffId){
+  const t=dbGet('tariffs').find(x=>x.id===tariffId);
+  if(!guardBranchWrite(t&&t.branchIds))return;
   showConfirmModal(
     'Tarifni o\u2019chirish',
     'Bu tarif butunlay o\u2019chiriladi. Bu amalni qaytarib bo\u2019lmaydi.',
@@ -5826,7 +6048,8 @@ function initLeafletMap(){
   // Real vaqtli Firestore tinglovchisi — haydovchi GPS orqali har
   // 10 soniyada joylashuvini yangilaydi, shu yerda darhol aks etadi
   if(window.listenToDriversLive){
-    driversUnsubscribe=window.listenToDriversLive((drivers)=>{
+    driversUnsubscribe=window.listenToDriversLive((allDrivers)=>{
+      const drivers=filterByAllowedBranches(allDrivers,d=>d.branch);
       liveDriversData=drivers;
       const visibleIds=new Set();
       drivers.forEach(d=>{
@@ -7663,7 +7886,8 @@ function startGlobalDriversListener(){
   if(driversPageUnsubscribe)return;
   if(!window.listenToDriversLive){setTimeout(startGlobalDriversListener,300);return;}
   driversPageUnsubscribe=window.listenToDriversLive((drivers)=>{
-    firestoreDriversList=drivers.map(normalizeFirestoreDriver);
+    firestoreDriversListRaw=drivers.map(normalizeFirestoreDriver);
+    recomputeDriversView();
     if(window.currentPage==='drivers'){updateDriverStats();renderDriversGrid(driverSearchQuery,driverFilter);}
   });
 }
@@ -7672,7 +7896,8 @@ function startGlobalOrdersListener(){
   if(ordersPageUnsubscribe)return;
   if(!window.listenToOrdersLive){setTimeout(startGlobalOrdersListener,300);return;}
   ordersPageUnsubscribe=window.listenToOrdersLive((orders)=>{
-    firestoreOrdersList=orders.map(normalizeFirestoreOrder).sort((a,b)=>(b.createdAtMillis||0)-(a.createdAtMillis||0));
+    firestoreOrdersListRaw=orders.map(normalizeFirestoreOrder).sort((a,b)=>(b.createdAtMillis||0)-(a.createdAtMillis||0));
+    recomputeOrdersView();
     if(window.currentPage==='orders'){renderMiniStats();renderOrdersTable();}
   });
 }
