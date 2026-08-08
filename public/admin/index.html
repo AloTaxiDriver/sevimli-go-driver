@@ -6339,7 +6339,7 @@ function renderBonusSettings(){
           ${bonusToggleHtml('dbs-weekly-toggle',false,'toggleDbsWeekly()')}
         </div>
       </div>
-      <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:16px">Bir haftada (Dushanbadan Yakshanbagacha) kamida "Chegara" safarni yakunlagan haydovchiga bonus summasi avtomatik balansiga qo'shiladi. Kunlik bonusdagi bilan bir xil minimal masofa qoidasi qo'llaniladi.</div>
+      <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:16px">Bir haftada (Dushanbadan Yakshanbagacha) kamida "Chegara" safarni yakunlagan haydovchiga bonus summasi avtomatik balansiga qo'shiladi. Faqat kamida "Minimal masofa"dan uzoq safarlar hisobga olinadi.</div>
 
       <div style="display:flex;flex-direction:column;gap:14px">
         <div class="form-field">
@@ -6350,6 +6350,12 @@ function renderBonusSettings(){
         <div class="form-field">
           <label class="form-label">Haftalik bonus summasi (so'm)</label>
           <input class="form-input" id="dbs-weekly-bonus-amount" type="number" min="0" step="1000" placeholder="Masalan: 150000">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa (km)</label>
+          <input class="form-input" id="dbs-weekly-min-distance" type="number" min="0" step="0.5" placeholder="Masalan: 2">
+          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu masofa chegarasi kunlik VA haftalik bonus uchun umumiy qo'llaniladi.</div>
         </div>
       </div>
 
@@ -6423,11 +6429,13 @@ async function loadDriverBonusSettingsForm(){
   const distEl=document.getElementById('dbs-min-distance');
   const weeklyThEl=document.getElementById('dbs-weekly-trip-threshold');
   const weeklyAmtEl=document.getElementById('dbs-weekly-bonus-amount');
+  const weeklyDistEl=document.getElementById('dbs-weekly-min-distance');
   if(thEl&&typeof cfg.dailyTripThreshold==='number')thEl.value=cfg.dailyTripThreshold;
   if(amtEl&&typeof cfg.bonusAmount==='number')amtEl.value=cfg.bonusAmount;
   if(distEl&&typeof cfg.minTripDistanceKm==='number')distEl.value=cfg.minTripDistanceKm;
   if(weeklyThEl&&typeof cfg.weeklyTripThreshold==='number')weeklyThEl.value=cfg.weeklyTripThreshold;
   if(weeklyAmtEl&&typeof cfg.weeklyBonusAmount==='number')weeklyAmtEl.value=cfg.weeklyBonusAmount;
+  if(weeklyDistEl&&typeof cfg.minTripDistanceKm==='number')weeklyDistEl.value=cfg.minTripDistanceKm;
   // Eski sozlamalarda dailyEnabled/weeklyEnabled maydoni bo'lmasligi
   // mumkin — kunlik bonus ilgari har doim faol edi (standart true),
   // haftalik esa ESKI qoida (weeklyTripThreshold>0) bo'yicha faol edi.
@@ -6455,6 +6463,7 @@ async function saveWeeklyBonusSettingsForm(){
     weeklyEnabled:window._dbsWeeklyEnabled===true,
     weeklyTripThreshold:parseInt(document.getElementById('dbs-weekly-trip-threshold')?.value,10)||0,
     weeklyBonusAmount:parseFloat(document.getElementById('dbs-weekly-bonus-amount')?.value)||0,
+    minTripDistanceKm:parseFloat(document.getElementById('dbs-weekly-min-distance')?.value)||0,
   };
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg);
