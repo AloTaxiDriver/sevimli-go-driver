@@ -1390,6 +1390,9 @@ function refreshBranchScopedViews(){
   if(typeof recomputeOrdersView==='function')recomputeOrdersView();
   if(typeof recomputeDriversView==='function')recomputeDriversView();
   if(typeof navigate==='function'&&window.currentPage)navigate(window.currentPage);
+  // PBX ulanishi rolga (filialga) bog'liq — rol tasdiqlangach (yoki
+  // o'zgargach) to'g'ri hisobga qayta ulanadi.
+  if(typeof startPbxCallListener==='function')startPbxCallListener();
 }
 
 // Rolga ruxsat berilmagan tugma/menyu bandlarini yashiradi. Login
@@ -4433,6 +4436,9 @@ function cacheCurrentTabFields(){
         phone:document.getElementById('branch-phone')?.value?.trim(),
         manager:document.getElementById('branch-manager')?.value?.trim(),
         status:document.getElementById('branch-status')?.value,
+        pbxDomain:document.getElementById('branch-pbx-domain')?.value?.trim(),
+        pbxApiKey:document.getElementById('branch-pbx-apikey')?.value?.trim(),
+        pbxExtension:document.getElementById('branch-pbx-extension')?.value?.trim(),
       });
     }
   }
@@ -4490,6 +4496,13 @@ function renderBranchTabContent(){
         <div class="form-field"><label class="form-label">Telefon</label><input class="form-input" id="branch-phone" value="${b.phone?esc(b.phone):'+998'}" placeholder="+998..."></div>
         <div class="form-field"><label class="form-label">Mas\u2019ul shaxs</label><input class="form-input" id="branch-manager" value="${b.manager?esc(b.manager):''}" placeholder="F.I.Sh."></div>
       </div>
+      <div style="border-top:1px solid rgba(0,0,0,0.06);margin-top:2px;padding-top:13px">
+        <div style="font-weight:700;font-size:13px;margin-bottom:2px">Telefoniya (OnlinePBX) \u2014 shu filialga xos</div>
+        <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-bottom:10px">Har bir filial o'zining alohida PBX hisobiga ulanadi \u2014 shunda qo'ng'iroqlar filiallar orasida aralashmaydi.</div>
+      </div>
+      <div class="form-field"><label class="form-label">PBX domeni</label><input class="form-input" id="branch-pbx-domain" value="${b.pbxDomain?esc(b.pbxDomain):''}" placeholder="pbx25995.onpbx.ru"></div>
+      <div class="form-field"><label class="form-label">API kalit</label><input class="form-input" id="branch-pbx-apikey" value="${b.pbxApiKey?esc(b.pbxApiKey):''}" placeholder="API kalit"></div>
+      <div class="form-field"><label class="form-label">Ichki raqam(lar) (extension) <span style="color:rgba(0,0,0,0.35);font-weight:400">(ixtiyoriy, faqat ma'lumot uchun \u2014 vergul bilan: 100,101,102)</span></label><input class="form-input" id="branch-pbx-extension" value="${b.pbxExtension?esc(b.pbxExtension):''}" placeholder="100,101,102"></div>
       <div class="form-field"><label class="form-label">Holat</label>
         <select class="form-input" id="branch-status">
           <option value="active" ${b.status==='active'?'selected':''}>Faol</option>
@@ -4645,6 +4658,9 @@ function saveBranch(branchId){
     indivAcceptSec:numOr(merged.indivAcceptSec,30),
     dispatcherPhone:merged.dispatcherPhone||'',
     nearestDriverSec:numOr(merged.nearestDriverSec,15),
+    pbxDomain:merged.pbxDomain||'',
+    pbxApiKey:merged.pbxApiKey||'',
+    pbxExtension:merged.pbxExtension||'',
     waitingMode:window._branchWaitingMode||'automatic',
     brandedDiscount:numOr(merged.brandedDiscount,0),
     brandedPriority:!!merged.brandedPriority,
@@ -6362,8 +6378,8 @@ function renderSettings(){
       </div>
 
       <div class="card" style="padding:20px">
-        <div style="font-weight:700;font-size:15px;margin-bottom:4px">Telefoniya (OnlinePBX)</div>
-        <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:14px">Kiruvchi qo’ng’iroqlar dashboard’da real vaqtda (ovozli jarang bilan) ko’rsatilishi uchun. Qiymatlarni <b>panel.onlinepbx.ru</b> → Сервисы → API bo’limidan oling.</div>
+        <div style="font-weight:700;font-size:15px;margin-bottom:4px">Telefoniya (OnlinePBX) — Administrator uchun</div>
+        <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:14px">Faqat Administrator hisobiga tegishli umumiy/kuzatuv PBX ulanishi. Menejer/depecher esa o'z filialining "Filiallar" bo'limida sozlangan alohida PBX hisobiga ulanadi — shu bilan filiallar orasida qo'ng'iroq aralashmaydi. Qiymatlarni <b>panel.onlinepbx.ru</b> → Сервисы → API bo’limidan oling.</div>
         <div style="display:flex;flex-direction:column;gap:11px">
           <div class="form-field"><label class="form-label">PBX domeni</label><input class="form-input" id="set-pbx-domain" placeholder="pbx25995.onpbx.ru" value="${esc(s.pbxDomain||'')}"></div>
           <div class="form-field"><label class="form-label">API kalit</label><input class="form-input" id="set-pbx-apikey" placeholder="API kalit" value="${esc(s.pbxApiKey||'')}"></div>
@@ -7587,10 +7603,27 @@ function pbxUnlockAudio(){
   document.addEventListener(evt,pbxUnlockAudio,{once:true,capture:true});
 });
 
+// MUHIM: ilgari BITTA umumiy PBX hisobi (Sozlamalar sahifasida)
+// butun tizim uchun ishlatilardi — shu sabab Quva'ga kelgan
+// qo'ng'iroq Denov menejeriga ham chalinardi. Endi admin — o'zining
+// (Sozlamalardagi) umumiy/kuzatuv PBX hisobiga ulanadi; menejer/
+// depecher esa faqat O'Z FILIALIning (Filiallar bo'limida
+// sozlanadigan) PBX hisobiga. Filial uchun hali sozlanmagan bo'lsa —
+// ulanish umuman ochilmaydi (boshqa filialning umumiy hisobiga
+// "zaxira" sifatida ham qaytilmaydi, aks holda aralashish davom etadi).
+function resolvePbxCredentials(){
+  if(window.currentAdminRole==='admin'){
+    const s=dbGet('settings');
+    return (s.pbxDomain&&s.pbxApiKey)?{domain:s.pbxDomain,apiKey:s.pbxApiKey}:null;
+  }
+  const withPbx=getSelectableBranches().find(b=>b.pbxDomain&&b.pbxApiKey);
+  return withPbx?{domain:withPbx.pbxDomain,apiKey:withPbx.pbxApiKey}:null;
+}
+
 function startPbxCallListener(){
-  const s=dbGet('settings');
-  if(!s.pbxDomain||!s.pbxApiKey)return;
-  connectPbxWs(s.pbxDomain,s.pbxApiKey);
+  const creds=resolvePbxCredentials();
+  if(!creds)return;
+  connectPbxWs(creds.domain,creds.apiKey);
 }
 
 // Qo'ng'iroq qiluvchining raqamini +998 formatiga keltiradi (PBX ba'zan
@@ -7619,8 +7652,8 @@ function connectPbxWs(domain,apiKey){
       pbxWs=null;
       clearTimeout(pbxReconnectTimer);
       pbxReconnectTimer=setTimeout(function(){
-        const s=dbGet('settings');
-        if(s.pbxDomain&&s.pbxApiKey)connectPbxWs(s.pbxDomain,s.pbxApiKey);
+        const creds=resolvePbxCredentials();
+        if(creds)connectPbxWs(creds.domain,creds.apiKey);
       },5000);
     };
     pbxWs.onerror=function(){};
@@ -7630,12 +7663,16 @@ function connectPbxWs(domain,apiKey){
 function handlePbxEvent(msg){
   const type=msg.event;
   const data=msg.data||{};
-  const s=dbGet('settings');
-  const myExt=(s.pbxExtension||'').trim();
+  // MUHIM: ilgari BITTA umumiy PBX ulanishi (Sozlamalar sahifasidagi
+  // domen+API kalit) butun tizim uchun ishlatilardi — shu sabab
+  // Quva'ga kelgan qo'ng'iroq Denov menejeriga ham chalinardi. Endi
+  // har bir filial O'ZINING alohida PBX hisobiga (domen+kalit)
+  // ulanadi — connectPbxWs/startPbxCallListener'ga qarang — shuning
+  // uchun bu funksiyaga faqat ALLAQACHON o'ziga tegishli ulanishdan
+  // kelgan hodisalar yetib keladi, qo'shimcha filtr shart emas.
 
   if(type==='channel_create'){
     if(data.direction!=='inbound')return;
-    if(myExt&&data.destination_number&&data.destination_number!==myExt)return;
     if(callState!=='idle')return; // band bo'lsa ustiga chiqarmaymiz
     pbxActiveChannel={uuid:data.uuid,call_uuid:data.call_uuid};
     callState='incoming';
