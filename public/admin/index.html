@@ -2763,7 +2763,7 @@ function driverTabBtn(key,label){
 }
 
 function toggleDriverAllTariffs(){
-  const tariffs=dbGet('tariffs');
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
   const sel=window._driverSelectedTariffs||[];
   const allSelected=tariffs.every(t=>sel.includes(t.id));
   window._driverSelectedTariffs=allSelected?[]:tariffs.map(t=>t.id);
@@ -2780,7 +2780,7 @@ function toggleDriverTariff(tariffId){
 }
 
 function refreshDriverTariffUI(){
-  const tariffs=dbGet('tariffs');
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
   const sel=window._driverSelectedTariffs||[];
   const allSelected=tariffs.length>0&&tariffs.every(t=>sel.includes(t.id));
 
@@ -2862,7 +2862,7 @@ function renderDriverTabContent(){
   if(!wrap)return;
 
   const branches=getSelectableBranches();
-  const tariffs=dbGet('tariffs');
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
 
   if(driverModalActiveTab==='personal'){
     const branchOpts=branches.map(b=>`<option value="${b.id}" ${d.branch===b.id?'selected':''}>${esc(b.name)}</option>`).join('');
@@ -6349,7 +6349,7 @@ function renderCallLogPage(){
 }
 
 function renderProfile(){
-  const s=dbGet('settings');const orders=firestoreOrdersList;const drivers=dbGet('drivers');
+  const s=dbGet('settings');const orders=firestoreOrdersList;const drivers=firestoreDriversList;
   return `<div style="max-width:520px;display:flex;flex-direction:column;gap:14px">
     <div class="card" style="padding:20px">
       <div style="display:flex;align-items:center;gap:14px;margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid rgba(0,0,0,0.06)">
@@ -6645,7 +6645,7 @@ async function saveRadiusSettings(){
 // alohida qoidalar keyinroq, mijoz ilovasi buyurtma yaratishda qaysi
 // filialga tegishli ekanini aniqlay boshlagach qo'shiladi.
 function renderBonusSettings(){
-  const branches=dbGet('branches');
+  const branches=getSelectableBranches();
   const branchOpts=branches.map(b=>`<option value="${esc(b.id)}">${esc(b.name)}</option>`).join('');
   return `<div style="max-width:640px;display:flex;flex-direction:column;gap:14px">
     <div class="card" style="padding:20px">
