@@ -1709,8 +1709,8 @@ let orderSearch='';
 function renderOrders(){
   const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
   const branches=getSelectableBranches();
-  const addresses=dbGet('addresses');
-  const groups=dbGet('groups');
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
   const drivers=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch);
   const freeDrivers=drivers.filter(d=>d.status==='free');
   const tarifOpts=tariffs.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
@@ -2363,7 +2363,7 @@ function calcTotal(){
 }
 function filterAddrs(){
   const gid=document.getElementById('f-group')?.value;
-  const addresses=dbGet('addresses');
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
   const filtered=gid?addresses.filter(a=>a.group===gid):addresses;
   const sel=document.getElementById('f-from');
   if(sel)sel.innerHTML='<option value="">Manzili</option>'+filtered.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
@@ -2371,7 +2371,7 @@ function filterAddrs(){
 }
 function filterAddrsTo(){
   const gid=document.getElementById('f-group-to')?.value;
-  const addresses=dbGet('addresses');
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
   const filtered=gid?addresses.filter(a=>a.group===gid):addresses;
   const sel=document.getElementById('f-to');
   if(sel)sel.innerHTML='<option value="">Manzili</option>'+filtered.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
@@ -5436,8 +5436,8 @@ function deleteServiceConfirm(serviceId){
 }
 
 function renderGroups(){
-  const groups=dbGet('groups');
-  const addresses=dbGet('addresses');
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
 
   return `<div style="display:flex;flex-direction:column;gap:14px">
 
@@ -5469,8 +5469,8 @@ function renderGroupCards(query){
   const grid=document.getElementById('groups-grid');
   if(!grid)return;
   const branches=dbGet('branches');
-  const addresses=dbGet('addresses');
-  const groups=dbGet('groups').filter(g=>!query||g.name.toLowerCase().includes(query));
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch).filter(g=>!query||g.name.toLowerCase().includes(query));
 
   if(!groups.length){
     grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:50px;color:rgba(0,0,0,0.3);font-size:13px">Guruh topilmadi</div>';
@@ -5506,8 +5506,8 @@ function renderGroupCards(query){
 }
 
 function refreshGroupStats(){
-  const groups=dbGet('groups');
-  const addresses=dbGet('addresses');
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
   const main=document.getElementById('main-content');
   if(!main)return;
   const cards=main.querySelectorAll('.statcard .sval');
@@ -5518,7 +5518,7 @@ function refreshGroupStats(){
 function openGroupModal(groupId){
   const g=groupId?dbGet('groups').find(x=>x.id===groupId):null;
   const isEdit=!!g;
-  const branches=dbGet('branches');
+  const branches=getSelectableBranches();
   const branchOpts=branches.map(b=>`<option value="${b.id}" ${g&&g.branch===b.id?'selected':''}>${esc(b.name)}</option>`).join('');
 
   const el=document.getElementById('group-modal');
@@ -5552,6 +5552,14 @@ function saveGroup(groupId){
     return;
   }
 
+  const orig=groupId?dbGet('groups').find(g=>g.id===groupId):null;
+  if(orig&&!guardBranchWrite(orig.branch))return;
+  if(!guardBranchWrite(branch))return;
+  if(window.currentAdminRole!=='admin'&&!branch){
+    alert('Filial tanlang!');
+    return;
+  }
+
   const palette=['#6C63FF','#10B981','#F59E0B','#22C55E','#3B82F6','#EC4899','#14B8A6'];
   let groups=dbGet('groups');
   if(groupId){
@@ -5568,6 +5576,8 @@ function saveGroup(groupId){
 }
 
 function deleteGroupConfirm(groupId){
+  const g=dbGet('groups').find(x=>x.id===groupId);
+  if(!guardBranchWrite(g&&g.branch))return;
   showConfirmModal(
     'Guruhni o\u2019chirish',
     'Bu manzil guruhi butunlay o\u2019chiriladi. Unga tegishli manzillar guruhsiz qoladi.',
@@ -5583,8 +5593,8 @@ function deleteGroupConfirm(groupId){
 }
 
 function renderAddresses(){
-  const addresses=dbGet('addresses');
-  const groups=dbGet('groups');
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
 
   return `<div style="display:flex;flex-direction:column;gap:14px">
 
@@ -5617,7 +5627,7 @@ function renderAddressCards(query){
   if(!grid)return;
   const groups=dbGet('groups');
   const branches=dbGet('branches');
-  const addresses=dbGet('addresses').filter(a=>!query||a.name.toLowerCase().includes(query)||(a.address||'').toLowerCase().includes(query));
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch).filter(a=>!query||a.name.toLowerCase().includes(query)||(a.address||'').toLowerCase().includes(query));
 
   if(!addresses.length){
     grid.innerHTML='<div style="grid-column:1/-1;text-align:center;padding:50px;color:rgba(0,0,0,0.3);font-size:13px">Manzil topilmadi</div>';
@@ -5654,8 +5664,8 @@ function renderAddressCards(query){
 }
 
 function refreshAddressStats(){
-  const addresses=dbGet('addresses');
-  const groups=dbGet('groups');
+  const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
   const main=document.getElementById('main-content');
   if(!main)return;
   const cards=main.querySelectorAll('.statcard .sval');
@@ -5669,8 +5679,8 @@ let addressModalMarker=null;
 function openAddressModal(addressId){
   const a=addressId?dbGet('addresses').find(x=>x.id===addressId):null;
   const isEdit=!!a;
-  const branches=dbGet('branches');
-  const groups=dbGet('groups');
+  const branches=getSelectableBranches();
+  const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
   const branchOpts=branches.map(b=>`<option value="${b.id}" ${a&&a.branch===b.id?'selected':''}>${esc(b.name)}</option>`).join('');
   const groupOpts=groups.map(g=>`<option value="${g.id}" ${a&&a.group===g.id?'selected':''}>${esc(g.name)}</option>`).join('');
 
@@ -5808,6 +5818,14 @@ function saveAddress(addressId){
     return;
   }
 
+  const origAddr=addressId?dbGet('addresses').find(x=>x.id===addressId):null;
+  if(origAddr&&!guardBranchWrite(origAddr.branch))return;
+  if(!guardBranchWrite(branch))return;
+  if(window.currentAdminRole!=='admin'&&!branch){
+    alert('Filial tanlang!');
+    return;
+  }
+
   const branches=dbGet('branches');
   const branchObj=branches.find(b=>b.id===branch);
   const addressLabel=branchObj?branchObj.name:'';
@@ -5827,6 +5845,8 @@ function saveAddress(addressId){
 }
 
 function deleteAddressConfirm(addressId){
+  const a=dbGet('addresses').find(x=>x.id===addressId);
+  if(!guardBranchWrite(a&&a.branch))return;
   showConfirmModal(
     'Manzilni o\u2019chirish',
     'Bu manzil butunlay o\u2019chiriladi.',
