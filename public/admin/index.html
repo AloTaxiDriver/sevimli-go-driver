@@ -446,9 +446,18 @@ input:focus,select:focus,textarea:focus{outline:none;}
       if (loginScreen) loginScreen.style.display = 'none';
       const nameEl = document.getElementById('user-pill-name');
       const avatarEl = document.getElementById('user-pill-avatar');
+      const roleEl = document.getElementById('user-pill-role');
       const emailName = (user.email || 'Foydalanuvchi').split('@')[0];
       if (nameEl) nameEl.textContent = emailName;
       if (avatarEl) avatarEl.textContent = emailName.charAt(0).toUpperCase();
+      // MUHIM: ilgari bu yorliq har doim statik "Administrator" deb
+      // qolardi (haqiqiy rolga qarab hech qachon yangilanmasdi) —
+      // shu sabab manager/depecher hisoblarida ham noto'g'ri
+      // "Administrator" ko'rsatilardi.
+      if (roleEl) {
+        const ROLE_LABELS = { admin: 'Administrator', manager: 'Menejer', depecher: 'Depecher' };
+        roleEl.textContent = ROLE_LABELS[roleData.role] || roleData.role;
+      }
       // Boshqa joylarda (banner, profil) ham ko'rsatish uchun global
       // qilib chiqaramiz — bu module bo'lmagan <script> blokidagi
       // navigate()/renderProfile() funksiyalari ham foydalana oladi.
@@ -912,6 +921,24 @@ input:focus,select:focus,textarea:focus{outline:none;}
       return true;
     } catch (err) {
       console.error("Kirish huquqini bekor qilishda xato:", err);
+      return false;
+    }
+  };
+
+  // MUHIM: hisob yaratilgandan keyin uning filial(lar)ini o'zgartirish
+  // uchun ilgari umuman imkoniyat yo'q edi (adminRoles/{uid}.branches
+  // faqat createStaffAccount'da, bir marta yoziladi) — shu sabab
+  // filial keyinroq qo'shilsa yoki noto'g'ri belgilansa, xodim
+  // hech qanday ma'lumot ko'rmay qolardi. Bu — to'g'ridan-to'g'ri
+  // client yozuvi (Cloud Function emas), chunki Firestore qoidalari
+  // (adminRoles/{uid} write) allaqachon buni faqat 'admin' rolga
+  // ruxsat beradi.
+  window.updateStaffBranches = async function (uid, branches) {
+    try {
+      await setDoc(doc(db, "adminRoles", uid), { branches: Array.isArray(branches) ? branches : [] }, { merge: true });
+      return true;
+    } catch (err) {
+      console.error("Xodim filial(lar)ini yangilashda xato:", err);
       return false;
     }
   };
@@ -4030,7 +4057,10 @@ function renderWorkerAccessSection(w){
       <label class="form-label" style="margin-bottom:6px">Dashboard kirish huquqi</label>
       <div style="font-size:13px;font-weight:600;margin-bottom:2px">${esc(w.accessEmail||'')}</div>
       <div style="font-size:12px;color:rgba(0,0,0,0.5);margin-bottom:10px">${esc(ACCESS_ROLE_LABELS[w.accessRole]||w.accessRole)}</div>
-      <button type="button" class="btn btn-danger" style="font-size:12px;padding:7px 12px" onclick="revokeWorkerAccess('${w.id}')">${ic('trash',13)} Kirish huquqini bekor qilish</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-light" style="font-size:12px;padding:7px 12px" onclick="syncWorkerAccessBranches('${w.id}')">${ic('mapPin',13)} Yuqoridagi filiallarni kirish huquqiga qo'llash</button>
+        <button type="button" class="btn btn-danger" style="font-size:12px;padding:7px 12px" onclick="revokeWorkerAccess('${w.id}')">${ic('trash',13)} Kirish huquqini bekor qilish</button>
+      </div>
     </div>`;
   }
   return `<div class="form-field" style="background:#FAFAFA;border:1px solid rgba(0,0,0,0.08);border-radius:10px;padding:12px 14px">
@@ -4068,6 +4098,27 @@ async function grantWorkerAccess(workerId){
   }
   dbUpdate('workers',workerId,{accessUid:result.uid,accessEmail:email,accessRole:role});
   showWorkerModal(workerId);
+}
+
+// Xodimga hisob yaratilgandan KEYIN filial(lar)i o'zgargan/qo'shilgan
+// bo'lsa (masalan, avval bo'sh qoldirilgan yoki noto'g'ri belgilangan
+// bo'lsa) — yuqoridagi "Filiallar" ko'p-tanlovida hozir belgilangan
+// ro'yxatni to'g'ridan-to'g'ri adminRoles/{uid} hujjatiga yozadi.
+async function syncWorkerAccessBranches(workerId){
+  const w=dbGet('workers').find(x=>x.id===workerId);
+  if(!w||!w.accessUid)return;
+  const branches=[...(window._workerSelectedBranches||[])];
+  const btn=event?.target?.closest('button');
+  if(btn){btn.disabled=true;btn.textContent='Yangilanmoqda...';}
+  const ok=window.updateStaffBranches?await window.updateStaffBranches(w.accessUid,branches):false;
+  if(!ok){
+    alert('Filiallarni yangilashda xatolik yuz berdi.');
+    if(btn){btn.disabled=false;btn.textContent='Yuqoridagi filiallarni kirish huquqiga qo’llash';}
+    return;
+  }
+  dbUpdate('workers',workerId,{branches});
+  alert('Filiallar yangilandi. Xodim sahifani qayta yuklasa (yoki qaytadan kirsa), yangi filiallar bilan ko’radi.');
+  if(btn){btn.disabled=false;btn.textContent='Yuqoridagi filiallarni kirish huquqiga qo’llash';}
 }
 
 function revokeWorkerAccess(workerId){
@@ -4546,7 +4597,7 @@ function saveBranch(branchId){
 }
 
 function refreshBranchStats(){
-  const branches=dbGet('branches');
+  const branches=filterByAllowedBranches(dbGet('branches'),b=>b.id);
   const main=document.getElementById('main-content');
   if(!main)return;
   const cards=main.querySelectorAll('.statcard .sval');
@@ -4575,7 +4626,7 @@ function deleteBranchConfirm(branchId){
 }
 
 function renderTariffs(){
-  const tariffs=dbGet('tariffs');
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
   const activeCount=tariffs.filter(t=>t.status==='active').length;
   const taxiCount=tariffs.filter(t=>t.group==='taxi').length;
   const deliveryCount=tariffs.filter(t=>t.group==='delivery').length;
@@ -5164,7 +5215,7 @@ function numOr(v,fallback){
 }
 
 function refreshTariffStats(){
-  const tariffs=dbGet('tariffs');
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
   const main=document.getElementById('main-content');
   if(!main)return;
   const cards=main.querySelectorAll('.statcard .sval');
