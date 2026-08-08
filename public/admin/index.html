@@ -3287,10 +3287,31 @@ function renderStatistics(){
     statFilters.to=statFilters.to||to.toISOString().slice(0,10);
   }
   const drivers=firestoreDriversList;
-  const clients=dbGet('clients');
-  const branches=dbGet('branches');
-  const tariffs=dbGet('tariffs');
+  // MUHIM: dbGet('clients') haqiqiy mijozlar emas, eski demo/blob
+  // ma'lumot (Mijozlar sahifasi allaqachon buni ishlatmaydi) — shu
+  // sabab bu yerda ham haqiqiy, filial bo'yicha filtrlangan
+  // ro'yxatdan (firestoreCustomersList) foydalanamiz, xuddi
+  // renderClientsTable/updateClientStats'dagidek.
+  const branches=getSelectableBranches();
+  const tariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
   const orders=getFilteredOrders();
+
+  // MUHIM: dbGet('clients') haqiqiy mijozlar emas, eski demo/blob
+  // ma'lumot (Mijozlar sahifasi allaqachon buni ishlatmaydi) — shu
+  // sabab bu yerda ham haqiqiy, filial bo'yicha filtrlangan
+  // ro'yxatdan (firestoreCustomersList) foydalanamiz, xuddi
+  // renderClientsTable/updateClientStats'dagidek. `orders` soni esa
+  // (allaqachon filial bo'yicha filtrlangan) `orders` massividan,
+  // telefon raqami bo'yicha hisoblanadi.
+  const allowedBranchesForStats=getAllowedBranchIds();
+  let clients=firestoreCustomersList;
+  if(allowedBranchesForStats!==null){
+    const allowedPhones=new Set(orders.map(o=>o.phone).filter(Boolean));
+    clients=clients.filter(c=>allowedPhones.has(c.phone));
+  }
+  const ordersByPhone={};
+  orders.forEach(o=>{if(o.phone)ordersByPhone[o.phone]=(ordersByPhone[o.phone]||0)+1;});
+  clients=clients.map(c=>({...c,orders:ordersByPhone[c.phone]||0}));
 
   const totalCount=orders.length;
   const doneCount=orders.filter(o=>o.status==='completed').length;
