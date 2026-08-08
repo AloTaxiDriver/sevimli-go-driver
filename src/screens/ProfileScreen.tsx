@@ -22,7 +22,7 @@ export default function ProfileScreen() {
       <View style={styles.ornamentBottomLeft} />
 
       <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
           <View style={styles.headerRow}>
             <View style={styles.avatar}>
               {driver?.photo ? (
@@ -89,6 +89,7 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: COLORS.bg, overflow: 'hidden' },
   safe: { flex: 1 },
+  scroll: { flex: 1 },
   content: { padding: 20, paddingBottom: 40 },
 
   ornamentTopRight: {

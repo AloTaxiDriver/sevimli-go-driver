@@ -193,7 +193,7 @@ export default function MoneyScreen() {
       <View style={styles.ornamentBottomLeft} />
 
       <SafeAreaView style={styles.safe}>
-        <ScrollView contentContainerStyle={styles.content}>
+        <ScrollView style={styles.scroll} contentContainerStyle={styles.content}>
           <Text style={styles.title}>Pul</Text>
 
           <Text style={styles.bigAmount}>{selected.amount.toLocaleString()} so'm</Text>
@@ -321,6 +321,7 @@ export default function MoneyScreen() {
 const styles = StyleSheet.create({
   bg: { flex: 1, backgroundColor: COLORS.bg, overflow: 'hidden' },
   safe: { flex: 1 },
+  scroll: { flex: 1 },
   content: { padding: 20, paddingBottom: 40 },
 
   ornamentTopRight: {
