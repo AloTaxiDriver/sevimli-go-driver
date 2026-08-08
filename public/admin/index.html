@@ -3338,6 +3338,15 @@ function renderStatistics(){
   // birga ishlatadi)
   const branchOpts=branches.map(b=>`<option value="${b.id}"${statFilters.branch===b.id?' selected':''}>${esc(b.name)}</option>`).join('');
   const tariffOpts=tariffs.map(t=>`<option value="${esc(t.name)}"${statFilters.tariff===t.name?' selected':''}>${esc(t.name)}</option>`).join('');
+  // MUHIM: "Barcha filiallar" tanlansa ham natija allaqachon faqat
+  // JORIY foydalanuvchiga ruxsat etilgan filial(lar) bilan cheklangan
+  // (getFilteredOrders -> firestoreOrdersList) — lekin bitta filialli
+  // menejer uchun bu ochiq matnli tanlov chalkashtiradi (go'yo
+  // "hammasi" ko'rinayotgandek tuyuladi), shuning uchun bitta filial
+  // bo'lsa tanlov ro'yxati umuman ko'rsatilmaydi.
+  const branchFilterHtml=(allowedBranchesForStats!==null&&allowedBranchesForStats.length<=1)
+    ?''
+    :`<select class="form-input" style="flex:1;min-width:150px" id="st-branch"><option value="">${allowedBranchesForStats===null?'Barcha filiallar':'Mening barcha filiallarim'}</option>${branchOpts}</select>`;
 
   const avatarGrad=(i)=>['linear-gradient(145deg,#22C55E,#16A34A)','linear-gradient(145deg,#6366F1,#4F46E5)','linear-gradient(145deg,#10B981,#059669)','linear-gradient(145deg,#F59E0B,#D97706)','linear-gradient(145deg,#EC4899,#DB2777)'][i%5];
 
@@ -3346,7 +3355,7 @@ function renderStatistics(){
     <!-- FILTERS -->
     <div class="card" style="padding:14px 18px">
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <select class="form-input" style="flex:1;min-width:150px" id="st-branch"><option value="">Barcha filiallar</option>${branchOpts}</select>
+        ${branchFilterHtml}
         <select class="form-input" style="flex:1;min-width:150px" id="st-tariff"><option value="">Barcha tariflar</option>${tariffOpts}</select>
         <input type="date" class="form-input" style="width:145px" id="st-from" value="${statFilters.from}">
         <span style="color:rgba(0,0,0,0.3);font-size:13px">\u2014</span>
