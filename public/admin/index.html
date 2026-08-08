@@ -4677,6 +4677,9 @@ function saveBranch(branchId){
   closeBranchModal();
   renderBranchCards(document.getElementById('branch-search')?.value?.toLowerCase()||'');
   refreshBranchStats();
+  // PBX ma'lumotlari o'zgargan bo'lishi mumkin (masalan, tozalangan)
+  // — eski ulanish ochiq qolib ketmasligi uchun qayta ulanamiz.
+  if(typeof startPbxCallListener==='function')startPbxCallListener();
 }
 
 function refreshBranchStats(){
@@ -7622,7 +7625,16 @@ function resolvePbxCredentials(){
 
 function startPbxCallListener(){
   const creds=resolvePbxCredentials();
-  if(!creds)return;
+  if(!creds){
+    // Ilgari bu yerda shunchaki chiqib ketilardi — agar oldin (masalan
+    // xato kiritilgan) ma'lumot bilan ulanish ochilgan bo'lsa, keyin
+    // maydonlar bo'shatilsa ham eski ulanish ochiq qolib, boshqa
+    // filialning qo'ng'iroqlari chalinaverardi. Endi bu holatda ham
+    // mavjud ulanish yopiladi.
+    clearTimeout(pbxReconnectTimer);
+    if(pbxWs){try{pbxWs.onclose=null;pbxWs.close();}catch{}pbxWs=null;}
+    return;
+  }
   connectPbxWs(creds.domain,creds.apiKey);
 }
 
