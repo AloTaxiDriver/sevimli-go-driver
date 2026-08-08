@@ -85,6 +85,20 @@ service cloud.firestore {
     }
 
     // ============================================================
+    // NOTIFICATIONS — dispetcher/menejer haydovchilarga yuboradigan
+    // bildirishnoma. Haydovchi ilovasi buni autentifikatsiyasiz
+    // o'qiydi (qo'ng'iroqcha belgisi), shu sabab o'qish ochiq.
+    // Yozish faqat tizimga kirgan xodimga — bu maydon avval umuman
+    // qoidalarda yo'q edi, ya'ni bildirishnoma yuborish (rasmli ham,
+    // rasmsiz ham) jimgina rad etilib kelgan.
+    // ============================================================
+    match /notifications/{notificationId} {
+      allow read: if true;
+      allow create: if isStaff();
+      allow update, delete: if false;
+    }
+
+    // ============================================================
     // DASHBOARD DATA — filiallar/tariflar (dashboard nusxasi)/
     // mijozlar/ishchilar/xizmatlar/manzillar/guruhlar/tranzaksiyalar
     // kabi bo'limlar shu yerda bitta JSON matn (`value`) sifatida

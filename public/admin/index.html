@@ -739,10 +739,32 @@ input:focus,select:focus,textarea:focus{outline:none;}
   // Firestore'ga yozadi. Cloud Function (onNewNotificationSendPush)
   // shu hujjatni ko'rib, mos haydovchilarga push jo'natadi, mobil
   // ilovadagi qo'ng'iroqcha belgisida ham darhol ko'rinadi.
+  // MUHIM: rasm bu yerda ham (haydovchi rasmidagi kabi) xom base64
+  // holida emas, Storage orqali yuklanadi — aks holda Firestore'ning
+  // 1MB hujjat chegarasi tufayli (rasm base64'ga aylanganda hajmi
+  // ~33% oshadi) yozish jimgina muvaffaqiyatsiz tugaydi va xabar
+  // umuman yuborilmaydi.
+  window.uploadNotificationImageToStorage = async function (dataUrl) {
+    if (!dataUrl) return null;
+    if (!dataUrl.startsWith('data:')) return dataUrl;
+    try {
+      const imgRef = ref(storage, `notifications/${Date.now()}.jpg`);
+      await uploadString(imgRef, dataUrl, 'data_url');
+      return await getDownloadURL(imgRef);
+    } catch (err) {
+      console.error("Bildirishnoma rasmini Storage'ga yuklashda xato:", err);
+      return null;
+    }
+  };
   window.sendNotificationToFirestore = async function (data) {
     try {
+      let imageUrl = data.image || null;
+      if (imageUrl && imageUrl.startsWith('data:')) {
+        imageUrl = await window.uploadNotificationImageToStorage(imageUrl);
+      }
       await addDoc(collection(db, "notifications"), {
         ...data,
+        image: imageUrl,
         createdAt: serverTimestamp(),
       });
     } catch (err) {
@@ -1605,7 +1627,7 @@ function afterRender(page){
   if(page==='statistics'){animateStatistics();}
   if(page==='notifications'){
     renderNotifHistory();
-    const dc=document.getElementById('notif-drivers-count');if(dc)dc.textContent=dbGet('drivers').length;
+    const dc=document.getElementById('notif-drivers-count');if(dc)dc.textContent=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch).length;
     const sc=document.getElementById('notif-sent-count');if(sc)sc.textContent=notifHistory.length;
   }
 }
@@ -7190,10 +7212,12 @@ function sendNotification(evt){
   if(!title||!text){alert('Sarlavha va xabar matnini kiriting!');return;}
   if(to!=='all_clients'){
     if(window.sendNotificationToFirestore){
-      window.sendNotificationToFirestore({title,text,type:notifType,target:to,image:notifImageData||null});
+      // MUHIM: menejer/depecher faqat o'z filial(lar)i haydovchilariga
+      // yubora oladi — admin uchun null (cheklovsiz).
+      window.sendNotificationToFirestore({title,text,type:notifType,target:to,image:notifImageData||null,branchIds:getAllowedBranchIds()});
     }
   }
-  const drivers=dbGet('drivers');
+  const drivers=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch);
   const labels={
     all_drivers:'Barcha haydovchilar ('+drivers.length+')',
     free_drivers:"Bo\u2019sh haydovchilar ("+drivers.filter(d=>d.status==='free').length+')',

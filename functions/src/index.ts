@@ -617,6 +617,11 @@ export const onNewNotificationSendPush = onDocumentCreated(
     const notif = snapshot.data();
     const notificationId = event.params.notificationId;
     const target: string = notif.target || "all_drivers";
+    // MUHIM: dashboard menejer/depecher tomonidan yuborilgan
+    // bo'lsa, o'z filial(lar)i bilan cheklangan (branchIds massivi) —
+    // admin tomonidan yuborilgan bo'lsa bu maydon null/yo'q bo'ladi
+    // (cheklovsiz, barcha filiallarga).
+    const branchIds: string[] | null = Array.isArray(notif.branchIds) ? notif.branchIds : null;
 
     let driversSnapshot;
     try {
@@ -630,6 +635,7 @@ export const onNewNotificationSendPush = onDocumentCreated(
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!data.pushToken) return;
+      if (branchIds && !branchIds.includes(data.branch)) return;
       const busy = !!data.busy;
       if (target === "all_drivers" || target === "all") tokens.push(data.pushToken);
       else if (target === "free_drivers" && !busy) tokens.push(data.pushToken);
