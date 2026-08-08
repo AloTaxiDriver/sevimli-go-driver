@@ -104,13 +104,17 @@ service cloud.firestore {
     // kabi bo'limlar shu yerda bitta JSON matn (`value`) sifatida
     // saqlanadi. Bu format qoidalar ICHKARIDAGI (masalan bitta
     // filialga tegishli) elementlarni tekshirishga imkon bermaydi —
-    // shu sabab bu yerda faqat "tizimga kirgan xodimmi" tekshiriladi
-    // (ilgari — HAR KIM, hatto tizimga kirmasdan ham yoza olardi).
-    // Filial darajasidagi nozik cheklov dashboard ilovasining o'zida
-    // (public/admin/index.html) amalga oshiriladi.
+    // shu sabab yozish faqat tizimga kirgan xodimga (ilgari — HAR KIM,
+    // hatto tizimga kirmasdan ham yoza olardi). O'QISH esa ATAYLAB
+    // ochiq: mijoz ilovasi (filiallar — eng yaqinini topish uchun,
+    // qo'shimcha xizmatlar) va haydovchi ilovasi bu hujjatlarni
+    // AUTENTIFIKATSIYASIZ o'qiydi — tariffs/settings kolleksiyalari
+    // bilan bir xil qoida. Filial darajasidagi nozik cheklov dashboard
+    // ilovasining o'zida (public/admin/index.html) amalga oshiriladi.
     // ============================================================
     match /dashboardData/{docId} {
-      allow read, write: if isStaff();
+      allow read: if true;
+      allow write: if isStaff();
     }
 
     // ============================================================
