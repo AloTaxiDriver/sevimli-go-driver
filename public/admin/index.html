@@ -1315,6 +1315,24 @@ function filterByAllowedBranches(list,getIds){
     return ids.some(id=>allowed.includes(id));
   });
 }
+// filterByAllowedBranches'dan farqli o'laroq — filial ANIQLANMAGAN
+// element bu yerda "hammaga umumiy" emas, balki FAQAT ADMINGA
+// ko'rinadi. Buyurtmalar/haydovchilar kabi, filial tizimi joriy
+// etilishidan oldingi eski yozuvlar uchun ishlatiladi — chunki
+// ularning filiali "atayin umumiy qilib belgilangan" emas, shunchaki
+// hali ko'chirilmagan, va menejerlarga tasodifan boshqa filial
+// ma'lumotini ko'rsatib qo'ymasligi kerak.
+function filterByAllowedBranchesStrict(list,getIds){
+  const allowed=getAllowedBranchIds();
+  if(allowed===null)return list; // admin
+  return (list||[]).filter(item=>{
+    let ids=getIds(item);
+    if(!Array.isArray(ids))ids=ids?[ids]:[];
+    ids=ids.filter(Boolean);
+    if(ids.length===0)return false; // tayinlanmagan — faqat admin ko'radi
+    return ids.some(id=>allowed.includes(id));
+  });
+}
 // Yozuv/o'chirish oldidan chaqiriladi: menejer/depecher o'ziga
 // tegishli bo'lmagan filialning yozuvini o'zgartirishga urinsa,
 // ogohlantirib to'xtatadi. `branchIds` bitta id yoki id massivi
@@ -1693,7 +1711,7 @@ function renderOrders(){
   const branches=getSelectableBranches();
   const addresses=dbGet('addresses');
   const groups=dbGet('groups');
-  const drivers=filterByAllowedBranches(dbGet('drivers'),d=>d.branch);
+  const drivers=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch);
   const freeDrivers=drivers.filter(d=>d.status==='free');
   const tarifOpts=tariffs.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
   const branchOpts=branches.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('');
@@ -2454,7 +2472,7 @@ let driversPageUnsubscribe=null;
 let firestoreDriversListRaw=[]; // Firestore'dan kelgan TO'LIQ (filialsiz) ro'yxat
 let firestoreDriversList=[]; // joriy foydalanuvchiga ruxsat etilgan filial(lar) bo'yicha filtrlangan ro'yxat
 function recomputeDriversView(){
-  firestoreDriversList=filterByAllowedBranches(firestoreDriversListRaw,d=>d.branch);
+  firestoreDriversList=filterByAllowedBranchesStrict(firestoreDriversListRaw,d=>d.branch);
 }
 
 // Buyurtmalar sahifasi ham xuddi shu naqshda — real vaqtli Firestore
@@ -2468,7 +2486,7 @@ let firestoreOrdersListRaw=[]; // Firestore'dan kelgan TO'LIQ (filialsiz) ro'yxa
 let firestoreOrdersList=[]; // joriy foydalanuvchiga ruxsat etilgan filial(lar) bo'yicha filtrlangan ro'yxat
 let orderDriverNames={};
 function recomputeOrdersView(){
-  firestoreOrdersList=filterByAllowedBranches(firestoreOrdersListRaw,o=>o.branch);
+  firestoreOrdersList=filterByAllowedBranchesStrict(firestoreOrdersListRaw,o=>o.branch);
 }
 
 // Dispetcher tomonidan buyurtmani bekor qilishda tanlanadigan
@@ -3340,13 +3358,10 @@ function renderStatistics(){
   const tariffOpts=tariffs.map(t=>`<option value="${esc(t.name)}"${statFilters.tariff===t.name?' selected':''}>${esc(t.name)}</option>`).join('');
   // MUHIM: "Barcha filiallar" tanlansa ham natija allaqachon faqat
   // JORIY foydalanuvchiga ruxsat etilgan filial(lar) bilan cheklangan
-  // (getFilteredOrders -> firestoreOrdersList) — lekin bitta filialli
-  // menejer uchun bu ochiq matnli tanlov chalkashtiradi (go'yo
-  // "hammasi" ko'rinayotgandek tuyuladi), shuning uchun bitta filial
-  // bo'lsa tanlov ro'yxati umuman ko'rsatilmaydi.
-  const branchFilterHtml=(allowedBranchesForStats!==null&&allowedBranchesForStats.length<=1)
-    ?''
-    :`<select class="form-input" style="flex:1;min-width:150px" id="st-branch"><option value="">${allowedBranchesForStats===null?'Barcha filiallar':'Mening barcha filiallarim'}</option>${branchOpts}</select>`;
+  // (getFilteredOrders -> firestoreOrdersList) — bitta filialli
+  // menejer uchun ham tanlov ko'rsatiladi (o'zi qaysi filialda
+  // ekanini aniq ko'rib turishi uchun).
+  const branchFilterHtml=`<select class="form-input" style="flex:1;min-width:150px" id="st-branch"><option value="">${allowedBranchesForStats===null?'Barcha filiallar':'Mening barcha filiallarim'}</option>${branchOpts}</select>`;
 
   const avatarGrad=(i)=>['linear-gradient(145deg,#22C55E,#16A34A)','linear-gradient(145deg,#6366F1,#4F46E5)','linear-gradient(145deg,#10B981,#059669)','linear-gradient(145deg,#F59E0B,#D97706)','linear-gradient(145deg,#EC4899,#DB2777)'][i%5];
 
@@ -6130,7 +6145,7 @@ function initLeafletMap(){
   // 10 soniyada joylashuvini yangilaydi, shu yerda darhol aks etadi
   if(window.listenToDriversLive){
     driversUnsubscribe=window.listenToDriversLive((allDrivers)=>{
-      const drivers=filterByAllowedBranches(allDrivers,d=>d.branch);
+      const drivers=filterByAllowedBranchesStrict(allDrivers,d=>d.branch);
       liveDriversData=drivers;
       const visibleIds=new Set();
       drivers.forEach(d=>{
