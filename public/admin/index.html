@@ -3649,9 +3649,31 @@ function animateStatistics(){
 // ============================================================
 // BALANCE
 // ============================================================
+// MUHIM: eski yozuvlarda `branchId` bo'lmasligi (yoki noto'g'ri bo'lishi)
+// mumkin — chunki ilgari filial har doim ro'yxatdagi birinchi filial deb
+// yozilardi. Shu sabab avval `branchId`ga, u bo'lmasa haydovchining HOZIRGI
+// haqiqiy filialiga qaraymiz. Filial umuman aniqlanmasa — tariflardan farqli
+// o'laroq, bu yerda "hammaga umumiy" emas, balki faqat ADMIN ko'radi
+// (moliyaviy ma'lumot uchun xavfsizroq standart). Balans sahifasidagi
+// statistik kartalar (renderBalance) VA tranzaksiyalar jadvali
+// (renderBalanceTable) — ikkalasi ham shu bitta manbadan hisoblanishi kerak,
+// aks holda kartalar boshqa filialning summasini ko'rsatib qo'yishi mumkin.
+function getScopedDriverTxns(){
+  const allowedBranches=getAllowedBranchIds();
+  return (dbGet('driverTxns')||[]).filter(t=>{
+    if(allowedBranches===null)return true; // admin
+    let bId=t.branchId;
+    if(!bId){
+      const drv=firestoreDriversListRaw.find(d=>d.id===t.driverId);
+      bId=drv?drv.branch:null;
+    }
+    return bId&&allowedBranches.includes(bId);
+  });
+}
+
 function renderBalance(){
   const drivers=firestoreDriversList;
-  const txns=dbGet('driverTxns')||[];
+  const txns=getScopedDriverTxns();
   const totalBalance=drivers.reduce((s,d)=>s+(d.balance||0),0);
   const totalIncome=txns.filter(t=>t.type==='income').reduce((s,t)=>s+t.amount,0);
   const totalExpense=txns.filter(t=>t.type==='expense').reduce((s,t)=>s+t.amount,0);
@@ -3694,24 +3716,7 @@ function renderBalance(){
 }
 
 function renderBalanceTable(filter){
-  // MUHIM: eski yozuvlarda `branchId` bo'lmasligi (yoki noto'g'ri
-  // bo'lishi) mumkin — chunki ilgari filial har doim ro'yxatdagi
-  // birinchi filial deb yozilardi. Shu sabab filtrlashda avval
-  // `branchId`ga, u bo'lmasa haydovchining HOZIRGI haqiqiy filialiga
-  // qaraymiz. Filial umuman aniqlanmasa (haydovchiga filial
-  // biriktirilmagan) — tariflardan farqli o'laroq, bu yerda "hammaga
-  // umumiy" emas, balki faqat ADMIN ko'radi (moliyaviy ma'lumot uchun
-  // xavfsizroq standart).
-  const allowedBranches=getAllowedBranchIds();
-  const txns=(dbGet('driverTxns')||[]).filter(t=>{
-    if(allowedBranches===null)return true; // admin
-    let bId=t.branchId;
-    if(!bId){
-      const drv=firestoreDriversListRaw.find(d=>d.id===t.driverId);
-      bId=drv?drv.branch:null;
-    }
-    return bId&&allowedBranches.includes(bId);
-  });
+  const txns=getScopedDriverTxns();
   const f=(filter||'').toLowerCase();
   const filtered=f?txns.filter(t=>
     (t.driverName||'').toLowerCase().includes(f)||
