@@ -6737,6 +6737,32 @@ function renderBonusSettings(){
 
       <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="saveWeeklyBonusSettingsForm()">Saqlash</button>
     </div>
+
+    <div class="card" style="padding:20px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <div style="font-weight:700;font-size:15px">Haydovchilar uchun har bir buyurtma uchun bonus</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="dbs-perorder-toggle-label" style="font-size:12px;font-weight:700;color:rgba(0,0,0,0.4)">Nofaol</span>
+          ${bonusToggleHtml('dbs-perorder-toggle',false,'toggleDbsPerOrder()')}
+        </div>
+      </div>
+      <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:16px">Yakunlangan har bir (kamida "Minimal masofa"dan uzoq) safar uchun haydovchiga bonus summasi darhol, kunlik/haftalik chegaralardan mustaqil ravishda balansiga qo'shiladi.</div>
+
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="form-field">
+          <label class="form-label">Bonus summasi (so'm)</label>
+          <input class="form-input" id="dbs-perorder-bonus-amount" type="number" min="0" step="500" placeholder="Masalan: 1000">
+        </div>
+
+        <div class="form-field">
+          <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa (km)</label>
+          <input class="form-input" id="dbs-perorder-min-distance" type="number" min="0" step="0.5" placeholder="Masalan: 2">
+          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu masofa chegarasi kunlik, haftalik VA har buyurtma bonusi uchun umumiy qo'llaniladi.</div>
+        </div>
+      </div>
+
+      <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="savePerOrderBonusSettingsForm()">Saqlash</button>
+    </div>
   </div>`;
 }
 
@@ -6764,6 +6790,10 @@ function toggleDbsDaily(){
 function toggleDbsWeekly(){
   window._dbsWeeklyEnabled=!window._dbsWeeklyEnabled;
   renderDbsToggle('dbs-weekly-toggle',window._dbsWeeklyEnabled);
+}
+function toggleDbsPerOrder(){
+  window._dbsPerOrderEnabled=!window._dbsPerOrderEnabled;
+  renderDbsToggle('dbs-perorder-toggle',window._dbsPerOrderEnabled);
 }
 
 async function loadBonusSettingsForm(){
@@ -6806,19 +6836,25 @@ async function loadDriverBonusSettingsForm(){
   const weeklyThEl=document.getElementById('dbs-weekly-trip-threshold');
   const weeklyAmtEl=document.getElementById('dbs-weekly-bonus-amount');
   const weeklyDistEl=document.getElementById('dbs-weekly-min-distance');
+  const perOrderAmtEl=document.getElementById('dbs-perorder-bonus-amount');
+  const perOrderDistEl=document.getElementById('dbs-perorder-min-distance');
   if(thEl&&typeof cfg.dailyTripThreshold==='number')thEl.value=cfg.dailyTripThreshold;
   if(amtEl&&typeof cfg.bonusAmount==='number')amtEl.value=cfg.bonusAmount;
   if(distEl&&typeof cfg.minTripDistanceKm==='number')distEl.value=cfg.minTripDistanceKm;
   if(weeklyThEl&&typeof cfg.weeklyTripThreshold==='number')weeklyThEl.value=cfg.weeklyTripThreshold;
   if(weeklyAmtEl&&typeof cfg.weeklyBonusAmount==='number')weeklyAmtEl.value=cfg.weeklyBonusAmount;
   if(weeklyDistEl&&typeof cfg.minTripDistanceKm==='number')weeklyDistEl.value=cfg.minTripDistanceKm;
+  if(perOrderAmtEl&&typeof cfg.perOrderBonusAmount==='number')perOrderAmtEl.value=cfg.perOrderBonusAmount;
+  if(perOrderDistEl&&typeof cfg.minTripDistanceKm==='number')perOrderDistEl.value=cfg.minTripDistanceKm;
   // Eski sozlamalarda dailyEnabled/weeklyEnabled maydoni bo'lmasligi
   // mumkin — kunlik bonus ilgari har doim faol edi (standart true),
   // haftalik esa ESKI qoida (weeklyTripThreshold>0) bo'yicha faol edi.
   window._dbsDailyEnabled=cfg.dailyEnabled!==false;
   window._dbsWeeklyEnabled=typeof cfg.weeklyEnabled==='boolean'?cfg.weeklyEnabled:(cfg.weeklyTripThreshold>0);
+  window._dbsPerOrderEnabled=cfg.perOrderEnabled===true;
   renderDbsToggle('dbs-daily-toggle',window._dbsDailyEnabled);
   renderDbsToggle('dbs-weekly-toggle',window._dbsWeeklyEnabled);
+  renderDbsToggle('dbs-perorder-toggle',window._dbsPerOrderEnabled);
 }
 
 async function saveDailyBonusSettingsForm(){
@@ -6844,6 +6880,18 @@ async function saveWeeklyBonusSettingsForm(){
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg);
     alert('Haftalik bonus sozlamalari saqlandi!');
+  }
+}
+
+async function savePerOrderBonusSettingsForm(){
+  const cfg={
+    perOrderEnabled:window._dbsPerOrderEnabled===true,
+    perOrderBonusAmount:parseFloat(document.getElementById('dbs-perorder-bonus-amount')?.value)||0,
+    minTripDistanceKm:parseFloat(document.getElementById('dbs-perorder-min-distance')?.value)||0,
+  };
+  if(window.saveDriverBonusSettings){
+    await window.saveDriverBonusSettings(cfg);
+    alert('Har buyurtma uchun bonus sozlamalari saqlandi!');
   }
 }
 

@@ -169,6 +169,8 @@ async function getDriverBonusSettings(): Promise<{
   weeklyEnabled: boolean;
   weeklyTripThreshold: number;
   weeklyBonusAmount: number;
+  perOrderEnabled: boolean;
+  perOrderBonusAmount: number;
 }> {
   const fallback = {
     dailyEnabled: true,
@@ -178,6 +180,8 @@ async function getDriverBonusSettings(): Promise<{
     weeklyEnabled: false,
     weeklyTripThreshold: 0,
     weeklyBonusAmount: 0,
+    perOrderEnabled: false,
+    perOrderBonusAmount: 0,
   };
   try {
     const doc = await db.collection("settings").doc("driverBonus").get();
@@ -209,6 +213,12 @@ async function getDriverBonusSettings(): Promise<{
         typeof data.weeklyBonusAmount === "number"
           ? data.weeklyBonusAmount
           : fallback.weeklyBonusAmount,
+      perOrderEnabled:
+        typeof data.perOrderEnabled === "boolean" ? data.perOrderEnabled : fallback.perOrderEnabled,
+      perOrderBonusAmount:
+        typeof data.perOrderBonusAmount === "number"
+          ? data.perOrderBonusAmount
+          : fallback.perOrderBonusAmount,
     };
   } catch {
     return fallback;
@@ -904,8 +914,11 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         const distanceOk = distanceKm >= driverBonusSettings.minTripDistanceKm;
         const dailyActive = driverBonusSettings.dailyEnabled && driverBonusSettings.dailyTripThreshold > 0;
         const weeklyActive = driverBonusSettings.weeklyEnabled && driverBonusSettings.weeklyTripThreshold > 0;
+        const perOrderActive =
+          driverBonusSettings.perOrderEnabled && driverBonusSettings.perOrderBonusAmount > 0;
         const dailyQualifies = dailyActive && distanceOk;
         const weeklyQualifies = weeklyActive && distanceOk;
+        const perOrderQualifies = perOrderActive && distanceOk;
 
         const statsSnap = await tx.get(dailyStatsRef);
         const statsData = statsSnap.data();
@@ -927,7 +940,8 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         const weeklyWillAward =
           weeklyQualifies && !weeklyAlreadyAwarded && weeklyNewCount >= driverBonusSettings.weeklyTripThreshold;
 
-        const driverDoc = willAward || weeklyWillAward ? await tx.get(driverRef) : null;
+        const driverDoc =
+          willAward || weeklyWillAward || perOrderQualifies ? await tx.get(driverRef) : null;
 
         // ---- shu nuqtadan e'tiboran faqat yozishlar ----
         tx.set(orderRef, { driverBonusChecked: true }, { merge: true });
@@ -959,12 +973,13 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
           );
         }
 
-        if ((willAward || weeklyWillAward) && driverDoc) {
+        if ((willAward || weeklyWillAward || perOrderQualifies) && driverDoc) {
           const currentBalance =
             typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
           const totalBonus =
             (willAward ? driverBonusSettings.bonusAmount : 0) +
-            (weeklyWillAward ? driverBonusSettings.weeklyBonusAmount : 0);
+            (weeklyWillAward ? driverBonusSettings.weeklyBonusAmount : 0) +
+            (perOrderQualifies ? driverBonusSettings.perOrderBonusAmount : 0);
           const newBalance = currentBalance + totalBonus;
 
           tx.set(driverRef, { balance: newBalance }, { merge: true });
@@ -1004,6 +1019,20 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
             logger.info(
               `Haydovchi ${driverId}: haftalik bonus (${weekStartStr}) berildi — ${weeklyNewCount} safar, ` +
                 `+${driverBonusSettings.weeklyBonusAmount} so'm`
+            );
+          }
+
+          if (perOrderQualifies) {
+            tx.set(driverRef.collection("bonusHistory").doc(`order-${orderId}`), {
+              period: "perOrder",
+              date: dateStr,
+              amount: driverBonusSettings.perOrderBonusAmount,
+              orderId,
+              createdAt: FieldValue.serverTimestamp(),
+            });
+            logger.info(
+              `Haydovchi ${driverId}: buyurtma-bonus (${orderId}) berildi — ` +
+                `+${driverBonusSettings.perOrderBonusAmount} so'm`
             );
           }
 
