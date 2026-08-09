@@ -115,7 +115,12 @@ function isDriverEligibleForOrder(
 // X%i) o'rniga endi ADMIN QAT'IY BELGILAGAN chegara ishlatiladi —
 // yoki so'mda (masalan "bitta buyurtmaga 2000 so'mdan ko'p emas"),
 // yoki foizda (`perOrderCapType` shuni tanlaydi).
-async function getBonusSettings(): Promise<{
+// `branchId` berilsa, avval o'sha filialga xos sozlama (settings/bonus_branch_{id})
+// izlanadi; topilmasa (filial hali o'z sozlamasini belgilamagan) ADMIN
+// belgilagan umumiy standart (settings/bonus) ishlatiladi. Shu bilan har
+// bir filial o'z cashback foizini mustaqil belgilay oladi, standart esa
+// filiallar uchun "fallback" bo'lib qoladi.
+async function getBonusSettings(branchId?: string | null): Promise<{
   earnPercent: number;
   minBalanceToUse: number;
   perOrderCapType: "amount" | "percent";
@@ -128,8 +133,15 @@ async function getBonusSettings(): Promise<{
     perOrderCapValue: 50,
   };
   try {
-    const doc = await db.collection("settings").doc("bonus").get();
-    const data = doc.data();
+    let data: FirebaseFirestore.DocumentData | undefined;
+    if (branchId) {
+      const branchDoc = await db.collection("settings").doc(`bonus_branch_${branchId}`).get();
+      data = branchDoc.data();
+    }
+    if (!data) {
+      const globalDoc = await db.collection("settings").doc("bonus").get();
+      data = globalDoc.data();
+    }
     if (!data) return fallback;
     return {
       earnPercent: typeof data.earnPercent === "number" ? data.earnPercent : fallback.earnPercent,
@@ -161,7 +173,12 @@ function computePerOrderBonusCap(
 // Admin dashboard'ning "Haydovchilar uchun kunlik bonus" va "Haydovchilar
 // uchun haftalik bonus" (alohida kartalar, har birida Faol/Nofaol
 // vklyuchateli) bo'limlarida sozlanadi (settings/driverBonus hujjati).
-async function getDriverBonusSettings(): Promise<{
+// `branchId` berilsa, avval o'sha filialga xos sozlama
+// (settings/driverBonus_branch_{id}) izlanadi; topilmasa ADMIN belgilagan
+// umumiy standart (settings/driverBonus) ishlatiladi — xuddi
+// getBonusSettings'dagi kabi "filial-o'ziga xos, aks holda umumiy standart"
+// qoidasi.
+async function getDriverBonusSettings(branchId?: string | null): Promise<{
   dailyEnabled: boolean;
   dailyTripThreshold: number;
   bonusAmount: number;
@@ -184,8 +201,15 @@ async function getDriverBonusSettings(): Promise<{
     perOrderBonusAmount: 0,
   };
   try {
-    const doc = await db.collection("settings").doc("driverBonus").get();
-    const data = doc.data();
+    let data: FirebaseFirestore.DocumentData | undefined;
+    if (branchId) {
+      const branchDoc = await db.collection("settings").doc(`driverBonus_branch_${branchId}`).get();
+      data = branchDoc.data();
+    }
+    if (!data) {
+      const globalDoc = await db.collection("settings").doc("driverBonus").get();
+      data = globalDoc.data();
+    }
     if (!data) return fallback;
     const weeklyTripThreshold =
       typeof data.weeklyTripThreshold === "number"
@@ -722,7 +746,7 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
     const orderRef = after.ref;
     const customerRef = db.collection("customers").doc(customerId);
     const historyRef = customerRef.collection("bonusHistory");
-    const bonusSettings = await getBonusSettings();
+    const bonusSettings = await getBonusSettings(after.data()?.branchId);
 
     try {
       await db.runTransaction(async (tx) => {
@@ -896,7 +920,12 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
     const weekStartStr = tashkentWeekStartStr();
     const dailyStatsRef = driverRef.collection("dailyBonusStats").doc(dateStr);
     const weeklyStatsRef = driverRef.collection("weeklyBonusStats").doc(weekStartStr);
-    const driverBonusSettings = await getDriverBonusSettings();
+    // Buyurtmaning branchId'si — dispatch bosqichida haydovchining o'z
+    // filialiga mos ravishda tayinlangan (onNewOrderNotifyDrivers faqat
+    // shu filialdagi haydovchilarga yuboradi), shuning uchun bu yerda
+    // alohida haydovchi hujjatini o'qimasdan to'g'ridan-to'g'ri ishlatish
+    // mumkin.
+    const driverBonusSettings = await getDriverBonusSettings(after.data()?.branchId);
 
     try {
       await db.runTransaction(async (tx) => {

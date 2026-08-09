@@ -51,12 +51,21 @@ service cloud.firestore {
     // ============================================================
     // SETTINGS — o'qish ochiq qoladi (haydovchi/mijoz ilovasi
     // autentifikatsiyasiz turli sozlamalarni — masalan
-    // driverBonus — o'qiydi). Yozish endi FAQAT admin uchun —
-    // ilgari "istalgan kishi" yoza olardi.
+    // driverBonus — o'qiydi). Yozish: admin cheklovsiz (shu jumladan
+    // "bonus"/"driverBonus" — filiallar uchun umumiy STANDART
+    // sozlama). Menejer esa FAQAT o'z filialiga tegishli, alohida
+    // hujjat sifatida saqlanadigan bonus-override'ni yoza oladi:
+    // "bonus_branch_{filialId}" yoki "driverBonus_branch_{filialId}",
+    // faqat shu {filialId} o'ziga (adminRoles/{uid}.branches) tegishli
+    // bo'lsagina.
     // ============================================================
     match /settings/{settingId} {
       allow read: if true;
-      allow write: if isAdmin();
+      allow write: if isAdmin() || (
+        isStaff() && staffRole() == 'manager' &&
+        (settingId.matches('bonus_branch_.+') || settingId.matches('driverBonus_branch_.+')) &&
+        settingId.split('_branch_')[1] in staffBranches()
+      );
     }
 
     // ============================================================

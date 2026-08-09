@@ -163,8 +163,8 @@ export default function MoneyScreen() {
   }, [driverId]);
 
   useEffect(() => {
-    getDriverBonusSettings().then(setBonusSettings);
-  }, []);
+    getDriverBonusSettings(driver?.branch).then(setBonusSettings);
+  }, [driver?.branch]);
 
   const weekEarnings = useMemo(() => buildWeekEarnings(orders), [orders]);
   const maxEarning = Math.max(1, ...weekEarnings.map((d) => d.amount));

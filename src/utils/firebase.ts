@@ -422,12 +422,26 @@ export type DriverBonusSettings = {
   weeklyEnabled: boolean;
   weeklyTripThreshold: number;
   weeklyBonusAmount: number;
+  perOrderEnabled: boolean;
+  perOrderBonusAmount: number;
 };
 
-export async function getDriverBonusSettings(): Promise<DriverBonusSettings | null> {
+// `branchId` berilsa, avval o'sha filialga xos sozlama
+// (settings/driverBonus_branch_{id}) izlanadi; topilmasa ADMIN belgilagan
+// umumiy standart (settings/driverBonus) ishlatiladi — Cloud Function
+// tomondagi (E:\Sevimli Go\functions\src\index.ts, getDriverBonusSettings)
+// bir xil mantiq.
+export async function getDriverBonusSettings(branchId?: string | null): Promise<DriverBonusSettings | null> {
   try {
-    const doc = await firestore().collection('settings').doc('driverBonus').get();
-    const data = doc.data();
+    let data: FirebaseFirestoreTypes.DocumentData | undefined;
+    if (branchId) {
+      const branchDoc = await firestore().collection('settings').doc(`driverBonus_branch_${branchId}`).get();
+      data = branchDoc.data();
+    }
+    if (!data) {
+      const doc = await firestore().collection('settings').doc('driverBonus').get();
+      data = doc.data();
+    }
     if (!data) return null;
     return {
       dailyEnabled: data.dailyEnabled !== false,
@@ -441,6 +455,8 @@ export async function getDriverBonusSettings(): Promise<DriverBonusSettings | nu
       weeklyEnabled: typeof data.weeklyEnabled === 'boolean' ? data.weeklyEnabled : (data.weeklyTripThreshold || 0) > 0,
       weeklyTripThreshold: data.weeklyTripThreshold || 0,
       weeklyBonusAmount: data.weeklyBonusAmount || 0,
+      perOrderEnabled: data.perOrderEnabled === true,
+      perOrderBonusAmount: data.perOrderBonusAmount || 0,
     };
   } catch (error) {
     console.warn('Haydovchi bonus sozlamalarini o\'qishda xato:', error);
