@@ -107,6 +107,12 @@ export type FirestoreOrder = {
   id: string;
   status: 'pending' | 'accepted' | 'arrived' | 'in_progress' | 'completed' | 'cancelled';
   driverId: string | null;
+  /** Buyurtma tegishli filial — Cloud Function (onNewOrderNotifyDrivers)
+   * tomonidan avtomatik aniqlanadi (mijoz ilovasidan kelgan buyurtmalar
+   * uchun) yoki dashboard tomonidan qo'lda belgilanadi. "Ochiq
+   * buyurtmalar" ro'yxati (listenToPoolOrders) shu maydon bo'yicha
+   * filtrlanadi — boshqa filialning buyurtmasi ko'rinmasligi uchun. */
+  branchId?: string | null;
   customerName: string;
   customerPhone: string;
   fromAddress: string;
@@ -155,6 +161,7 @@ export function mapDocToOrder(
     id: doc.id,
     status: data.status || 'pending',
     driverId: data.driverId ?? null,
+    branchId: data.branchId ?? null,
     customerName: data.customerName || "Noma'lum mijoz",
     customerPhone: data.customerPhone || '',
     fromAddress: data.fromAddress || '',
@@ -200,14 +207,28 @@ export function mapDocToOrder(
   };
 }
 
+// MUHIM (filial izolyatsiyasi): `branchId` majburiy — haydovchining
+// o'z filiali (AuthContext'dan) beriladi va faqat SHU filialga
+// tegishli ochiq buyurtmalar qaytariladi. Avval bu so'rov filialsiz
+// edi, ya'ni har bir haydovchi BARCHA filiallarning ochiq
+// buyurtmalarini ko'rardi — endi tuzatildi. `branchId` bo'sh/noma'lum
+// bo'lsa (masalan haydovchi hali birorta filialga tayinlanmagan),
+// hech narsa qaytarilmaydi (bo'sh ro'yxat) — noaniq holatda "hamma
+// narsani ko'rsatish" o'rniga "hech narsa ko'rsatmaslik" xavfsizroq.
 export function listenToPoolOrders(
+  branchId: string | null | undefined,
   onChange: (orders: FirestoreOrder[]) => void,
   onError?: (error: Error) => void
 ): () => void {
+  if (!branchId) {
+    onChange([]);
+    return () => {};
+  }
   const unsubscribe = firestore()
     .collection('orders')
     .where('status', '==', 'pending')
     .where('driverId', '==', null)
+    .where('branchId', '==', branchId)
     .onSnapshot(
       (snapshot) => { onChange(snapshot.docs.map(mapDocToOrder)); },
       (error) => {
@@ -464,14 +485,37 @@ export async function getDriverBonusSettings(branchId?: string | null): Promise<
   }
 }
 
+/** Buyurtmani allaqachon boshqa haydovchi olib qo'yganda tashlanadigan xato. */
+export class OrderAlreadyTakenError extends Error {
+  constructor() {
+    super('Bu buyurtmani boshqa haydovchi allaqachon oldi');
+    this.name = 'OrderAlreadyTakenError';
+  }
+}
+
+// MUHIM (poyga holati / race condition): "Ochiq buyurtmalar" ro'yxatida
+// bir xil buyurtmani bir nechta haydovchi BIR VAQTDA "Olish" tugmasini
+// bosishi mumkin. Oddiy `.update()` bunday holatda ikkalasini ham
+// "muvaffaqiyatli" deb ko'rsatib, oxirgi yozuv g'olib chiqishiga
+// (birinchi haydovchi sezmasdan "yutqazishiga") sabab bo'lardi.
+// Firestore tranzaksiyasi + `status === 'pending'` shartini qayta
+// tekshirish orqali faqat BITTASI muvaffaqiyatli bo'lishini kafolatlaymiz.
 export async function acceptOrder(
   orderId: string,
   driverId: string
 ): Promise<void> {
-  await firestore().collection('orders').doc(orderId).update({
-    status: 'accepted',
-    driverId,
-    acceptedAt: firestore.FieldValue.serverTimestamp(),
+  const orderRef = firestore().collection('orders').doc(orderId);
+  await firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(orderRef);
+    const data = snap.data();
+    if (!data || data.status !== 'pending' || data.driverId != null) {
+      throw new OrderAlreadyTakenError();
+    }
+    tx.update(orderRef, {
+      status: 'accepted',
+      driverId,
+      acceptedAt: firestore.FieldValue.serverTimestamp(),
+    });
   });
 }
 

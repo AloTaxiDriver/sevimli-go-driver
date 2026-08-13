@@ -28,7 +28,7 @@ import { Order } from './data/mockOrders';
 import { COLORS } from './theme/colors';
 import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
-  DispatcherNotification, FirestoreOrder, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
+  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
@@ -342,14 +342,17 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     })();
   }, [pendingAcceptId, location, driverId]);
 
-  // Pool buyurtmalar — faqat gamburger menyuda, avtomatik taklif YO'Q
+  // Pool buyurtmalar — faqat gamburger menyuda, avtomatik taklif YO'Q.
+  // MUHIM (filial izolyatsiyasi): faqat haydovchining O'Z filialiga
+  // tegishli ochiq buyurtmalar tinglanadi (driver.branch).
   useEffect(() => {
     if (!isOnline) { setPoolOrders([]); return; }
     return listenToPoolOrders(
+      driver?.branch,
       (orders) => setPoolOrders(orders),
       (error) => console.warn('Pool xato:', error)
     );
-  }, [isOnline]);
+  }, [isOnline, driver?.branch]);
 
   useEffect(() => {
     if (!isOnline) {
@@ -745,7 +748,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     startPan.setValue(0);
     setDriverBusyStatus(driverId, false).catch(() => {});
   }
-  function handleTakePoolOrder(order: Order) {
+  async function handleTakePoolOrder(order: Order) {
     if ((driver?.balance || 0) <= 0) {
       Alert.alert(
         'Balans yetarli emas',
@@ -753,7 +756,21 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       );
       return;
     }
-    acceptOrder(order.id, driverId).catch(console.warn);
+    // MUHIM: endi tranzaksiya orqali qabul qilinadi — agar boshqa
+    // haydovchi shu buyurtmani bir zumda oldin olib ulgurgan bo'lsa,
+    // OrderAlreadyTakenError tashlanadi va biz LOKAL holatni
+    // o'zgartirmaymiz (avval bu tekshiruv yo'q edi, ikkala haydovchi
+    // ham "oldim" deb o'ylab qolishi mumkin edi).
+    try {
+      await acceptOrder(order.id, driverId);
+    } catch (error) {
+      if (error instanceof OrderAlreadyTakenError) {
+        Alert.alert('Kechikdingiz', 'Bu buyurtmani boshqa haydovchi allaqachon oldi.');
+      } else {
+        console.warn(error);
+      }
+      return;
+    }
     activeOrderSourceId.current = order.id;
     startWatchingOrderCancellation(order.id);
     processedAcceptId.current = order.id;

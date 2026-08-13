@@ -413,6 +413,19 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       return;
     }
 
+    // MUHIM (filial izolyatsiyasi): filial aniqlanmasa (masalan hali
+    // birorta filial sozlanmagan, yoki pickup koordinatalari yo'q),
+    // ENDI hech kimga dispatch qilinmaydi — avval bu holatda barcha
+    // onlayn haydovchilarga (filialidan qat'iy nazar) broadcast
+    // qilinardi, bu boshqa filial haydovchisiga buyurtma tushishiga
+    // sabab bo'lishi mumkin edi. Buyurtma shunchaki "pending" holatida
+    // qoladi — dispetcher dashboard orqali qo'lda filial tayinlashi
+    // yoki muammoni ko'rishi kerak.
+    if (!branchId) {
+      logger.warn(`Buyurtma ${orderId}: filial aniqlanmadi — dispatch qilinmadi`);
+      return;
+    }
+
     // ── POOL BUYURTMA — KETMA-KET DISPATCH ───────────────────
     const settings = await getDispatchSettings();
     const radiusCfg = await getRadiusConfig();
@@ -431,10 +444,6 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     type DriverInfo = { id: string; token: string; distance: number };
 
     const nearbyDrivers: DriverInfo[] = [];
-    // MUHIM: allDrivers endi id+token juftligi bilan saqlanadi,
-    // shunda broadcast bosqichida nearbyDrivers'da bo'lganlarni
-    // chiqarib tashlashimiz mumkin (ular allaqachon push oldi)
-    const allDrivers: { id: string; token: string }[] = [];
 
     const pickupLat: number | undefined = order.pickupLat;
     const pickupLng: number | undefined = order.pickupLng;
@@ -443,15 +452,13 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       const data = doc.data();
       if (!data.pushToken) return;
       if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) return;
-      // MUHIM: filial aniqlangan bo'lsa, faqat O'SHA filialga
-      // tegishli haydovchilar ko'rib chiqiladi — boshqa filialning
-      // buyurtmasi boshqa filial haydovchisiga bormasligi uchun.
-      // Filial aniqlanmagan (masalan hali birorta filial
-      // sozlanmagan) bo'lsa — cheklovsiz (fail open), eski xulq-atvor
-      // buzilmaydi.
-      if (branchId && data.branch !== branchId) return;
-
-      allDrivers.push({ id: doc.id, token: data.pushToken });
+      // MUHIM (filial izolyatsiyasi, QAT'IY): faqat O'SHA filialga
+      // tegishli haydovchilar ko'rib chiqiladi. branchId yuqorida
+      // allaqachon tekshirilgan (null bo'lsa funksiya qaytib ketgan),
+      // shuning uchun bu yerda "fail open" holati YO'Q — boshqa
+      // filialning haydovchisi hech qanday holatda bu buyurtmani
+      // ko'rmaydi yoki push olmaydi.
+      if (data.branch !== branchId) return;
 
       if (pickupLat != null && pickupLng != null && data.lat != null && data.lng != null) {
         const dist = getDistanceMeters(pickupLat, pickupLng, data.lat, data.lng);
@@ -464,40 +471,24 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     nearbyDrivers.sort((a, b) => a.distance - b.distance);
 
     logger.info(
-      `Buyurtma ${orderId}: ${nearbyDrivers.length} ta yaqin haydovchi, ` +
-        `${allDrivers.length} ta jami online haydovchi`
+      `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi (${settings.radiusMeters}m radius)`
     );
 
-    // ── RADIUS ICHIDAGI HAYDOVCHILAR YO'Q ────────────────────
+    // ── RADIUS ICHIDA HAYDOVCHI YO'Q ──────────────────────────
+    // MUHIM: bu yerda ENDI boshqa haydovchilarga (radiusdan tashqarida
+    // yoki boshqa filialda) broadcast QILINMAYDI. Buyurtma "pending"
+    // holatida qoladi va shu filialning "Ochiq buyurtmalar" ro'yxatida
+    // (listenToPoolOrders, branchId bo'yicha filtrlangan) avtomatik
+    // paydo bo'ladi — filialdagi istalgan onlayn haydovchi uni qo'lda
+    // "Olish" tugmasi orqali qabul qila oladi.
     if (nearbyDrivers.length === 0) {
-      logger.info(`Radius ichida haydovchi yo'q — barcha onlaynlarga broadcast`);
-      const tokens = allDrivers.map((d) => d.token);
-      if (tokens.length > 0) {
-        try {
-          const response = await messaging.sendEachForMulticast({
-            tokens,
-            data: dataPayload,
-            android: { priority: "high" },
-          });
-          logger.info(
-            `Broadcast: ${response.successCount} ta yuborildi, ${response.failureCount} ta xato`
-          );
-        } catch (error) {
-          logger.error("Broadcast xatosi:", error);
-        }
-      }
+      logger.info(
+        `Buyurtma ${orderId}: radius ichida haydovchi yo'q — "Ochiq buyurtmalar"da qoladi (filial: ${branchId})`
+      );
       return;
     }
 
     // ── KETMA-KET DISPATCH ────────────────────────────────────
-    // MUHIM: har bir haydovchidan keyin, KEYINGISIGA o'tishdan
-    // OLDIN sleep qilamiz (oldingi versiyada bu shart faqat
-    // "oxirgi bo'lmagan" holatlar uchun edi, va OXIRGI haydovchidan
-    // keyin QOSHIMCHA sleep + BROADCAST bo'lardi — bu esa
-    // ORTIQCHA push'ga sabab bo'lardi, chunki broadcast ro'yxatida
-    // ALLAQACHON push olgan haydovchilar ham bor edi).
-    const notifiedDriverIds = new Set<string>();
-
     for (let i = 0; i < nearbyDrivers.length; i++) {
       const driver = nearbyDrivers[i];
 
@@ -513,49 +504,27 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       );
 
       await sendPushToToken(driver.token, orderId, dataPayload);
-      notifiedDriverIds.add(driver.id);
 
-      // Har doim (oxirgisi bo'lsa ham) navbatdagi tekshiruv/broadcast'dan
+      // Har doim (oxirgisi bo'lsa ham) navbatdagi tekshiruv/qaytishdan
       // oldin kutamiz — shu bilan haydovchiga qabul qilish uchun
       // yetarli vaqt beriladi.
       await sleep(settings.timeoutSeconds * 1000);
     }
 
-    // ── BARCHA YAQIN HAYDOVCHILAR TUGADI ─────────────────────
+    // ── BARCHA YAQIN HAYDOVCHILAR RAD ETDI/JAVOB BERMADI ─────
+    // MUHIM: bu yerda ham ENDI broadcast YO'Q — xuddi yuqoridagi
+    // kabi, buyurtma "pending" holatida qoladi va filialning "Ochiq
+    // buyurtmalar" ro'yxatida boshqa (radiusdan tashqaridagi yoki
+    // band bo'lmagan) haydovchilarga ko'rinadi, faqat SHU filial
+    // ichida.
     const stillPendingAfterAll = await isOrderStillPending(orderId);
-    if (!stillPendingAfterAll) {
-      logger.info(`Buyurtma ${orderId} yaqin haydovchilar tugashidan oldin qabul qilindi`);
-      return;
-    }
-
-    // MUHIM TUZATISH: broadcast faqat ALLAQACHON PUSH OLMAGAN
-    // haydovchilarga yuboriladi — shu bilan bir xil haydovchiga
-    // ikkinchi marta (overlay qayta chiqishiga sabab bo'ladigan)
-    // push yuborilishining oldi olinadi.
-    const remainingTokens = allDrivers
-      .filter((d) => !notifiedDriverIds.has(d.id))
-      .map((d) => d.token);
-
-    logger.info(
-      `Buyurtma ${orderId}: barcha yaqin haydovchilar rad etdi — ` +
-        `${remainingTokens.length} ta qolgan online haydovchiga broadcast`
-    );
-
-    if (remainingTokens.length > 0) {
-      try {
-        const response = await messaging.sendEachForMulticast({
-          tokens: remainingTokens,
-          data: dataPayload,
-          android: { priority: "high" },
-        });
-        logger.info(
-          `Broadcast natija: ${response.successCount} ta yuborildi, ${response.failureCount} ta xato`
-        );
-      } catch (error) {
-        logger.error("Broadcast xatosi:", error);
-      }
+    if (stillPendingAfterAll) {
+      logger.info(
+        `Buyurtma ${orderId}: barcha yaqin haydovchilar rad etdi/javob bermadi — ` +
+          `"Ochiq buyurtmalar"da qoladi (filial: ${branchId})`
+      );
     } else {
-      logger.info(`Buyurtma ${orderId}: broadcast qilinadigan qolgan haydovchi yo'q`);
+      logger.info(`Buyurtma ${orderId} yaqin haydovchilar tugashidan oldin qabul qilindi`);
     }
   }
 );
