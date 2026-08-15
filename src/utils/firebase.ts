@@ -674,6 +674,8 @@ export function firestoreOrderToOrder(
     // Mijoz bonus/qo'shimcha xizmat ishlatgan bo'lsa, haydovchi
     // haqiqatda olishi kerak bo'lgan summa shu — xom tarif narxi emas.
     price: typeof fo.finalPrice === 'number' ? fo.finalPrice : fo.price,
+    bonusUsed: fo.bonusUsed || 0,
+    extrasTotal: fo.extrasTotal || 0,
     perKm: fo.perKm || 0,
     minDistance: fo.minDistance || 0,
     minDistancePrice: fo.minDistancePrice || fo.price,

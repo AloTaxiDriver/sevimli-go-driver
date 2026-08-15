@@ -24,6 +24,14 @@ export type Order = {
   // bo'yicha hisoblanadi (MapScreen.tsx'dagi livePrice).
   tieredPricing?: boolean;
   priceTiers?: { km?: number; pricePerKm: number }[];
+  // Mijoz bonus/qo'shimcha xizmat ishlatgan bo'lsa — `price` maydoni
+  // (yuqorida) allaqachon shularni hisobga olgan yakuniy summa. Safar
+  // davomida MapScreen'da GPS bo'yicha jonli hisoblanadigan narxni ham
+  // xuddi shu tarzda tuzatish uchun bu ikkisi alohida saqlanadi (aks
+  // holda "Yo'l narxi" ekranda bonusni hisobga olmagan, mijoz
+  // bonusidan ancha yuqori summa ko'rsatib qo'yadi).
+  bonusUsed?: number;
+  extrasTotal?: number;
   // "taxi" (standart) yoki "delivery" (Dostavka) — mijoz ilovasidan
   // kelgan buyurtmalar uchun (E:\sevimli-go-customer dagi NewOrderInput
   // bilan bir xil). Dashboard'dan yaratilgan buyurtmalarda yo'q.

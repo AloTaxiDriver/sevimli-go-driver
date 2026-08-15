@@ -825,6 +825,12 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     : distanceBeyondMin * tariffPerKm;
   const rawLivePrice = tariffMinPrice + distanceSurcharge;
   const livePrice = Math.ceil(rawLivePrice / 1000) * 1000;
+  // MUHIM: `livePrice` — sof tarif/masofa asosidagi (xom) summa, mijoz
+  // ishlatgan bonus/qo'shimcha xizmatni hisobga olmaydi. Ekranda haydovchiga
+  // ko'rsatiladigan summa esa finalizeOrderPrice() safar oxirida Firestore'ga
+  // yozadigan `finalPrice` bilan mos kelishi shart — aks holda haydovchi
+  // bonus qo'llanmagandek, undan yuqoriroq (noto'g'ri) summa ko'radi.
+  const displayPrice = Math.max(0, livePrice + (activeOrder?.extrasTotal || 0) - (activeOrder?.bonusUsed || 0));
 
   const bottomSafeOffset = TAB_BAR_HEIGHT + insets.bottom;
   const textOpacity = pan.interpolate({ inputRange: [0, SWIPE_THRESHOLD], outputRange: [1, 0], extrapolate: 'clamp' });
@@ -1053,7 +1059,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
                 : activeOrder
             }
             stage="in_progress" distanceKm={liveDistanceKm}
-            durationMin={liveDurationMin} price={livePrice}
+            durationMin={liveDurationMin} price={displayPrice}
             stageNote={hasSecondStop ? (activeLeg === 1 ? '1/2-manzil' : '2/2-manzil') : undefined}
             primaryLabel={hasSecondStop && activeLeg === 1 ? '1-manzilga yetdim, davom etamiz' : undefined}
             recipientName={activeOrder.serviceType === 'delivery' && (activeLeg === 2 || !hasSecondStop) ? activeOrder.recipientName : undefined}
@@ -1154,7 +1160,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
 
             <View style={styles.summaryRow}>
               <Text style={styles.summaryLabel}>Qo'shimcha xizmat</Text>
-              <Text style={styles.summaryValue}>0 so'm</Text>
+              <Text style={styles.summaryValue}>{(activeOrder?.extrasTotal || 0).toLocaleString()} so'm</Text>
             </View>
             <View style={styles.summaryDivider} />
 
@@ -1164,8 +1170,18 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             </View>
             <View style={styles.summaryDivider} />
 
+            {!!activeOrder?.bonusUsed && (
+              <>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>Mijoz bonusi</Text>
+                  <Text style={styles.summaryValue}>−{activeOrder.bonusUsed.toLocaleString()} so'm</Text>
+                </View>
+                <View style={styles.summaryDivider} />
+              </>
+            )}
+
             <Text style={styles.summaryTotalLabel}>Safar narxi</Text>
-            <Text style={styles.summaryTotalValue}>{livePrice.toLocaleString()} so'm</Text>
+            <Text style={styles.summaryTotalValue}>{displayPrice.toLocaleString()} so'm</Text>
 
             <View style={styles.summaryBtnRow}>
               <TouchableOpacity style={styles.summaryBtnLight} onPress={closeTripSummary}>
