@@ -6066,18 +6066,51 @@ function findLocalDriverProfile(driverId){
   return localDrivers.find(d=>d.phone===driverId||d.id===driverId);
 }
 
+// MUHIM: haydovchi ilovasi GPS'ni faqat ilova OLDINDA (ekranda ochiq)
+// turganda har 10 soniyada yozadi — background'ga o'tsa (ekran o'chsa,
+// boshqa ilova ochilsa) bu to'xtaydi, lekin "isOnline" bayrog'i (u
+// alohida, faqat onlayn tugmasi bosilgan/bosilmaganini bildiradi)
+// o'zgarmay qoladi. Shu sabab "onlayn" haydovchining joylashuvi soatlab
+// eski bo'lib qolishi mumkin, hech qanday belgisiz. Shu yerda GPS necha
+// millisekund oldin kelganini hisoblab, "aloqa uzilgan" holatini
+// aniqlaymiz — bu haqiqiy joylashuvni tiklamaydi, faqat noto'g'ri
+// ishonchning oldini oladi.
+const DRIVER_LOCATION_STALE_MS=90*1000; // ~9 ta o'tkazib yuborilgan GPS signali
+function driverUpdatedAtMillis(d){
+  const ts=d&&d.updatedAt;
+  if(!ts)return 0;
+  if(typeof ts.toMillis==='function')return ts.toMillis();
+  if(typeof ts.seconds==='number')return ts.seconds*1000;
+  return 0;
+}
+function minutesAgoLabel(millisAgo){
+  const sec=Math.floor(millisAgo/1000);
+  if(sec<60)return 'hozirgina';
+  const min=Math.floor(sec/60);
+  if(min<60)return min+' daqiqa oldin';
+  const hr=Math.floor(min/60);
+  if(hr<24)return hr+' soat oldin';
+  return Math.floor(hr/24)+' kun oldin';
+}
+
 // Firestore'dagi real vaqtli holat (lat/lng, isOnline, busy) bilan
 // dashboard'ning lokal profilini (ism, mashina, davlat raqami)
 // birlashtiradi.
 function getMergedLiveDrivers(){
+  const now=Date.now();
   return liveDriversData.map(d=>{
     const profile=findLocalDriverProfile(d.id);
+    const updatedAtMillis=driverUpdatedAtMillis(d);
+    const isOnline=!!d.isOnline;
+    const stale=isOnline&&updatedAtMillis>0&&(now-updatedAtMillis)>DRIVER_LOCATION_STALE_MS;
     return {
       id:d.id,
       lat:d.lat,
       lng:d.lng,
-      isOnline:!!d.isOnline,
+      isOnline,
       busy:!!d.busy,
+      updatedAtMillis,
+      stale,
       name:profile?profile.name:('Haydovchi '+d.id),
       car:profile?(profile.car||''):'',
       plate:profile?(profile.plate||''):'',
@@ -6090,16 +6123,19 @@ function getMergedLiveDrivers(){
 // yangilash uchun — Firestore listener har chaqirilganda ishga tushadi.
 function updateMapLegendAndSearch(){
   const drivers=getMergedLiveDrivers();
-  const online=drivers.filter(d=>d.isOnline);
+  const online=drivers.filter(d=>d.isOnline&&!d.stale);
+  const staleCount=drivers.filter(d=>d.isOnline&&d.stale).length;
   const freeCount=online.filter(d=>!d.busy).length;
   const busyCount=online.filter(d=>d.busy).length;
-  const offlineCount=drivers.length-online.length;
+  const offlineCount=drivers.length-online.length-staleCount;
   const elFree=document.getElementById('map-legend-free');
   const elBusy=document.getElementById('map-legend-busy');
   const elOffline=document.getElementById('map-legend-offline');
+  const elStale=document.getElementById('map-legend-stale');
   if(elFree)elFree.textContent=freeCount;
   if(elBusy)elBusy.textContent=busyCount;
   if(elOffline)elOffline.textContent=offlineCount;
+  if(elStale)elStale.textContent=staleCount;
   const searchInput=document.getElementById('map-driver-search');
   const dd=document.getElementById('map-search-dropdown');
   if(searchInput&&dd&&dd.style.display==='block'){
@@ -6109,14 +6145,16 @@ function updateMapLegendAndSearch(){
 
 function renderMap(){
   const drivers=getMergedLiveDrivers();
-  const online=drivers.filter(d=>d.isOnline);
+  const online=drivers.filter(d=>d.isOnline&&!d.stale);
+  const staleCount=drivers.filter(d=>d.isOnline&&d.stale).length;
   const freeCount=online.filter(d=>!d.busy).length;
   const busyCount=online.filter(d=>d.busy).length;
-  const offlineCount=drivers.length-online.length;
+  const offlineCount=drivers.length-online.length-staleCount;
 
   const legendItems=[
     {key:'free',label:'Bo\u2019sh',color:'#10B981',count:freeCount},
     {key:'busy',label:'Band',color:'#16A34A',count:busyCount},
+    {key:'stale',label:'Aloqa uzilgan',color:'#F59E0B',count:staleCount},
     {key:'offline',label:'Oflayn',color:'#9CA3AF',count:offlineCount},
   ].map(item=>`<div style="display:flex;align-items:center;gap:7px">
       <span style="width:10px;height:10px;border-radius:50%;background:${item.color};flex-shrink:0"></span>
@@ -6175,8 +6213,8 @@ function searchMapDriver(q){
   }
 
   dd.innerHTML=filtered.slice(0,30).map(d=>{
-    const color=!d.isOnline?'#9CA3AF':(d.busy?'#16A34A':'#10B981');
-    const label=!d.isOnline?'Oflayn':(d.busy?'Band':'Bo\u2019sh');
+    const color=!d.isOnline?'#9CA3AF':(d.stale?'#F59E0B':(d.busy?'#16A34A':'#10B981'));
+    const label=!d.isOnline?'Oflayn':(d.stale?'Aloqa uzilgan':(d.busy?'Band':'Bo\u2019sh'));
     return `
     <div onclick="selectMapDriver('${d.id}')"
       style="display:flex;align-items:center;gap:10px;padding:10px 14px;cursor:pointer;border-bottom:1px solid rgba(0,0,0,0.04)"
@@ -6231,6 +6269,7 @@ function afterRenderMap(){
 let yandexMapInstance=null;
 let yandexPlacemarks={};
 let driversUnsubscribe=null;
+let driverStaleCheckInterval=null;
 
 function initYandexMap(){
   const mapEl=document.getElementById('yandex-map');
@@ -6242,6 +6281,7 @@ function initYandexMap(){
     yandexMapInstance=null;
   }
   if(driversUnsubscribe){driversUnsubscribe();driversUnsubscribe=null;}
+  if(driverStaleCheckInterval){clearInterval(driverStaleCheckInterval);driverStaleCheckInterval=null;}
 
   const map=new ymaps.Map('yandex-map',{center:[41.3111,69.2797],zoom:12,controls:['zoomControl']});
 
@@ -6263,7 +6303,7 @@ function initYandexMap(){
   // koordinatalari esa Firestore'da (mobil ilova yozadi). Ularni
   // telefon raqami orqali bog'laymiz — mos profil topilmasa,
   // shunchaki ID ko'rsatiladi (findLocalDriverProfile — top-level helper).
-  function makePopupHtml(driverId,color,statusLabel){
+  function makePopupHtml(driverId,color,statusLabel,staleNote){
     const profile=findLocalDriverProfile(driverId);
     const name=profile?profile.name:('Haydovchi '+driverId);
     const carLine=profile?`${esc(profile.car||'')} \u00b7 ${esc(profile.plate||'')}`:esc(driverId);
@@ -6273,13 +6313,20 @@ function initYandexMap(){
       <div style="display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;color:${color}">
         <span style="width:7px;height:7px;border-radius:50%;background:${color}"></span>${statusLabel}
       </div>
+      ${staleNote?`<div style="font-size:10.5px;color:#B45309;margin-top:4px">\u26a0 So'nggi joylashuv: ${esc(staleNote)}</div>`:''}
     </div>`;
   }
 
+  // MUHIM: "aloqa uzilgan" (stale) haydovchi ATAYLAB xaritadan
+  // yashirilmaydi \u2014 oxirgi ma'lum nuqta baribir foydali (yaqin atrofda
+  // qidirish uchun), lekin rangi/yorlig'i buni ANIQ "eski ma'lumot"
+  // deb belgilaydi, aks holda dispetcher uni hozir aynan shu yerda deb
+  // ishonib qoladi.
   function upsertMarker(driverId,d){
-    const color=d.busy?'#16A34A':'#10B981';
-    const statusLabel=d.busy?'Band':'Bo\u2019sh';
-    const balloonContentBody=makePopupHtml(driverId,color,statusLabel);
+    const color=d.stale?'#F59E0B':(d.busy?'#16A34A':'#10B981');
+    const statusLabel=d.stale?'Aloqa uzilgan':(d.busy?'Band':'Bo\u2019sh');
+    const staleNote=d.stale&&d.updatedAtMillis?minutesAgoLabel(Date.now()-d.updatedAtMillis):'';
+    const balloonContentBody=makePopupHtml(driverId,color,statusLabel,staleNote);
     if(yandexPlacemarks[driverId]){
       yandexPlacemarks[driverId].geometry.setCoordinates([d.lat,d.lng]);
       yandexPlacemarks[driverId].properties.set({color,balloonContentBody});
@@ -6304,12 +6351,19 @@ function initYandexMap(){
   // Real vaqtli Firestore tinglovchisi — haydovchi GPS orqali har
   // 10 soniyada joylashuvini yangilaydi, shu yerda darhol aks etadi
   if(window.listenToDriversLive){
+    // MUHIM: GPS koordinatalari o'zgarmasa (haydovchi "muzlab qolgan"
+    // bo'lsa), Firestore onSnapshot QAYTA ISHGA TUSHMAYDI \u2014 shu sabab
+    // aloqa-uzilgan holatini faqat shu yerda emas, pastdagi vaqt bo'yicha
+    // davriy tekshiruv (driverStaleCheckInterval) orqali ham yangilaymiz.
     driversUnsubscribe=window.listenToDriversLive((allDrivers)=>{
       const drivers=filterByAllowedBranchesStrict(allDrivers,d=>d.branch);
       liveDriversData=drivers;
+      const now=Date.now();
       const visibleIds=new Set();
       drivers.forEach(d=>{
         if(d.isOnline&&d.lat!=null&&d.lng!=null){
+          d.updatedAtMillis=driverUpdatedAtMillis(d);
+          d.stale=d.updatedAtMillis>0&&(now-d.updatedAtMillis)>DRIVER_LOCATION_STALE_MS;
           visibleIds.add(d.id);
           upsertMarker(d.id,d);
         }
@@ -6323,6 +6377,17 @@ function initYandexMap(){
       }
       updateMapLegendAndSearch();
     });
+    driverStaleCheckInterval=setInterval(()=>{
+      const now=Date.now();
+      liveDriversData.forEach(d=>{
+        if(d.isOnline&&d.lat!=null&&d.lng!=null&&yandexPlacemarks[d.id]){
+          d.updatedAtMillis=driverUpdatedAtMillis(d);
+          d.stale=d.updatedAtMillis>0&&(now-d.updatedAtMillis)>DRIVER_LOCATION_STALE_MS;
+          upsertMarker(d.id,d);
+        }
+      });
+      updateMapLegendAndSearch();
+    },20000);
   }else{
     console.warn('listenToDriversLive topilmadi \u2014 sahifani to\u2018liq yangilang');
   }
