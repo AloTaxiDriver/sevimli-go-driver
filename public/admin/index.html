@@ -1089,6 +1089,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
 <div class="body">
   <div id="order-edit-modal"></div>
   <div id="cancel-order-modal"></div>
+  <div id="complete-order-modal"></div>
 
 
   <!-- MAIN -->
@@ -1963,6 +1964,14 @@ function normalizeFirestoreOrder(o){
     cancelledBy:o.cancelledBy||'',
     distance:typeof o.distanceKm==='number'?o.distanceKm:0,
     createdAtMillis:o.createdAt&&o.createdAt.toMillis?o.createdAt.toMillis():(o.createdAt&&o.createdAt.seconds?o.createdAt.seconds*1000:0),
+    // Buyurtma yaratilgandagi tarif stavkalari — masofa noma'lum holda
+    // yakunlanganda narxni qayta hisoblash uchun kerak (pastga qarang,
+    // completeOrderFromDashboard).
+    perKm:typeof o.perKm==='number'?o.perKm:0,
+    minDistance:typeof o.minDistance==='number'?o.minDistance:0,
+    minDistancePrice:typeof o.minDistancePrice==='number'?o.minDistancePrice:0,
+    tieredPricing:!!o.tieredPricing,
+    priceTiers:Array.isArray(o.priceTiers)?o.priceTiers:[],
   };
 }
 
@@ -2246,8 +2255,78 @@ function setOrderInProgress(orderId){
   if(!o.driver){alert('Avval haydovchi tayinlang (Tahrirlash tugmasi orqali)');return;}
   if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,{status:'in_progress'});
 }
+// MUHIM: agar buyurtma yaratilganda "Qayerga" manzili tanlanmagan
+// bo'lsa (yoki tanlangan manzilda koordinata bo'lmasa), masofa 0 deb
+// saqlangan va narx tarif minimumigacha (masalan 8000 so'm) tushib
+// qolgan bo'ladi. Bunday buyurtma haydovchi ilovasi orqali (GPS bilan
+// jonli hisoblanadigan narx bilan) emas, balki shu tugma orqali
+// yakunlansa, hech narsa narxni tuzatmaydi va noto'g'ri (kam) summa
+// abadiy qolib ketadi. Shu sabab bunday holatda to'g'ridan-to'g'ri
+// yakunlash o'rniga dispetcherdan haqiqiy bosib o'tilgan masofani
+// so'raymiz.
 function completeOrderFromDashboard(orderId){
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  if(!o)return;
+  if(!o.distance||o.distance<=0){
+    openCompleteOrderDistanceModal(orderId);
+    return;
+  }
   if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,{status:'completed'});
+}
+
+function openCompleteOrderDistanceModal(orderId){
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  if(!o)return;
+  document.getElementById('complete-order-modal').innerHTML=`<div class="modal-overlay" onclick="closeModal('complete-order-modal')">
+    <div class="modal-box" style="max-width:400px" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <span style="font-weight:700;font-size:16px">Buyurtmani yakunlash — ${esc(o.id.slice(0,8))}</span>
+        <button class="btn btn-light" style="padding:5px 10px" onclick="closeModal('complete-order-modal')">${ic('x',14)}</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+        <div style="font-size:12.5px;color:rgba(26,26,26,0.6);line-height:1.5">Bu buyurtma yaratilganda "Qayerga" manzili belgilanmagan, shuning uchun masofa noma’lum va narx tarif minimumida (${(o.price||0).toLocaleString()} so’m) qolib ketgan. Haydovchi haqiqatda bosib o’tgan masofani kiriting — narx shunga qarab qayta hisoblanadi.</div>
+        <div class="form-field"><label class="form-label">Haqiqiy masofa (km)</label>
+          <input class="form-input" id="co-distance" type="number" min="0" step="0.1" placeholder="Masalan: 8.5" oninput="previewCompleteOrderPrice('${o.id}')"></div>
+        <div style="display:flex;justify-content:space-between;align-items:center;background:#F4F4F4;border-radius:10px;padding:10px 14px">
+          <span style="font-size:12.5px;color:rgba(26,26,26,0.55)">Yangi narx</span>
+          <span id="co-price-preview" style="font-weight:700;font-size:15px">${(o.price||0).toLocaleString()} so’m</span>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:4px">
+          <button class="btn btn-coral" style="flex:1;justify-content:center" onclick="confirmCompleteOrderWithDistance('${o.id}')">Yakunlash</button>
+          <button class="btn btn-light" style="flex:1;justify-content:center" onclick="closeModal('complete-order-modal')">Bekor</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Yaratilganda hisoblangan narxga (u ichida allaqachon qo'shimcha
+// xizmatlar/bonus qo'shilgan/ayirilgan bo'lishi mumkin) faqat
+// masofadan kelib chiqadigan farqni qo'shamiz — shunda extras/bonus
+// qayta yo'qolib ketmaydi.
+function computeCompleteOrderPrice(o,km){
+  const base=Math.ceil(computeTariffRawBase(o,km)/1000)*1000;
+  const zeroBase=Math.ceil(computeTariffRawBase(o,0)/1000)*1000;
+  return Math.max(0,(o.price||0)+(base-zeroBase));
+}
+
+function previewCompleteOrderPrice(orderId){
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  if(!o)return;
+  const km=parseFloat(document.getElementById('co-distance')?.value)||0;
+  const el=document.getElementById('co-price-preview');
+  if(el)el.textContent=computeCompleteOrderPrice(o,km).toLocaleString()+' so’m';
+}
+
+function confirmCompleteOrderWithDistance(orderId){
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  if(!o)return;
+  const km=parseFloat(document.getElementById('co-distance')?.value)||0;
+  if(km<=0){alert('Masofani kiriting!');return;}
+  const price=computeCompleteOrderPrice(o,km);
+  const roundedKm=Math.round(km*10)/10;
+  if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,{status:'completed',price,distanceKm:roundedKm,actualDistanceKm:roundedKm});
+  closeModal('complete-order-modal');
 }
 
 // ============================================================
