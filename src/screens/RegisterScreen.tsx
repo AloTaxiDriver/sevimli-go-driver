@@ -133,37 +133,50 @@ export default function RegisterScreen({ onBack, onSubmitted }: Props) {
     try {
       const { telegramChatId } = await verifyDriverPhoneOtp(fullPhone, code);
 
-      await firestore().collection('drivers').doc(fullPhone).set({
-        // MUHIM: shu chat ID admin ariza tasdiqlagan/rad etganda
-        // @sevimligo_bot orqali xabar yuborish uchun kerak (bot bilan
-        // faqat shu tasdiqlash bosqichida "muloqot" bo'lgani uchun,
-        // boshqa payt uni olishning iloji yo'q).
-        telegramChatId,
-        firstName: firstName.trim(),
-        lastName: lastName.trim(),
-        name: `${firstName.trim()} ${lastName.trim()}`,
-        phone: fullPhone,
-        password,
-        carBrand: carBrand.trim(),
-        carModel: carModel.trim(),
-        carColor: carColor.trim(),
-        car: `${carBrand.trim()} ${carModel.trim()}`,
-        // MUHIM: dashboard'ning "Avtomobil" tahrirlash formasi
-        // plateRegion/plateBody'ni ALOHIDA maydonlar sifatida o'qiydi
-        // (viloyat kodi dropdown + davlat raqami matn qutisi) — faqat
-        // birlashtirilgan `plate`ni yozish ular BO'SH ko'rinishiga olib
-        // kelardi, garchi karta ko'rinishida (faqat `plate`ni o'qiydigan
-        // joyda) to'g'ri chiqib turgan bo'lsa ham.
-        plateRegion: plateRegion.trim(),
-        plateBody: plateBody.trim(),
-        plate: `${plateRegion.trim()}${plateBody.trim()}`,
-        status: 'offline',
-        approved: false,
-        rating: 5.0,
-        trips: 0,
-        balance: 0,
-        selfRegistered: true,
-        joined: new Date().toISOString().slice(0, 10),
+      // MUHIM: dublikat tekshiruvi handleSendOtp'da (yuqorida) ALLAQACHON
+      // qilingan, lekin o'sha va shu yozuv orasida vaqt oralig'i bor —
+      // shu vaqt ichida boshqa birov xuddi shu raqam bilan ro'yxatdan
+      // o'tib ulgursa, oddiy `.set()` uning yozuvini jimgina ustidan
+      // yozib yuborardi. Shu sabab yakuniy yozuv tranzaksiya ichida,
+      // hujjat hali mavjud emasligini QAYTA tekshirib amalga oshiriladi.
+      const driverRef = firestore().collection('drivers').doc(fullPhone);
+      await firestore().runTransaction(async (tx) => {
+        const snap = await tx.get(driverRef);
+        if (snap.exists()) {
+          throw new Error('Bu raqam bilan haydovchi allaqachon roʻyxatdan oʻtgan');
+        }
+        tx.set(driverRef, {
+          // MUHIM: shu chat ID admin ariza tasdiqlagan/rad etganda
+          // @sevimligo_bot orqali xabar yuborish uchun kerak (bot bilan
+          // faqat shu tasdiqlash bosqichida "muloqot" bo'lgani uchun,
+          // boshqa payt uni olishning iloji yo'q).
+          telegramChatId,
+          firstName: firstName.trim(),
+          lastName: lastName.trim(),
+          name: `${firstName.trim()} ${lastName.trim()}`,
+          phone: fullPhone,
+          password,
+          carBrand: carBrand.trim(),
+          carModel: carModel.trim(),
+          carColor: carColor.trim(),
+          car: `${carBrand.trim()} ${carModel.trim()}`,
+          // MUHIM: dashboard'ning "Avtomobil" tahrirlash formasi
+          // plateRegion/plateBody'ni ALOHIDA maydonlar sifatida o'qiydi
+          // (viloyat kodi dropdown + davlat raqami matn qutisi) — faqat
+          // birlashtirilgan `plate`ni yozish ular BO'SH ko'rinishiga olib
+          // kelardi, garchi karta ko'rinishida (faqat `plate`ni o'qiydigan
+          // joyda) to'g'ri chiqib turgan bo'lsa ham.
+          plateRegion: plateRegion.trim(),
+          plateBody: plateBody.trim(),
+          plate: `${plateRegion.trim()}${plateBody.trim()}`,
+          status: 'offline',
+          approved: false,
+          rating: 5.0,
+          trips: 0,
+          balance: 0,
+          selfRegistered: true,
+          joined: new Date().toISOString().slice(0, 10),
+        });
       });
 
       Alert.alert(

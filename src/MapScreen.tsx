@@ -269,6 +269,22 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         const data = doc.data();
         if (!data) { console.warn('Buyurtma topilmadi:', orderId); return; }
 
+        // MUHIM (band haydovchiga ikkinchi buyurtma): dispatch funksiyasi
+        // "band" haydovchini o'tkazib yuborishi kerak, lekin native overlay
+        // orqali ham, qo'lda "Ochiq buyurtmalar"dan ham nazariy jihatdan
+        // ikkinchi buyurtma qabul qilinishi mumkin — bu holda joriy faol
+        // safar Firestore'da hech qachon yakunlanmay "osilib" qoladi. Shu
+        // sabab bu yerda ham qayta tekshiramiz: agar haydovchi ALLAQACHON
+        // faol safar ustida bo'lsa, yangisini balans tekshiruvidagi kabi
+        // darhol bekor qilamiz.
+        if (tripStageRef.current) {
+          await revertOrderAcceptance(orderId).catch(() => {});
+          setPendingAcceptId(null);
+          processedAcceptId.current = null;
+          console.warn('Haydovchi allaqachon faol safarda — yangi buyurtma bekor qilindi:', orderId);
+          return;
+        }
+
         // MUHIM: native overlay Firestore'ga "accepted" deb ALLAQACHON
         // yozib bo'lgan bo'ladi (shu funksiya faqat UI'ni sozlaydi) —
         // shuning uchun balans yetarli emasligini bu yerda bilib olsak,
@@ -630,6 +646,10 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       });
       setTripStage('in_progress');
       setMenuVisible(false);
+      // MUHIM: bordyur safari boshlanganda ham haydovchi "band" deb
+      // belgilanishi kerak — aks holda dispatch funksiyasi uni hamon
+      // bo'sh deb hisoblab, ustiga yangi buyurtma yuborishi mumkin.
+      setDriverBusyStatus(driverId, true).catch(() => {});
     } catch (e: any) {
       if (e?.message === 'NO_BORDUR_TARIFF') {
         Alert.alert(
@@ -716,10 +736,25 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   function confirmFinishTrip() {
     const id = activeOrderSourceId.current;
     if (id) {
-      updateOrderStatus(id, 'completed').catch(console.warn);
-      // Yakuniy narx — jonli hisoblangan (va yaxlitlangan) summa,
-      // oldindan taxmin qilingan (statik) narx emas
-      finalizeOrderPrice(id, livePrice, tripDistanceRef.current).catch(console.warn);
+      // MUHIM (poyga holati): avval bu ikkala yozuv mustaqil, tartibsiz
+      // yuborilardi — agar "completed" yozuvi tezroq yetib borsa,
+      // komissiya/bonus Cloud Function'lari hali ESKI (buyurtma
+      // yaratilgandagi taxminiy) narxni o'qib ulgurib, "bajarildi"
+      // bayrog'ini qo'yib qo'yardi — haqiqiy metrланган narx (pastda)
+      // keyin kelsa ham, komissiya/bonus qayta hisoblanmasdi. Endi avval
+      // yakuniy narx yoziladi (kutiladi), FAQAT SHUNDAN KEYIN holat
+      // "completed"ga o'tkaziladi — Cloud Function har doim eng so'nggi
+      // narxni ko'radi.
+      (async () => {
+        try {
+          // Yakuniy narx — jonli hisoblangan (va yaxlitlangan) summa,
+          // oldindan taxmin qilingan (statik) narx emas
+          await finalizeOrderPrice(id, livePrice, tripDistanceRef.current);
+        } catch (e) {
+          console.warn(e);
+        }
+        updateOrderStatus(id, 'completed').catch(console.warn);
+      })();
     }
     notifyTripEnd();
     stopWatchingOrderCancellation();

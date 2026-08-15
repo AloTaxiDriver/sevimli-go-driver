@@ -132,6 +132,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  // MUHIM: avval balans FAQAT login/sessiya-tiklash paytida bir marta
+  // o'qilardi — har safar safar tugab komissiya yechilganda bu React
+  // state'da ko'rinmasdi (chiqib-kirmaguncha eski qiymat qolardi), va
+  // MapScreen'dagi "balans <=0 bo'lsa buyurtma qabul qilishni taqiqlash"
+  // tekshiruvi ham shu eski qiymatga ishonardi. Endi sessiya davomida
+  // haydovchi hujjatini jonli tinglaymiz, shunda balans (va boshqa
+  // maydonlar) doim yangi.
+  useEffect(() => {
+    if (!driver?.id) return;
+    const unsubscribe = firestore()
+      .collection('drivers')
+      .doc(driver.id)
+      .onSnapshot(
+        (doc) => {
+          const data = doc.data();
+          if (doc.exists() && data) {
+            setDriver((prev) => (prev ? mapFirestoreDriver(prev.id, data) : prev));
+          }
+        },
+        (error) => console.warn('[AUTH] Haydovchi hujjatini tinglashda xato:', error)
+      );
+    return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driver?.id]);
+
   function logout() {
     setDriver(null);
     AsyncStorage.removeItem(SAVED_PHONE_KEY).catch(() => {});

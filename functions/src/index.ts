@@ -451,6 +451,11 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!data.pushToken) return;
+      // MUHIM: band (safar davomidagi) haydovchiga yangi buyurtma
+      // yuborilmasin — aks holda mijoz ilova tomonda (accept oqimi)
+      // buni tekshirmasdan qabul qilsa, joriy faol safar Firestore'da
+      // "osilib" (hech qachon yakunlanmay) qoladi.
+      if (data.busy) return;
       if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) return;
       // MUHIM (filial izolyatsiyasi, QAT'IY): faqat O'SHA filialga
       // tegishli haydovchilar ko'rib chiqiladi. branchId yuqorida
