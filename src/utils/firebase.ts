@@ -997,6 +997,7 @@ export async function startBordurTrip(
     fromAddress: 'Bordyur',
     toAddress: '',
     tariffName: tariff.name,
+    tariffId: tariff.id,
     price: 0,
     distanceKm: 0,
     perKm: tariff.perKm,

@@ -2558,6 +2558,11 @@ function submitOrder(){
       fromAddress: from,
       toAddress: to,
       tariffName: trf?.name || '',
+      // MUHIM: komissiya Cloud Function'i (onOrderCompletedDeductCommission)
+      // haydovchidan yechiladigan foizni shu tariffId orqali topadi — bu
+      // maydon bo'lmasa, komissiya jimgina 0 deb hisoblanadi (xato chiqmaydi,
+      // shunchaki hech narsa yechilmaydi).
+      tariffId: trf?.id || null,
       branchId: branchId,
       price: total,
       distanceKm: distance,
