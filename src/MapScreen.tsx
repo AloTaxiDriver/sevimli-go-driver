@@ -28,7 +28,8 @@ import { Order } from './data/mockOrders';
 import { COLORS } from './theme/colors';
 import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
-  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, finalizeOrderPrice, firestoreOrderToOrder,
+  ACTIVE_ORDER_STATUSES,
+  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, fetchActiveOrderForDriver, fetchOrderById, finalizeOrderPrice, firestoreOrderToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
@@ -55,6 +56,25 @@ const START_SWIPE_THRESHOLD = START_TRACK_WIDTH - START_KNOB_SIZE - 10;
 type TripStage = 'ready_to_start' | 'to_pickup' | 'waiting' | 'in_progress' | null;
 type Coords = { latitude: number; longitude: number };
 type Region = { latitude: number; longitude: number; latitudeDelta: number; longitudeDelta: number };
+
+// Faol safar qurilmada saqlanadigan "snapshot" — ilova to'satdan
+// yopilsa/qulab tushsa, qayta ochilganda safar aynan shu joydan davom
+// etadi. Firestore buyurtma HOLATINI (accepted/arrived/in_progress)
+// biladi, lekin faqat ilovada yashaydigan narsalarni — "Boshlash"
+// surilganmi (ready_to_start / to_pickup), ikki manzilli buyurtmada
+// qaysi oyoqdaligi va eng muhimi BOSIB O'TILGAN MASOFA — bilmaydi.
+// Shu sabab ikkalasi birga ishlatiladi: Firestore — haqiqat manbasi,
+// bu snapshot — uning ustidagi mahalliy tafsilotlar.
+type ActiveTripSnapshot = {
+  orderId: string;
+  tripStage: Exclude<TripStage, null>;
+  activeLeg: 1 | 2;
+  tripDistanceKm: number;
+};
+
+function activeTripStorageKey(driverId: string) {
+  return `active_trip_${driverId}`;
+}
 
 export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string }) {
   const insets = useSafeAreaInsets();
@@ -108,6 +128,14 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const tripStageRef = useRef<TripStage>(null);
   const tripDistanceRef = useRef(0);
   const lastTripPointRef = useRef<Coords | null>(null);
+  // Safar holati tiklanguncha (yoki tiklanadigan safar yo'qligi
+  // aniqlanguncha) true — shu vaqt ichida yangi buyurtmani qabul qilish
+  // effekti kutib turadi, aks holda tiklanayotgan safar ustiga yangi
+  // buyurtma tushib qolishi mumkin.
+  const [restoringTrip, setRestoringTrip] = useState(true);
+  const tripRestoreStartedRef = useRef(false);
+  const activeLegRef = useRef<1 | 2>(1);
+  const lastTripPersistAtRef = useRef(0);
 
   const pan = useRef(new Animated.Value(0)).current;
   const startPan = useRef(new Animated.Value(0)).current;
@@ -156,6 +184,157 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   }, [tripStage]);
 
   useEffect(() => {
+    activeLegRef.current = activeLeg;
+  }, [activeLeg]);
+
+  // Joriy safar holatini qurilmaga yozadi. FAQAT ref'lardan o'qiydi,
+  // shuning uchun watchPositionAsync ichidagi (bo'sh deps bilan bir
+  // marta yaratilgan, ya'ni "qotib qolgan" closure'li) callback'dan ham
+  // xavfsiz chaqiriladi — .current har renderda yangilanib turadi.
+  const writeTripSnapshot = useRef(() => {});
+  writeTripSnapshot.current = () => {
+    const orderId = activeOrderSourceId.current;
+    const stage = tripStageRef.current;
+    if (!orderId || !stage) return;
+    const snapshot: ActiveTripSnapshot = {
+      orderId,
+      tripStage: stage,
+      activeLeg: activeLegRef.current,
+      tripDistanceKm: tripDistanceRef.current,
+    };
+    AsyncStorage.setItem(activeTripStorageKey(driverId), JSON.stringify(snapshot)).catch(() => {});
+  };
+
+  function clearTripSnapshot() {
+    lastTripPersistAtRef.current = 0;
+    AsyncStorage.removeItem(activeTripStorageKey(driverId)).catch(() => {});
+  }
+
+  // Safar bosqichi yoki "oyoq"i o'zgargan zahoti snapshotni yangilaymiz.
+  useEffect(() => {
+    if (!tripStage || !activeOrder) return;
+    writeTripSnapshot.current();
+  }, [tripStage, activeLeg, activeOrder?.id]);
+
+  // ============================================================
+  // SAFARNI TIKLASH — ilova safar o'rtasida yopilgan/qulagan bo'lsa
+  // ============================================================
+  // Bu effekt ilova ochilganda BIR MARTA ishlaydi (joylashuv tayyor
+  // bo'lgach — firestoreOrderToOrder unga bog'liq). Firestore'da shu
+  // haydovchining tugallanmagan buyurtmasi bo'lsa, safar aynan
+  // to'xtagan joyidan tiklanadi. Bo'lmasa — haydovchida qolib ketgan
+  // "band" bayrog'i tozalanadi.
+  useEffect(() => {
+    if (!location || tripRestoreStartedRef.current) return;
+    tripRestoreStartedRef.current = true;
+
+    (async () => {
+      try {
+        let snapshot: ActiveTripSnapshot | null = null;
+        try {
+          const raw = await AsyncStorage.getItem(activeTripStorageKey(driverId));
+          if (raw) snapshot = JSON.parse(raw) as ActiveTripSnapshot;
+        } catch {
+          snapshot = null;
+        }
+
+        // Avval snapshotdagi buyurtmani tekshiramiz (bitta o'qish), u
+        // yaroqsiz bo'lsa — Firestore'dan qidiramiz.
+        let fo: FirestoreOrder | null = null;
+        if (snapshot?.orderId) {
+          fo = await fetchOrderById(snapshot.orderId);
+          // Snapshot eskirgan bo'lishi mumkin: buyurtma allaqachon
+          // yakunlangan/bekor qilingan yoki boshqa haydovchiga o'tgan.
+          if (fo && (fo.driverId !== driverId || !ACTIVE_ORDER_STATUSES.includes(fo.status))) {
+            fo = null;
+          }
+        }
+        if (!fo) {
+          fo = await fetchActiveOrderForDriver(driverId);
+          // Boshqa buyurtma topilgan bo'lsa, snapshotdagi mahalliy
+          // tafsilotlar (masofa, oyoq) unga tegishli emas.
+          if (fo && snapshot && fo.id !== snapshot.orderId) snapshot = null;
+        }
+
+        if (!fo) {
+          // Tiklanadigan safar yo'q. Ammo haydovchi Firestore'da hamon
+          // "band" bo'lib qolgan bo'lishi mumkin (safar yakunlanayotgan
+          // paytda ilova qulab tushgan holat) — bu holda unga hech
+          // qanday yangi buyurtma kelmay, "o'lik" qolib ketardi.
+          //
+          // MUHIM: bayroq faqat HAQIQATAN "band" bo'lib qolgan bo'lsa
+          // tozalanadi. Har ilova ochilishida so'zsiz yozish
+          // `updatedAt`ni ham yangilab yuborardi, dispetcher panelida esa
+          // haydovchining joylashuvi "yangi"day ko'rinib qolardi —
+          // aslida GPS ma'lumoti eski bo'lsa ham.
+          clearTripSnapshot();
+          const driverDoc = await firestore()
+            .collection('drivers')
+            .doc(driverId)
+            .get()
+            .catch(() => null);
+          if (driverDoc?.data()?.busy === true) {
+            setDriverBusyStatus(driverId, false).catch(() => {});
+            console.log('Osilib qolgan "band" bayrog\'i tozalandi');
+          }
+          return;
+        }
+
+        // Firestore holati mahalliy bosqichga o'giriladi. "accepted"
+        // ikkala mahalliy bosqichga ham mos keladi (haydovchi
+        // "Boshlash"ni surgan-surmagani Firestore'ga yozilmaydi) —
+        // snapshot bo'lsa o'shanga ishonamiz, aks holda eng xavfsiz
+        // variant: haydovchi qayta suradi.
+        const stage: Exclude<TripStage, null> =
+          fo.status === 'in_progress'
+            ? 'in_progress'
+            : fo.status === 'arrived'
+            ? 'waiting'
+            : snapshot?.tripStage === 'to_pickup'
+            ? 'to_pickup'
+            : 'ready_to_start';
+
+        activeOrderSourceId.current = fo.id;
+        // Aks holda o'sha buyurtma push/overlay orqali qayta "qabul
+        // qilinishi" mumkin edi.
+        processedAcceptId.current = fo.id;
+        startWatchingOrderCancellation(fo.id);
+        setActiveOrder(firestoreOrderToOrder(fo, location));
+        setActiveLeg(snapshot?.activeLeg === 2 ? 2 : 1);
+        setIsOnline(true);
+        setTripStage(stage);
+        startPan.setValue(0);
+
+        if (stage === 'in_progress') {
+          // Bosib o'tilgan masofani tiklaymiz — aks holda hisoblagich
+          // nolga tushib, safar oxirida narx eng past tarifga qulab
+          // qolardi. lastTripPointRef ataylab null: ilova yopiq turgan
+          // vaqtdagi harakat baribir o'lchanmagan, hisoblash keyingi
+          // GPS nuqtasidan davom etadi.
+          const restoredKm =
+            typeof snapshot?.tripDistanceKm === 'number' && snapshot.tripDistanceKm > 0
+              ? snapshot.tripDistanceKm
+              : 0;
+          tripDistanceRef.current = restoredKm;
+          setLiveTripDistanceKm(restoredKm);
+          lastTripPointRef.current = null;
+        }
+
+        // Firestore'dagi "band" bayrog'ini har ehtimolga qarshi
+        // tasdiqlaymiz (safar bor, demak haydovchi band). Snapshotni bu
+        // yerda qayta yozish shart emas — yuqoridagi setTripStage keyingi
+        // renderda saqlash effektini o'zi ishga tushiradi.
+        setDriverBusyStatus(driverId, true).catch(() => {});
+        console.log('Tugallanmagan safar tiklandi:', fo.id, stage);
+      } catch (e) {
+        console.warn('Safarni tiklashda xato:', e);
+      } finally {
+        setRestoringTrip(false);
+      }
+    })();
+  }, [location, driverId]);
+
+  useEffect(() => {
     return () => { orderCancelUnsubscribe.current?.(); };
   }, []);
 
@@ -196,6 +375,15 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
               if (deltaKm > 0.02 && deltaKm < 1.5) {
                 tripDistanceRef.current += deltaKm;
                 setLiveTripDistanceKm(tripDistanceRef.current);
+                // Bosib o'tilgan masofani vaqti-vaqti bilan qurilmaga
+                // yozib boramiz (har 10 soniyada, ortiqcha yozuvni
+                // oldini olish uchun) — ilova to'satdan yopilsa, safar
+                // qayta ochilganda shu joydan davom etadi.
+                const now = Date.now();
+                if (now - lastTripPersistAtRef.current > 10000) {
+                  lastTripPersistAtRef.current = now;
+                  writeTripSnapshot.current();
+                }
               }
             }
             lastTripPointRef.current = newCoord;
@@ -258,6 +446,10 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // faqat UI ni yangilaymiz)
   useEffect(() => {
     if (!pendingAcceptId || !location) return;
+    // MUHIM: tugallanmagan safar tiklanayotgan bo'lsa kutamiz — aks
+    // holda tiklanayotgan safar ustiga yangi buyurtma tushib qolardi
+    // (quyidagi tripStageRef tekshiruvi hali null ko'rgan bo'lardi).
+    if (restoringTrip) return;
     if (processedAcceptId.current === pendingAcceptId) return;
 
     processedAcceptId.current = pendingAcceptId;
@@ -356,7 +548,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         processedAcceptId.current = null;
       }
     })();
-  }, [pendingAcceptId, location, driverId]);
+  }, [pendingAcceptId, location, driverId, restoringTrip]);
 
   // Pool buyurtmalar — faqat gamburger menyuda, avtomatik taklif YO'Q.
   // MUHIM (filial izolyatsiyasi): faqat haydovchining O'Z filialiga
@@ -524,6 +716,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       const who = cancelledBy === 'customer' ? 'Mijoz' : 'Dispetcher';
       Alert.alert('Buyurtma bekor qilindi', `${who} tomonidan bekor qilindi.\nSabab: ${reason}`);
       stopWatchingOrderCancellation();
+      clearTripSnapshot();
       setTripStage(null);
       setActiveOrder(null);
       setActiveLeg(1);
@@ -543,6 +736,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     processedAcceptId.current = null;
     setPendingAcceptId(null);
     stopWatchingOrderCancellation();
+    clearTripSnapshot();
     pan.setValue(0);
     startPan.setValue(0);
     setDriverBusyStatus(driverId, false).catch(() => {});
@@ -758,6 +952,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     }
     notifyTripEnd();
     stopWatchingOrderCancellation();
+    clearTripSnapshot();
     setShowTripSummary(false);
     setTripStage(null); setActiveOrder(null);
     setActiveLeg(1);
@@ -774,6 +969,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     const id = activeOrderSourceId.current;
     if (id) cancelOrder(id, reason).catch(console.warn);
     stopWatchingOrderCancellation();
+    clearTripSnapshot();
     setCancelModalVisible(false);
     setTripStage(null);
     setActiveOrder(null);

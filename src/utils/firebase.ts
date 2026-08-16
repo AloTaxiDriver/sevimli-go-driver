@@ -154,7 +154,7 @@ export type FirestoreOrder = {
 };
 
 export function mapDocToOrder(
-  doc: FirebaseFirestoreTypes.QueryDocumentSnapshot
+  doc: FirebaseFirestoreTypes.DocumentSnapshot
 ): FirestoreOrder {
   const data = doc.data() || {};
   return {
@@ -258,25 +258,67 @@ export function listenToDirectOrdersForDriver(
   return unsubscribe;
 }
 
-export function listenToActiveOrderForDriver(
-  driverId: string,
-  onChange: (order: FirestoreOrder | null) => void,
-): () => void {
-  return firestore()
-    .collection('orders')
-    .where('driverId', '==', driverId)
-    .where('status', 'in', ['accepted', 'arrived', 'in_progress'])
-    .limit(1)
-    .onSnapshot(
-      (snapshot) => {
-        if (snapshot.empty) {
-          onChange(null);
-        } else {
-          onChange(mapDocToOrder(snapshot.docs[0]));
-        }
-      },
-      () => onChange(null)
-    );
+/** Haydovchi "safar ustida" hisoblanadigan buyurtma holatlari — ilova
+ * qayta ochilganda shu holatdagi buyurtma topilsa, safar tiklanadi. */
+export const ACTIVE_ORDER_STATUSES: FirestoreOrder['status'][] = [
+  'in_progress',
+  'arrived',
+  'accepted',
+];
+
+// MUHIM (safar holatini tiklash): safar holati — tripStage, faol
+// buyurtma, bosib o'tilgan masofa — ilovaning React xotirasida yashaydi.
+// Ilova safar o'rtasida qulab tushsa yoki OS uni o'ldirsa, bularning
+// hammasi yo'qoladi, LEKIN Firestore'da buyurtma hamon "accepted"/
+// "arrived"/"in_progress", haydovchi esa hamon `busy: true` bo'lib
+// qoladi. Natijada haydovchi ilovada "bo'sh" ko'rinadi, dispetcher
+// panelida "band" bo'lib turadi va yangi buyurtma ololmay qoladi
+// (dispatch funksiyasi band haydovchini o'tkazib yuboradi). Bu funksiya
+// ilova qayta ochilganda o'sha "osilib qolgan" safarni topib beradi.
+//
+// `status` bo'yicha `in` so'rovi ataylab ishlatilmadi — `in` boshqa
+// equality filter bilan birga kelganda Firestore composite indeks talab
+// qilishi mumkin. Uch alohida so'rov esa faqat equality filterlardan
+// iborat (indekssiz ishlaydi) va har biri ko'pi bilan bitta hujjat
+// qaytaradi.
+export async function fetchActiveOrderForDriver(
+  driverId: string
+): Promise<FirestoreOrder | null> {
+  const snapshots = await Promise.all(
+    ACTIVE_ORDER_STATUSES.map((status) =>
+      firestore()
+        .collection('orders')
+        .where('driverId', '==', driverId)
+        .where('status', '==', status)
+        .limit(1)
+        .get()
+        .catch((error) => {
+          console.warn(`Faol buyurtmani (${status}) qidirishda xato:`, error);
+          return null;
+        })
+    )
+  );
+  // Tartib muhim: eng ilgarilagan bosqich (in_progress) birinchi
+  // tekshiriladi — nazariy jihatdan bir nechta osilib qolgan buyurtma
+  // bo'lsa, mijoz allaqachon mashinada bo'lgani ustunlik qiladi.
+  for (const snapshot of snapshots) {
+    if (snapshot && !snapshot.empty) return mapDocToOrder(snapshot.docs[0]);
+  }
+  return null;
+}
+
+/** Bitta buyurtmani ID bo'yicha o'qiydi — safarni tiklashda, qurilmada
+ * saqlangan snapshotdagi buyurtma hali ham haqiqatan faolligini
+ * tekshirish uchun. */
+export async function fetchOrderById(orderId: string): Promise<FirestoreOrder | null> {
+  try {
+    const doc = await firestore().collection('orders').doc(orderId).get();
+    if (!doc.exists()) return null;
+    return mapDocToOrder(doc);
+  } catch (error) {
+    console.warn('Buyurtmani ID bo\'yicha olishda xato:', error);
+    return null;
+  }
 }
 
 export function listenToAcceptedOrderForDriver(
