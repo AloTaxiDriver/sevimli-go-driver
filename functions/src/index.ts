@@ -1015,11 +1015,22 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         // yursa ham minTripDistanceKm shartidan o'tolmay, HECH QACHON
         // bonus hisobiga kirmasdi. Endi avval haqiqiy masofa olinadi,
         // u yo'q bo'lsagina taxminiyga qaytiladi.
+        //
+        // `> 0` sharti ATAYLAB — `!== null` EMAS. `actualDistanceKm: 0`
+        // "haydovchi 0 km yurdi" degani emas, "masofa O'LCHANMADI"
+        // degani: GPS ruxsati berilmagan, ichkarida signal yo'qolgan
+        // yoki ilova safar o'rtasida qayta ishga tushgan bo'lishi
+        // mumkin (shunda tripDistanceRef nolga tushadi). `!== null`
+        // bilan bunday holatda haqiqatda 12 km yurgan haydovchi ham
+        // kunlik bonus hisobiga kirmay qolardi — o'lchov ishlamagani
+        // uchun jazolangandek. Taxminiy masofa esa buyurtma
+        // yaratilganda hisoblangan va haydovchi uni o'zgartira olmaydi,
+        // shuning uchun unga qaytish xavfsiz.
         const actualDistanceKm =
-          typeof orderData.actualDistanceKm === "number" ? orderData.actualDistanceKm : null;
+          typeof orderData.actualDistanceKm === "number" ? orderData.actualDistanceKm : 0;
         const estimatedDistanceKm =
           typeof orderData.distanceKm === "number" ? orderData.distanceKm : 0;
-        const distanceKm = actualDistanceKm !== null ? actualDistanceKm : estimatedDistanceKm;
+        const distanceKm = actualDistanceKm > 0 ? actualDistanceKm : estimatedDistanceKm;
         const distanceOk = distanceKm >= driverBonusSettings.minTripDistanceKm;
         const dailyActive = driverBonusSettings.dailyEnabled && driverBonusSettings.dailyTripThreshold > 0;
         const weeklyActive = driverBonusSettings.weeklyEnabled && driverBonusSettings.weeklyTripThreshold > 0;
