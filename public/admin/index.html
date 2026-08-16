@@ -1972,7 +1972,28 @@ function normalizeFirestoreOrder(o){
     minDistancePrice:typeof o.minDistancePrice==='number'?o.minDistancePrice:0,
     tieredPricing:!!o.tieredPricing,
     priceTiers:Array.isArray(o.priceTiers)?o.priceTiers:[],
+    // Mijoz ilovasidan kelgan buyurtmalarda bo'ladi. Dispetcher narxni
+    // o'zgartirganda `finalPrice` (mijoz naqd to'laydigan summa) shular
+    // asosida QAYTA hisoblanishi kerak — aks holda u eski narxga
+    // asoslangan holda qotib qoladi (recomputeFinalPrice'ga qarang).
+    bonusUsed:typeof o.bonusUsed==='number'?o.bonusUsed:0,
+    extrasTotal:typeof o.extrasTotal==='number'?o.extrasTotal:0,
+    finalPrice:typeof o.finalPrice==='number'?o.finalPrice:null,
   };
+}
+
+// Dispetcher buyurtma narxini o'zgartirganda, mijoz naqd to'laydigan
+// summani (`finalPrice`) ham qayta hisoblaydi.
+//
+// MUHIM: avval dispetcher `price`ni yangilardi-yu, `finalPrice`ga
+// UMUMAN tegmasdi. Natijada mijoz ilovasidan kelgan, bonus ishlatilgan
+// buyurtmada ikkala raqam bir-biriga mos kelmay qolardi: haydovchi
+// ilovasi `finalPrice`ni ko'rsatgani uchun u eski (ko'pincha ancha past)
+// summani naqd olishi kerakdek ko'rinardi. Formula haydovchi ilovasidagi
+// finalizeOrderPrice bilan bir xil.
+function recomputeFinalPrice(order, newPrice){
+  if(!order || typeof order.finalPrice!=='number')return null; // bonus/extras yo'q — tegmaymiz
+  return Math.max(0, newPrice + (order.extrasTotal||0) - (order.bonusUsed||0));
 }
 
 function driverNameFor(driverId){
@@ -2177,6 +2198,11 @@ function saveOrderEdit(orderId){
     price:parseInt(document.getElementById('eo-price')?.value)||0,
     driverId:document.getElementById('eo-driver')?.value||null,
   };
+  // Narx qo'lda tahrirlanganda ham mijoz naqd to'laydigan summa qayta
+  // hisoblanadi — aks holda u eski narxga asoslangan holda qolib ketardi.
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  const newFinal=recomputeFinalPrice(o,patch.price);
+  if(newFinal!==null)patch.finalPrice=newFinal;
   if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,patch);
   closeModal('order-edit-modal');
 }
@@ -2325,7 +2351,11 @@ function confirmCompleteOrderWithDistance(orderId){
   if(km<=0){alert('Masofani kiriting!');return;}
   const price=computeCompleteOrderPrice(o,km);
   const roundedKm=Math.round(km*10)/10;
-  if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,{status:'completed',price,distanceKm:roundedKm,actualDistanceKm:roundedKm});
+  const patch={status:'completed',price,distanceKm:roundedKm,actualDistanceKm:roundedKm};
+  // Narx o'zgardi — mijoz naqd to'laydigan summa ham unga ergashishi kerak.
+  const newFinal=recomputeFinalPrice(o,price);
+  if(newFinal!==null)patch.finalPrice=newFinal;
+  if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,patch);
   closeModal('complete-order-modal');
 }
 
