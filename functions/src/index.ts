@@ -183,13 +183,25 @@ async function getBonusSettings(branchId?: string | null): Promise<{
 // mijoz balansidan tashqari qo'shimcha cheklov sifatida. Server tomonda
 // ham qo'llaniladi (mijoz o'zboshimchalik bilan kattaroq `bonusUsed`
 // yuborib bo'lmasligi uchun) va mijoz ilovasida ham xuddi shu formula.
+//
+// MUHIM: natija HECH QACHON safar narxidan oshmaydi. Avval "so'm"
+// turidagi chegara narxga umuman qaralmasdan qaytarilardi: admin
+// "bitta buyurtmaga 20 000 so'mgacha" desa, 8 000 so'mlik safarda ham
+// mijozning 20 000 bonusi to'liq yechilardi. Mijoz ortiqcha 12 000
+// bonusini hech narsa evaziga yo'qotardi, kompaniya esa (A1'dan keyin
+// bonusni kompaniya qoplagani uchun) haydovchiga 8 000 so'mlik safar
+// uchun 20 000 so'm to'lardi. Foiz turi ham himoyalanadi: admin
+// xato bilan 150% yozib qo'ysa, xuddi shu holat takrorlanardi.
 function computePerOrderBonusCap(
   price: number,
   settings: { perOrderCapType: "amount" | "percent"; perOrderCapValue: number }
 ): number {
-  return settings.perOrderCapType === "amount"
-    ? settings.perOrderCapValue
-    : Math.floor((price * settings.perOrderCapValue) / 100);
+  const safePrice = Math.max(0, price);
+  const rawCap =
+    settings.perOrderCapType === "amount"
+      ? settings.perOrderCapValue
+      : Math.floor((safePrice * settings.perOrderCapValue) / 100);
+  return Math.max(0, Math.min(rawCap, safePrice));
 }
 
 // ============================================================
