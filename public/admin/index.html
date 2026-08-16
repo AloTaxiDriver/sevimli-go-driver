@@ -2238,7 +2238,7 @@ function showConfirmModal(title,message,onConfirm,confirmLabel,danger){
             :`<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#EA580C" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>`}
         </div>
         <div style="font-size:16px;font-weight:700;color:#1A1A1A;margin-bottom:8px">${esc(title)}</div>
-        <div style="font-size:13px;color:rgba(26,26,26,0.55);line-height:1.5">${esc(message)}</div>
+        <div style="font-size:13px;color:rgba(26,26,26,0.55);line-height:1.5;white-space:pre-line">${esc(message)}</div>
       </div>
       <div style="display:flex;gap:10px;padding:16px 26px 24px">
         <button onclick="closeConfirmModal()" class="btn btn-light" style="flex:1;justify-content:center">Bekor qilish</button>
@@ -2262,9 +2262,20 @@ function confirmModalAction(){
 }
 
 function rebroadcastOrder(orderId){
+  // Tugallangan buyurtmani qayta efirga tashlash pul harakatini ham
+  // orqaga qaytaradi (Cloud Function: onOrderLeftCompletedRevertMoney).
+  // Dispetcher buni oldindan bilishi kerak — u shunchaki "holat
+  // o'zgaradi" deb o'ylamasin.
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  const wasCompleted=o&&o.status==='completed';
   showConfirmModal(
     'Qayta efirga tashlash',
-    'Buyurtma holati "Kutilmoqda" ga qaytariladi va tayinlangan haydovchi bekor qilinadi.',
+    wasCompleted
+      ? 'Buyurtma holati "Kutilmoqda" ga qaytariladi va tayinlangan haydovchi bekor qilinadi.\n\n'+
+        'Bu buyurtma allaqachon tugallangan: haydovchidan olingan komissiya unga QAYTARILADI, '+
+        'mijozning bonusi tiklanadi, safar esa haydovchining kunlik hisobidan chiqariladi. '+
+        'Buyurtmani kim bajarsa, hisob-kitob o’shanga qayta yoziladi.'
+      : 'Buyurtma holati "Kutilmoqda" ga qaytariladi va tayinlangan haydovchi bekor qilinadi.',
     ()=>{
       if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,{status:'pending',driverId:null});
     },

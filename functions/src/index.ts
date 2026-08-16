@@ -820,7 +820,16 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         // shuni ko'rsatadi.
         tx.set(
           orderRef,
-          { bonusApplied: true, bonusCompensation: actualSpent },
+          {
+            bonusApplied: true,
+            bonusCompensation: actualSpent,
+            // Quyidagi ikki maydon buyurtma keyinchalik "completed"dan
+            // chiqarilsa (dispetcher qayta efirga tashlasa) kerak
+            // bo'ladi: onOrderLeftCompletedRevertMoney AYNAN qancha
+            // berilgani va KIMGA berilganini shulardan biladi.
+            bonusEarned: earnAmount,
+            bonusCompensationDriverId: actualSpent > 0 && driverId ? driverId : null,
+          },
           { merge: true }
         );
 
@@ -968,7 +977,14 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
         // komissiya qancha yechilganini KO'RSATA OLMASDI (buyurtmada
         // bunday maydon umuman yo'q edi). Endi "Pul" bo'limi haqiqiy
         // raqamlarni ko'rsata oladi.
-        tx.set(orderRef, { commissionApplied: true, commissionAmount }, { merge: true });
+        // `commissionDriverId` — komissiya KIMDAN yechilgani. Buyurtma
+        // qayta efirga tashlansa, pul aynan shu haydovchiga qaytariladi
+        // (onOrderLeftCompletedRevertMoney).
+        tx.set(
+          orderRef,
+          { commissionApplied: true, commissionAmount, commissionDriverId: driverId },
+          { merge: true }
+        );
 
         logger.info(
           `Buyurtma ${orderId}: komissiya yechildi (haydovchi ${driverId}) — ` +
@@ -1090,7 +1106,27 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
           willAward || weeklyWillAward || perOrderQualifies ? await tx.get(driverRef) : null;
 
         // ---- shu nuqtadan e'tiboran faqat yozishlar ----
-        tx.set(orderRef, { driverBonusChecked: true }, { merge: true });
+        // Buyurtma keyinchalik "completed"dan chiqarilsa, bu safar
+        // qaysi haydovchining QAYSI KUNGI/HAFTADAGI hisobiga
+        // kirganini bilish shart — sana triggerning ishlash paytiga
+        // bog'liq, buyurtmaning o'zida esa saqlanmaydi. Ertasi kuni
+        // qayta efirga tashlansa, bugungi hisob kamayib ketmasligi
+        // uchun aynan shu sanalar yozib qo'yiladi.
+        tx.set(
+          orderRef,
+          {
+            driverBonusChecked: true,
+            driverBonusDriverId: driverId,
+            driverBonusStatsDate: dateStr,
+            driverBonusStatsWeek: weekStartStr,
+            driverBonusDailyCounted: dailyQualifies,
+            driverBonusWeeklyCounted: weeklyQualifies,
+            driverBonusPerOrderAmount: perOrderQualifies
+              ? driverBonusSettings.perOrderBonusAmount
+              : 0,
+          },
+          { merge: true }
+        );
 
         if (dailyQualifies) {
           tx.set(
@@ -1200,6 +1236,222 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
       });
     } catch (error) {
       logger.error(`Haydovchi bonus tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
+    }
+  }
+);
+
+// ============================================================
+// BUYURTMA "COMPLETED"DAN CHIQARILGANDA — PULNI QAYTARISH
+// ============================================================
+// Dispetcher tugallangan buyurtmani "Qayta efirga tashlash" tugmasi
+// bilan yana "pending"ga qaytarishi (yoki bekor qilishi) mumkin. Bu
+// paytga kelib yuqoridagi uchala trigger allaqachon ishlagan bo'ladi:
+// mijoz balansidan bonus yechilgan va unga cashback yozilgan,
+// haydovchidan komissiya olingan, unga qoplama va buyurtma-bonusi
+// berilgan, safar esa uning kunlik/haftalik hisobiga kirgan.
+//
+// Avval bu bayroqlar (`bonusApplied`, `commissionApplied`,
+// `driverBonusChecked`) HECH QACHON tozalanmasdi. Oqibatlari:
+//   * buyurtmani BOSHQA haydovchi bajarsa, undan komissiya umuman
+//     olinmasdi — u bepul ishlardi, kompaniya esa daromadini
+//     yo'qotardi;
+//   * uning safari kunlik/haftalik bonus hisobiga kirmasdi va
+//     buyurtma-bonusini ham olmasdi;
+//   * birinchi haydovchi o'zi bajarmagan safar uchun to'lagan
+//     komissiyasini qaytarib olmasdi, mijoz bonusining qoplamasini
+//     esa o'zida saqlab qolardi.
+//
+// Endi buyurtma "completed" holatidan chiqqan zahoti hamma pul
+// harakati qaytariladi va bayroqlar tozalanadi. Shundan so'ng buyurtma
+// qayta tugallanganda, uchala trigger HAQIQATDA safarni bajargan
+// haydovchi uchun toza holatdan qayta ishlaydi.
+//
+// Bu trigger o'z yozuvi bilan o'zini qayta chaqirmaydi: shart
+// "oldingi holat completed, yangisi emas" — qaytarish yozuvidan keyin
+// ikkala holat ham "completed" emas, demak shart bajarilmaydi.
+// ============================================================
+
+export const onOrderLeftCompletedRevertMoney = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const before = event.data?.before;
+    const after = event.data?.after;
+    if (!before || !after || !after.exists) return;
+    if (before.data()?.status !== "completed") return;
+    if (after.data()?.status === "completed") return;
+
+    const orderId = event.params.orderId;
+    const orderRef = after.ref;
+    const customerId: string | undefined = after.data()?.customerId;
+
+    try {
+      await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        const o = orderSnap.data();
+        if (!o) return;
+        // Poyga holati: buyurtma shu orada yana "completed"ga qaytgan
+        // bo'lsa, qaytarishga hojat yo'q.
+        if (o.status === "completed") return;
+
+        const hadBonus = o.bonusApplied === true;
+        const hadCommission = o.commissionApplied === true;
+        const hadDriverBonus = o.driverBonusChecked === true;
+        if (!hadBonus && !hadCommission && !hadDriverBonus) return;
+
+        // ---- 1-qadam: BARCHA o'qishlar (Firestore tranzaksiyasi
+        // yozishdan keyin o'qishga ruxsat bermaydi) ----
+        const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+
+        const bonusSpent = hadBonus ? Math.max(0, num(o.bonusCompensation)) : 0;
+        const bonusEarned = hadBonus ? Math.max(0, num(o.bonusEarned)) : 0;
+        const commissionAmount = hadCommission ? num(o.commissionAmount) : 0;
+        const perOrderBonus = hadDriverBonus ? Math.max(0, num(o.driverBonusPerOrderAmount)) : 0;
+
+        const customerRef =
+          hadBonus && customerId ? db.collection("customers").doc(customerId) : null;
+        const customerDoc = customerRef ? await tx.get(customerRef) : null;
+
+        // Uchala summa ODATDA bitta haydovchiga tegishli, lekin buyurtma
+        // oraliqda qayta tayinlangan bo'lishi mumkin — shuning uchun har
+        // biri o'z egasiga qaytariladi va bitta haydovchining bir nechta
+        // harakati bitta yozuvga jamlanadi.
+        const driverDelta = new Map<string, number>();
+        const bump = (id: unknown, amount: number): void => {
+          if (typeof id !== "string" || !id || amount === 0) return;
+          driverDelta.set(id, (driverDelta.get(id) || 0) + amount);
+        };
+        // Komissiya haydovchidan OLINGAN edi — qaytariladi (+).
+        bump(o.commissionDriverId, commissionAmount);
+        // Qoplama va buyurtma-bonusi haydovchiga BERILGAN edi — olinadi (-).
+        bump(o.bonusCompensationDriverId, -bonusSpent);
+        bump(o.driverBonusDriverId, -perOrderBonus);
+
+        const driverSnaps = new Map<string, FirebaseFirestore.DocumentSnapshot>();
+        for (const id of driverDelta.keys()) {
+          driverSnaps.set(id, await tx.get(db.collection("drivers").doc(id)));
+        }
+
+        // Kunlik/haftalik safar hisobi AYNAN o'sha paytda oshirilgan
+        // hujjatdan kamaytiriladi — shuning uchun sanalar buyurtmaning
+        // o'zidan olinadi, tashkentDateStr() dan emas.
+        const statsDriverId = typeof o.driverBonusDriverId === "string" ? o.driverBonusDriverId : null;
+        const statsDriverRef = statsDriverId ? db.collection("drivers").doc(statsDriverId) : null;
+        const dailyRef =
+          statsDriverRef && o.driverBonusDailyCounted === true && typeof o.driverBonusStatsDate === "string"
+            ? statsDriverRef.collection("dailyBonusStats").doc(o.driverBonusStatsDate)
+            : null;
+        const weeklyRef =
+          statsDriverRef && o.driverBonusWeeklyCounted === true && typeof o.driverBonusStatsWeek === "string"
+            ? statsDriverRef.collection("weeklyBonusStats").doc(o.driverBonusStatsWeek)
+            : null;
+        const dailySnap = dailyRef ? await tx.get(dailyRef) : null;
+        const weeklySnap = weeklyRef ? await tx.get(weeklyRef) : null;
+
+        // ---- 2-qadam: shu nuqtadan e'tiboran faqat yozishlar ----
+
+        if (customerRef && customerDoc && (bonusSpent > 0 || bonusEarned > 0)) {
+          const currentBalance = num(customerDoc.data()?.bonusBalance);
+          // Sarflangani qaytariladi, hisoblangan cashback esa bekor
+          // qilinadi. Nolda to'xtaydi: mijoz cashbackni allaqachon
+          // boshqa safarda ishlatib yuborgan bo'lishi mumkin, balans
+          // esa hech qachon manfiy bo'lmasligi kerak.
+          const restored = Math.max(0, currentBalance + bonusSpent - bonusEarned);
+          tx.set(customerRef, { bonusBalance: restored }, { merge: true });
+          const history = customerRef.collection("bonusHistory");
+          // Tarix mijozga ko'rinadi — balans sababsiz o'zgarmasin.
+          if (bonusSpent > 0) {
+            tx.set(history.doc(), {
+              type: "earned",
+              amount: bonusSpent,
+              orderId,
+              note: "Buyurtma qayta ochildi — bonus qaytarildi",
+              createdAt: FieldValue.serverTimestamp(),
+            });
+          }
+          if (bonusEarned > 0) {
+            tx.set(history.doc(), {
+              type: "spent",
+              amount: bonusEarned,
+              orderId,
+              note: "Buyurtma qayta ochildi — hisoblangan bonus bekor qilindi",
+              createdAt: FieldValue.serverTimestamp(),
+            });
+          }
+        }
+
+        for (const [id, delta] of driverDelta) {
+          const snap = driverSnaps.get(id);
+          if (!snap) continue;
+          // Balans manfiyga tushishi mumkin — komissiya yechilishida ham
+          // shunday, va haydovchi ilovasi balansi <= 0 bo'lsa yangi
+          // buyurtma qabul qilishga yo'l qo'ymaydi.
+          tx.set(db.collection("drivers").doc(id), { balance: num(snap.data()?.balance) + delta }, { merge: true });
+        }
+
+        if (bonusSpent > 0 && typeof o.bonusCompensationDriverId === "string") {
+          tx.delete(
+            db.collection("drivers").doc(o.bonusCompensationDriverId)
+              .collection("bonusHistory").doc(`compensation-${orderId}`)
+          );
+        }
+        if (perOrderBonus > 0 && statsDriverRef) {
+          tx.delete(statsDriverRef.collection("bonusHistory").doc(`order-${orderId}`));
+        }
+
+        // MUHIM: safar hisobi kamaytiriladi, lekin ALLAQACHON BERILGAN
+        // kunlik/haftalik bonus qaytarib OLINMAYDI (`bonusAwarded`
+        // tegilmaydi). Sababi: u o'nlab safar ustidan yig'ilgan va
+        // berilgan paytda haqiqatan ham to'g'ri edi. `bonusAwarded`
+        // true qolgani uchun hisob chegaraga qayta yetganda ikkinchi
+        // marta ham berilmaydi — ya'ni ortiqcha to'lov bo'lmaydi.
+        if (dailyRef && dailySnap) {
+          tx.set(
+            dailyRef,
+            {
+              qualifyingTripCount: Math.max(0, num(dailySnap.data()?.qualifyingTripCount) - 1),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+        if (weeklyRef && weeklySnap) {
+          tx.set(
+            weeklyRef,
+            {
+              qualifyingTripCount: Math.max(0, num(weeklySnap.data()?.qualifyingTripCount) - 1),
+              updatedAt: FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+
+        tx.set(
+          orderRef,
+          {
+            bonusApplied: false,
+            bonusCompensation: 0,
+            bonusEarned: 0,
+            bonusCompensationDriverId: null,
+            commissionApplied: false,
+            commissionAmount: 0,
+            commissionDriverId: null,
+            driverBonusChecked: false,
+            driverBonusPerOrderAmount: 0,
+            driverBonusDailyCounted: false,
+            driverBonusWeeklyCounted: false,
+            moneyRevertedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+
+        logger.info(
+          `Buyurtma ${orderId} "completed"dan chiqarildi — pul qaytarildi: ` +
+            `mijozga +${bonusSpent}/-${bonusEarned} bonus, ` +
+            `haydovchi(lar) balansi ${[...driverDelta].map(([id, d]) => `${id}:${d > 0 ? "+" : ""}${d}`).join(", ") || "o'zgarmadi"}`
+        );
+      });
+    } catch (error) {
+      logger.error(`Pulni qaytarish tranzaksiyasi xatosi (buyurtma ${orderId}):`, error);
     }
   }
 );
