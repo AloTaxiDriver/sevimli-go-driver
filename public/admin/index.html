@@ -7135,6 +7135,31 @@ function readBonusNumberField(id,label){
   return n;
 }
 
+// Safar SONI butun bo'lishi shart, shuning uchun saqlashda Math.round
+// qo'llanadi. MUHIM: yaxlitlash aynan SHU YERDA, o'qish paytida
+// bajariladi — keyingi barcha tekshiruvlar (jumladan
+// warnIfEnabledButZero) hujjatga haqiqatda yoziladigan qiymatni
+// ko'rishi uchun. Avval teskarisi edi: tekshiruv xom qiymatni,
+// saqlash esa yaxlitlangan qiymatni olardi. Natijada "0.4" yozilsa
+// tekshiruv 0.4>0 deb bemalol o'tkazib yuborardi, hujjatga esa 0
+// tushardi — bonus jimgina o'chib qolardi, interfeys esa
+// "saqlandi" deb turardi.
+function readBonusTripCountField(id,label){
+  const n=readBonusNumberField(id,label);
+  if(n===null)return null;
+  const rounded=Math.round(n);
+  if(rounded!==n&&!confirm(
+    '"'+label+'" butun son bo\'lishi kerak.\n\n'+
+    'Kiritilgan: '+n+'\n'+
+    'Saqlanadi: '+rounded+'\n\n'+
+    'Davom etilsinmi?'
+  )){
+    document.getElementById(id)?.focus();
+    return null;
+  }
+  return rounded;
+}
+
 async function saveBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
@@ -7205,7 +7230,7 @@ async function loadDriverBonusSettingsForm(){
 async function saveDailyBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
-  const dailyTripThreshold=readBonusNumberField('dbs-trip-threshold','Kunlik safar chegarasi');
+  const dailyTripThreshold=readBonusTripCountField('dbs-trip-threshold','Kunlik safar chegarasi');
   if(dailyTripThreshold===null)return;
   const bonusAmount=readBonusNumberField('dbs-bonus-amount','Bonus summasi');
   if(bonusAmount===null)return;
@@ -7215,7 +7240,8 @@ async function saveDailyBonusSettingsForm(){
   if(!warnIfEnabledButZero(dailyEnabled,[dailyTripThreshold,bonusAmount],'Kunlik bonus'))return;
   const cfg={
     dailyEnabled,
-    dailyTripThreshold:Math.round(dailyTripThreshold),
+    // readBonusTripCountField allaqachon yaxlitlab bergan.
+    dailyTripThreshold,
     bonusAmount,
     // Uchala bonus turi uchun umumiy chegara — faqat SHU forma yozadi.
     minTripDistanceKm,
@@ -7230,7 +7256,7 @@ async function saveDailyBonusSettingsForm(){
 async function saveWeeklyBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
-  const weeklyTripThreshold=readBonusNumberField('dbs-weekly-trip-threshold','Haftalik safar chegarasi');
+  const weeklyTripThreshold=readBonusTripCountField('dbs-weekly-trip-threshold','Haftalik safar chegarasi');
   if(weeklyTripThreshold===null)return;
   const weeklyBonusAmount=readBonusNumberField('dbs-weekly-bonus-amount','Haftalik bonus summasi');
   if(weeklyBonusAmount===null)return;
@@ -7238,7 +7264,8 @@ async function saveWeeklyBonusSettingsForm(){
   if(!warnIfEnabledButZero(weeklyEnabled,[weeklyTripThreshold,weeklyBonusAmount],'Haftalik bonus'))return;
   const cfg={
     weeklyEnabled,
-    weeklyTripThreshold:Math.round(weeklyTripThreshold),
+    // readBonusTripCountField allaqachon yaxlitlab bergan.
+    weeklyTripThreshold,
     weeklyBonusAmount,
   };
   if(window.saveDriverBonusSettings){
