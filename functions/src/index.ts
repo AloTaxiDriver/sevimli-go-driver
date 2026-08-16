@@ -744,6 +744,10 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
     const customerRef = db.collection("customers").doc(customerId);
     const historyRef = customerRef.collection("bonusHistory");
     const bonusSettings = await getBonusSettings(after.data()?.branchId);
+    // Mijoz bonusini kompaniya qoplaydi va bu AYNAN shu tranzaksiyada,
+    // mijoz balansidan yechish bilan BIRGA bajariladi — sababi pastda.
+    const driverId: string | undefined = after.data()?.driverId;
+    const driverRef = driverId ? db.collection("drivers").doc(driverId) : null;
 
     try {
       await db.runTransaction(async (tx) => {
@@ -756,6 +760,10 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         const customerDoc = await tx.get(customerRef);
         const currentBalance =
           typeof customerDoc.data()?.bonusBalance === "number" ? customerDoc.data()!.bonusBalance : 0;
+        // MUHIM: Firestore tranzaksiyasida BARCHA o'qishlar BARCHA
+        // yozishlardan oldin bo'lishi shart — shuning uchun haydovchi
+        // hujjati ham shu yerda, yozishlar boshlanishidan avval olinadi.
+        const driverDoc = driverRef ? await tx.get(driverRef) : null;
 
         // MUHIM: baza — safarning TO'LIQ qiymati (yo'l narxi + qo'shimcha
         // xizmatlar), aynan mijoz ilovasi chegirmani hisoblaganidek.
@@ -781,7 +789,50 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         const newBalance = currentBalance - actualSpent + earnAmount;
 
         tx.set(customerRef, { bonusBalance: newBalance }, { merge: true });
-        tx.set(orderRef, { bonusApplied: true }, { merge: true });
+        // `bonusCompensation` — haydovchiga qoplab berilgan summa. U
+        // buyurtmaga ham yoziladi: haydovchi ilovasining "Pul" bo'limi
+        // shuni ko'rsatadi.
+        tx.set(
+          orderRef,
+          { bonusApplied: true, bonusCompensation: actualSpent },
+          { merge: true }
+        );
+
+        // ============================================================
+        // MIJOZ BONUSINI KOMPANIYA QOPLAYDI
+        // ============================================================
+        // Mijoz bonus ishlatsa, haydovchi qo'liga naqd pul shu miqdorda
+        // KAM tushadi, garchi ishni to'liq bajargan bo'lsa ham. Ayirmani
+        // kompaniya qoplaydi.
+        //
+        // MUHIM: qoplama aynan `actualSpent` — ya'ni mijoz balansidan
+        // HAQIQATDA yechilgan summa, va u shu bitta tranzaksiyada,
+        // yechish bilan birga beriladi. Avval bu boshqa funksiyada
+        // (`onOrderCompletedDeductCommission`), `tripTotal - finalPrice`
+        // formulasi bilan mustaqil hisoblanardi — ikkalasi turli
+        // vaqtda, turli bazadan chiqqani uchun BIR-BIRIGA TENG
+        // BO'LMASDI. Masalan metrланган narx taxmindan past chiqsa,
+        // haydovchiga 15 000 berilib, mijozdan 10 000 yechilardi —
+        // ayirma har safar kompaniyadan yo'qolardi. Endi bitta manbadan
+        // olingani uchun ular teng bo'lmasligi mumkin emas.
+        if (actualSpent > 0 && driverRef && driverDoc) {
+          const driverBalance =
+            typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
+          tx.set(driverRef, { balance: driverBalance + actualSpent }, { merge: true });
+          // Haydovchi balansidagi o'zgarish sababsiz ko'rinmasin.
+          tx.set(driverRef.collection("bonusHistory").doc(`compensation-${orderId}`), {
+            period: "bonus_compensation",
+            date: tashkentDateStr(),
+            amount: actualSpent,
+            orderId,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        } else if (actualSpent > 0 && !driverRef) {
+          logger.warn(
+            `Buyurtma ${orderId}: mijozdan ${actualSpent} bonus yechildi, lekin ` +
+              "buyurtmada driverId yo'q — qoplama berilmadi."
+          );
+        }
 
         if (actualSpent > 0) {
           tx.set(historyRef.doc(), {
@@ -873,56 +924,30 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
             ? driverCommission
             : Math.round((tripTotal * driverCommission) / 100);
 
-        // MIJOZ BONUSINI KOMPANIYA QOPLAYDI.
-        // Mijoz bonus ishlatsa, u naqd `finalPrice` to'laydi — ya'ni
-        // haydovchi qo'liga safar qiymatidan aynan shu ayirma miqdorida
-        // KAM pul tushadi, garchi ishni to'liq bajargan bo'lsa ham. Avval
-        // bu ayirmani hech kim qoplamasdi va komissiya ham kamaygan
-        // summadan olinardi: haydovchi mijozning bonusini o'z cho'ntagidan
-        // to'lagan bo'lib chiqardi va vaqt o'tib bonusli buyurtmalardan
-        // qochishi tabiiy edi. Endi ayirma balansiga qaytariladi.
-        //
-        // Ayirma `tripTotal - finalPrice` sifatida olinadi (to'g'ridan-
-        // to'g'ri `bonusUsed` emas): shu tariqa kompensatsiya hech qachon
-        // safar qiymatidan oshmaydi, hatto buyurtmada `bonusUsed` xato
-        // yoki o'zboshimchalik bilan katta yozilgan bo'lsa ham.
-        const finalPrice =
-          typeof orderData.finalPrice === "number" ? orderData.finalPrice : tripTotal;
-        const bonusCompensation = Math.max(0, tripTotal - finalPrice);
-
+        // MUHIM: mijoz bonusining qoplamasi bu yerda EMAS. U
+        // `onOrderCompletedApplyBonus` ichida, mijoz balansidan yechish
+        // bilan BIR TRANZAKSIYADA beriladi. Avval qoplama shu yerda,
+        // `tripTotal - finalPrice` formulasi bilan mustaqil hisoblanardi
+        // — u mijozdan haqiqatda yechilgan summaga teng bo'lmasdi va
+        // ayirma har safar kompaniyadan yo'qolardi. Bu funksiya endi
+        // faqat komissiya bilan shug'ullanadi.
         const driverDoc = await tx.get(driverRef);
         const currentBalance =
           typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
-        const newBalance = currentBalance - commissionAmount + bonusCompensation;
+        const newBalance = currentBalance - commissionAmount;
 
         tx.set(driverRef, { balance: newBalance }, { merge: true });
-        // Summalar buyurtmaning o'ziga ham yoziladi — avval faqat
+        // Komissiya summasi buyurtmaning o'ziga ham yoziladi — avval faqat
         // `commissionApplied` bayrog'i qo'yilardi va haydovchi ilovasi
         // komissiya qancha yechilganini KO'RSATA OLMASDI (buyurtmada
         // bunday maydon umuman yo'q edi). Endi "Pul" bo'limi haqiqiy
         // raqamlarni ko'rsata oladi.
-        tx.set(
-          orderRef,
-          { commissionApplied: true, commissionAmount, bonusCompensation },
-          { merge: true }
-        );
-
-        // Kompensatsiya haydovchi uchun ko'rinadigan bo'lsin — aks holda
-        // balansdagi o'zgarish sababsizday tuyuladi.
-        if (bonusCompensation > 0) {
-          tx.set(driverRef.collection("bonusHistory").doc(`compensation-${orderId}`), {
-            period: "bonus_compensation",
-            date: tashkentDateStr(),
-            amount: bonusCompensation,
-            orderId,
-            createdAt: FieldValue.serverTimestamp(),
-          });
-        }
+        tx.set(orderRef, { commissionApplied: true, commissionAmount }, { merge: true });
 
         logger.info(
           `Buyurtma ${orderId}: komissiya yechildi (haydovchi ${driverId}) — ` +
             `safar qiymati: ${tripTotal}, komissiya: ${commissionAmount}, ` +
-            `mijoz bonusi qoplandi: ${bonusCompensation}, yangi balans: ${newBalance}`
+            `yangi balans: ${newBalance}`
         );
       });
     } catch (error) {
