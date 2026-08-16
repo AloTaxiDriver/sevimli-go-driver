@@ -17,34 +17,100 @@ service cloud.firestore {
     function staffBranches() {
       return get(/databases/$(database)/documents/adminRoles/$(request.auth.uid)).data.branches;
     }
+    // MUHIM: `exists()` tekshiruvi ATAYLAB. Usiz, xodim hujjati
+    // bo'lmagan foydalanuvchi uchun `get(...).data.role` ifodasi
+    // xatoga uchrardi — natija baribir "rad etish" bo'lardi, lekin
+    // xato holatida `||` shoxlari kutilmagan tarzda baholanishi
+    // mumkin. Endi javob aniq: hujjat yo'q -> false.
+    function hasStaffDoc() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/adminRoles/$(request.auth.uid));
+    }
     function isAdmin() {
-      return isSignedIn() && staffRole() == 'admin';
+      return hasStaffDoc() && staffRole() == 'admin';
     }
     function isStaff() {
-      return isSignedIn() && staffRole() in ['admin', 'manager', 'depecher'];
+      return hasStaffDoc() && staffRole() in ['admin', 'manager', 'depecher'];
+    }
+
+    // Bu maydonlarni FAQAT Cloud Function yozadi (Admin SDK qoidalarni
+    // butunlay chetlab o'tadi, shuning uchun bu ro'yxat server
+    // hisob-kitobiga umuman xalaqit bermaydi). Mijoz va haydovchi
+    // ilovalari ularni faqat O'QIYDI — kod bo'ylab tekshirildi.
+    function serverMoneyFields() {
+      return [
+        'bonusApplied', 'bonusCompensation', 'bonusEarned', 'bonusCompensationDriverId',
+        'commissionApplied', 'commissionAmount', 'commissionDriverId',
+        'driverBonusChecked', 'driverBonusDriverId', 'driverBonusStatsDate',
+        'driverBonusStatsWeek', 'driverBonusDailyCounted', 'driverBonusWeeklyCounted',
+        'driverBonusPerOrderAmount', 'moneyRevertedAt'
+      ];
+    }
+    function changedKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys();
     }
 
     // ============================================================
-    // ORDERS / DRIVERS — MUHIM: bu ikkisi ATAYLAB ochiq qoldirilgan
-    // (o'zgartirilmagan). Haydovchi ilovasi hozircha Firebase Auth
-    // ISHLATMAYDI (telefon+parolni to'g'ridan-to'g'ri Firestore'dan
-    // tekshiradi) — shu sabab bu yerga autentifikatsiya talabi
-    // qo'yish haydovchi ilovasini (joylashuv yangilash, buyurtma
-    // qabul qilish/bekor qilish, holat o'zgartirish) butunlay
-    // buzadi. Filial bo'yicha izolyatsiya bu ikkisi uchun dashboard
-    // so'rovlari va buyurtma dispatch (Cloud Function) darajasida
-    // amalga oshirilgan. Haqiqiy himoya uchun haydovchi ilovasini
-    // real Firebase Auth'ga o'tkazish — alohida, kelajakdagi ish.
+    // ORDERS / DRIVERS
+    // ============================================================
+    // Haydovchi ilovasi hozircha Firebase Auth ISHLATMAYDI
+    // (telefon+parolni to'g'ridan-to'g'ri Firestore'dan tekshiradi).
+    // Shu sabab bu yerga "tizimga kirgan bo'lish" talabini qo'yib
+    // bo'lmaydi — ilova butunlay ishlamay qolardi. To'liq himoya
+    // uchun haydovchi ilovasini real Firebase Auth'ga o'tkazish
+    // kerak; bu alohida, kelajakdagi ish.
+    //
+    // Shunga qaramay, avvalgi holat juda xavfli edi: ikkalasi ham
+    // shunchaki `if true` edi, ya'ni internetdagi HAR KIM istalgan
+    // haydovchining BALANSINI xohlagan raqamga o'zgartira olardi,
+    // parolini almashtirib hisobini egallay olardi, yoki o'z
+    // buyurtmasiga `commissionApplied: true` yozib qo'yib komissiya
+    // to'lamasdan ishlay olardi.
+    //
+    // Endi autentifikatsiyasiz mijoz PULGA TEGISHLI maydonlarga
+    // umuman tegolmaydi — qolgan hamma narsa avvalgidek ishlayveradi
+    // (joylashuv, onlayn/band holati, buyurtma qabul qilish, bekor
+    // qilish, yakuniy narx). Dashboard xodimi esa (u haqiqiy Firebase
+    // Auth bilan kiradi) hech qanday cheklovga uchramaydi.
     // ============================================================
     match /orders/{orderId} {
       allow read: if true;
-      allow create: if true;
-      allow update: if true;
+      // Yangi buyurtma allaqachon "komissiya olingan" deb belgilangan
+      // holda tug'ilmasin.
+      allow create: if isStaff() ||
+        !request.resource.data.keys().hasAny(serverMoneyFields());
+      allow update: if isStaff() || (
+        !changedKeys().hasAny(serverMoneyFields()) &&
+        // `bonusUsed` — mijozning bonusidan qancha yechilishini
+        // belgilaydi, ya'ni haydovchiga beriladigan qoplama shunga
+        // bog'liq. Uni faqat buyurtma EGASI (mijoz ilovasi, u real
+        // Firebase Auth bilan kiradi) yoki xodim o'zgartira oladi —
+        // haydovchi ilovasi bu maydonni umuman yozmaydi.
+        // `get(..., '')` ATAYLAB: maydon yo'q hujjatda to'g'ridan-to'g'ri
+        // `resource.data.customerId` o'qish qoidani XATOGA olib keladi.
+        (!changedKeys().hasAny(['bonusUsed']) ||
+         (isSignedIn() && request.auth.uid == resource.data.get('customerId', '')))
+      );
       allow delete: if false;
     }
     match /drivers/{driverId} {
       allow read: if true;
-      allow write: if true;
+      // Ro'yxatdan o'tish autentifikatsiyasiz bo'ladi — lekin yangi
+      // haydovchi o'ziga balans "sovg'a qilib" tug'ila olmaydi.
+      allow create: if isStaff() ||
+        !request.resource.data.keys().hasAny(['balance']) ||
+        request.resource.data.balance == 0;
+      // `balance` — pul. `password` — hisobga kirish (ilovada parolni
+      // o'zgartirish imkoniyati umuman yo'q, faqat ro'yxatdan o'tishda
+      // bir marta yoziladi).
+      allow update: if isStaff() ||
+        !changedKeys().hasAny(['balance', 'password']);
+      // MUHIM: avval bu yerda `allow write: if true` turardi va pastda
+      // `allow delete: if false` yozilgan edi. Firestore qoidalari
+      // BIR-BIRINI BEKOR QILMAYDI — ular OR bilan qo'shiladi, va
+      // `write` o'chirishni ham qamrab oladi. Ya'ni har kim istalgan
+      // haydovchini o'chirib tashlay olardi. Endi `write` uch qismga
+      // ajratilgani uchun o'chirish haqiqatan ham taqiqlangan.
       allow delete: if false;
     }
 
