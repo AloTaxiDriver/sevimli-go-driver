@@ -34,6 +34,7 @@ import {
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
 } from './utils/firebase';
+import { startDriverLocationTracking, stopDriverLocationTracking } from './utils/locationTask';
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
 import { getRoute } from './utils/routing';
 
@@ -599,19 +600,19 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     });
     ensureOverlayPermission();
 
-    const iv = setInterval(async () => {
-      try {
-        const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-        await firestore().collection('drivers').doc(driverId).set({
-          lat: loc.coords.latitude,
-          lng: loc.coords.longitude,
-          updatedAt: firestore.FieldValue.serverTimestamp(),
-        }, { merge: true });
-      } catch (e) {
-        console.warn('GPS xatosi:', e);
-      }
-    }, 10000);
-    return () => clearInterval(iv);
+    // MUHIM: avval bu yerda oddiy setInterval har 10 soniyada joylashuvni
+    // Firestore'ga yozardi. setInterval — JS taymeri: ilova ekrandan
+    // yo'qolishi bilan (boshqa ilovaga o'tildi, ekran o'chdi) u to'xtardi,
+    // shu sababli dispetcher panelida haydovchi eski joyda qotib qolardi.
+    // Undan ham yomoni — ilovani "faol ishlayapti" deb ko'rsatadigan hech
+    // narsa yo'q edi, shuning uchun Android xotira kerak bo'lganda uni
+    // bemalol o'ldirardi (safar o'rtasida ilovadan chiqib ketishning
+    // asosiy sababi). Endi kuzatuv foreground service orqali ketadi:
+    // doimiy bildirishnoma turgan ekan tizim ilovaga tegmaydi.
+    startDriverLocationTracking(driverId);
+    return () => {
+      stopDriverLocationTracking();
+    };
   }, [isOnline, driverId]);
 
   useEffect(() => {

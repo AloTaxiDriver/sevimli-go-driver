@@ -1,5 +1,6 @@
 // app/_layout.tsx
 import notifee, { EventType } from '@notifee/react-native';
+import crashlytics from '@react-native-firebase/crashlytics';
 import messaging from '@react-native-firebase/messaging';
 import { router, Stack } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -9,6 +10,12 @@ import LoginScreen from '../src/screens/LoginScreen';
 import RegisterScreen from '../src/screens/RegisterScreen';
 import { COLORS } from '../src/theme/colors';
 import { displayDispatcherNotification, displayFullScreenOrderNotification } from '../src/utils/firebase';
+// MUHIM: shu import fon rejimidagi joylashuv vazifasini (TaskManager
+// task'ini) RO'YXATDAN O'TKAZADI. U komponent ichida emas, fayl
+// yuklanganda bajarilishi shart — Android bu vazifani ilova butunlay
+// yopilgandan keyin ham qayta ishga tushirishi mumkin, o'shanda hech
+// qanday React komponenti mavjud bo'lmaydi.
+import '../src/utils/locationTask';
 
 // MUHIM: bu handler ilova komponent darajasidan TASHQARIDA, fayl
 // yuklanganda darhol ro'yxatdan o'tadi. Shuning uchun ilova butunlay
@@ -44,6 +51,15 @@ messaging().setBackgroundMessageHandler(async (remoteMessage) => {
 });
 
 export default function RootLayout() {
+  // Ilova qulasa, sababi Firebase Crashlytics'ga yoziladi. Avval hech
+  // qanday xato yozuvchi tizim yo'q edi — haydovchi "ilova o'chib
+  // qoldi" desa, buni tekshirishning ILOJI YO'Q edi. Endi Firebase
+  // konsolida aniq qaysi qurilmada, qaysi kodda uzilganini ko'rish
+  // mumkin.
+  useEffect(() => {
+    crashlytics().setCrashlyticsCollectionEnabled(true).catch(() => {});
+  }, []);
+
   // Notifee bildirishnoma hodisalarini (bosilganda, full-screen
   // avtomatik ochilganda) tinglaymiz. Bu useEffect ilova OCHILGANDA
   // (foreground'ga o'tganda) ham, fonda ham ishlashi uchun ikki xil

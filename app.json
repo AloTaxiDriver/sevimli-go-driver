@@ -11,7 +11,9 @@
     "ios": {
       "supportsTablet": true,
       "infoPlist": {
-        "NSLocationWhenInUseUsageDescription": "Sevimli Go haydovchi ilovasi sizning joylashuvingizni xaritada ko'rsatish va buyurtmalarni yo'naltirish uchun ishlatadi."
+        "NSLocationWhenInUseUsageDescription": "Sevimli Go haydovchi ilovasi sizning joylashuvingizni xaritada ko'rsatish va buyurtmalarni yo'naltirish uchun ishlatadi.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Ilova yopiq turganda ham joylashuvingiz dispetcherga yuboriladi — shunda sizga eng yaqin buyurtmalar tushadi va safar davomida aloqa uzilmaydi.",
+        "UIBackgroundModes": ["location"]
       }
     },
     "android": {
@@ -24,6 +26,10 @@
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "WAKE_LOCK",
         "POST_NOTIFICATIONS",
         "USE_FULL_SCREEN_INTENT",
         "SYSTEM_ALERT_WINDOW"
@@ -53,6 +59,15 @@
       ],
       "@react-native-firebase/app",
       "@react-native-firebase/messaging",
+      "@react-native-firebase/crashlytics",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Ilova yopiq turganda ham joylashuvingiz dispetcherga yuboriladi — shunda sizga eng yaqin buyurtmalar tushadi va safar davomida aloqa uzilmaydi.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
       "./plugins/withOverlayPermission.js",
       "./plugins/withNotificationSound.js"
     ],
