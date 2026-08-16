@@ -140,6 +140,15 @@ export type FirestoreOrder = {
   finalPrice?: number;
   bonusUsed?: number;
   extrasTotal?: number;
+  /** Buyurtma yakunlangach Cloud Function yozadigan haqiqiy summalar —
+   * "Pul" bo'limi shular asosida sof daromadni ko'rsatadi. */
+  commissionAmount?: number;
+  /** Mijoz bonus ishlatgan bo'lsa, kompaniya haydovchiga qoplab bergan
+   * summa (haydovchi naqd pulni shu miqdorda kam olgan). */
+  bonusCompensation?: number;
+  /** GPS bo'yicha o'lchangan haqiqiy masofa (finalizeOrderPrice yozadi).
+   * `distanceKm` esa buyurtma yaratilgandagi taxmin bo'lib qoladi. */
+  actualDistanceKm?: number;
   // Mijoz ilovasidan (E:\sevimli-go-customer) kelgan qo'shimcha
   // maydonlar — dashboard'dan yaratilgan buyurtmalarda bo'lmaydi.
   entranceNumber?: string;
@@ -195,6 +204,10 @@ export function mapDocToOrder(
     finalPrice: typeof data.finalPrice === 'number' ? data.finalPrice : undefined,
     bonusUsed: typeof data.bonusUsed === 'number' ? data.bonusUsed : undefined,
     extrasTotal: typeof data.extrasTotal === 'number' ? data.extrasTotal : undefined,
+    commissionAmount: typeof data.commissionAmount === 'number' ? data.commissionAmount : undefined,
+    bonusCompensation:
+      typeof data.bonusCompensation === 'number' ? data.bonusCompensation : undefined,
+    actualDistanceKm: typeof data.actualDistanceKm === 'number' ? data.actualDistanceKm : undefined,
     entranceNumber: data.entranceNumber || undefined,
     serviceType: data.serviceType === 'delivery' ? 'delivery' : data.serviceType === 'taxi' ? 'taxi' : undefined,
     toAddress2: data.toAddress2 || undefined,

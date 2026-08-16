@@ -1036,7 +1036,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
         </div>
         <div class="dropdown-item" data-page="bonussettings" onclick="navigate('bonussettings');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 18 3 22 9 12 22 2 9"/><line x1="2" y1="9" x2="22" y2="9"/><line x1="6" y1="3" x2="12" y2="22"/><line x1="18" y1="3" x2="12" y2="22"/></svg>
-          Mijozlar uchun bonus
+          Bonus sozlamalari
         </div>
         <div class="dropdown-item" data-page="orderhistory" onclick="navigate('orderhistory');toggleDropdown()">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v5h5"/><path d="M3.05 13A9 9 0 1 0 6 5.3L3 8"/><path d="M12 7v5l4 2"/></svg>
@@ -3093,7 +3093,13 @@ function renderDriverTabContent(){
     if(driverId&&window.getDriverBonusGoals){
       Promise.all([
         window.getDriverBonusGoals(driverId),
-        window.getDriverBonusSettings?window.getDriverBonusSettings():Promise.resolve(null),
+        // MUHIM: haydovchining O'Z filiali sozlamasi o'qiladi. Avval bu
+        // chaqiruv filialsiz edi va har doim umumiy standart olinardi —
+        // filiali o'z alohida qoidasiga ega haydovchining kartochkasida
+        // noto'g'ri chegara/summa ko'rinardi, Cloud Function esa
+        // buyurtmaning `branchId`si bo'yicha butunlay boshqa qiymat
+        // bilan hisoblardi.
+        window.getDriverBonusSettings?window.getDriverBonusSettings(d.branch||null):Promise.resolve(null),
       ]).then(([goals,settings])=>{
         if(driverModalActiveTab!=='bonus')return;
         const el=document.getElementById('driver-bonus-goals');
@@ -3139,7 +3145,24 @@ function renderDriverTabContent(){
           count:x.qualifyingTripCount||0,threshold:x.tripThreshold||fallbackWeeklyThreshold,amount:x.targetBonusAmount||fallbackWeeklyAmount,
         })).filter(Boolean).join('');
 
+        // Har bir safar uchun bonus — kunlik/haftalik maqsadlardan
+        // mustaqil ishlaydi va progress-bar bilan ifodalanmaydi, shuning
+        // uchun alohida ko'rsatiladi. Avval bu bonus turi kartochkada
+        // umuman ko'rinmasdi: haydovchi balansiga pul kelardi-yu,
+        // dispetcher ham, admin ham sababini topa olmasdi.
+        const perOrderActive=settings?.perOrderEnabled===true&&(settings?.perOrderBonusAmount||0)>0;
+        const perOrderCard=perOrderActive?`
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#FFF7ED;border-radius:11px;border:1px solid rgba(234,88,12,0.15)">
+            <div>
+              <div style="font-size:13px;font-weight:700;color:#9A3412">Har bir safar uchun</div>
+              <div style="font-size:11px;color:rgba(0,0,0,0.45);margin-top:2px">Kamida ${settings?.minTripDistanceKm||0} km bo'lgan har bir safar uchun</div>
+            </div>
+            <div style="font-size:15px;font-weight:800;color:#9A3412">+${(settings?.perOrderBonusAmount||0).toLocaleString()} so'm</div>
+          </div>`:'';
+
         el.innerHTML=`
+          ${perOrderCard?`<div style="font-size:12px;font-weight:700;color:rgba(0,0,0,0.4);margin-bottom:8px">HAR BIR SAFAR UCHUN BONUS</div>
+          <div style="margin-bottom:18px">${perOrderCard}</div>`:''}
           ${activeCards?`<div style="font-size:12px;font-weight:700;color:rgba(0,0,0,0.4);margin-bottom:8px">FAOL MAQSADLAR</div>
           <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:18px">${activeCards}</div>`:''}
           ${pastDailyCards?`<div style="font-size:12px;font-weight:700;color:rgba(0,0,0,0.4);margin-bottom:8px">O'TGAN KUNLAR</div>
@@ -6797,11 +6820,7 @@ async function saveRadiusSettings(){
   }
 }
 
-// MUHIM: hozircha bonus qoidasi YAGONA (global) — Filial faqat interfeys
-// uchun ko'rsatiladi, real cheklash hali qo'llanilmaydi. Filial bo'yicha
-// alohida qoidalar keyinroq, mijoz ilovasi buyurtma yaratishda qaysi
-// filialga tegishli ekanini aniqlay boshlagach qo'shiladi.
-// Bonus sozlamalari endi filial-asosli: har bir filial o'zining
+// Bonus sozlamalari filial-asosli: har bir filial o'zining
 // cashback/kunlik/haftalik/har-buyurtma bonus qiymatlarini ADMIN
 // belgilagan umumiy standartdan mustaqil ravishda sozlashi mumkin
 // (settings/bonus_branch_{id} va settings/driverBonus_branch_{id}
@@ -6840,23 +6859,30 @@ function renderBonusSettings(){
         <div class="form-field">
           <label class="form-label">Cashback (har bir buyurtmadan necha % bonus sifatida qaytadi)</label>
           <input class="form-input" id="bs-earn-percent" type="number" min="0" max="100" step="0.5" placeholder="Masalan: 4">
+          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Safarning to'liq qiymatidan (yo'l narxi + qo'shimcha xizmatlar) hisoblanadi va mijoz balansiga qo'shiladi.</div>
         </div>
 
         <div class="form-field">
-          <label class="form-label">Bonusdan foydalanish uchun eng kam miqdor (so'm)</label>
+          <label class="form-label">Bonusdan foydalanish uchun balansda kamida qancha bo'lishi kerak (so'm)</label>
           <input class="form-input" id="bs-min-balance" type="number" min="0" step="1000" placeholder="Masalan: 10000">
+          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu — balans ostonasi: mijozning bonus balansi shundan kam bo'lsa, u bonusni umuman ishlata olmaydi. "Eng kam sarflash miqdori" EMAS. 0 bo'lsa cheklov yo'q.</div>
         </div>
 
         <div class="form-field">
           <label class="form-label">Bitta buyurtma uchun bonus chegarasi</label>
           <div style="display:flex;gap:8px">
-            <input class="form-input" id="bs-cap-value" type="number" min="0" step="500" placeholder="Masalan: 2000" style="flex:1">
+            <input class="form-input" id="bs-cap-value" type="number" min="0" step="500" placeholder="Masalan: 50" style="flex:1">
             <select class="form-input" id="bs-cap-type" style="width:110px">
-              <option value="amount">so'm</option>
               <option value="percent">%</option>
+              <option value="amount">so'm</option>
             </select>
           </div>
+          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bitta safarda eng ko'pi bilan shuncha bonus ishlatiladi. "%" tanlansa — safarning to'liq qiymatidan foiz sifatida hisoblanadi.</div>
         </div>
+      </div>
+
+      <div style="font-size:11px;color:rgba(0,0,0,0.45);background:#F0FDF4;border:1px solid rgba(22,163,74,0.15);border-radius:9px;padding:10px;margin-top:14px;line-height:1.5">
+        <b>Muhim:</b> mijoz bonus ishlatganda haydovchi qo'liga naqd pul shu miqdorda kam tushadi — bu ayirma haydovchi balansiga kompaniya hisobidan avtomatik qoplab beriladi. Komissiya esa har doim safarning to'liq qiymatidan olinadi, ya'ni bonus haydovchining daromadiga ta'sir qilmaydi.
       </div>
 
       <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:16px;width:100%" onclick="saveBonusSettingsForm()">Saqlash</button>
@@ -6871,7 +6897,13 @@ function renderBonusSettings(){
         </div>
       </div>
       <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:8px">Bir kunda kamida "Chegara" safarni yakunlagan haydovchiga bonus summasi avtomatik balansiga qo'shiladi. Faqat kamida "Minimal masofa"dan uzoq safarlar hisobga olinadi — bo'sh/soxta buyurtmalar bilan bonusni "urib olish"ning oldini olish uchun.</div>
-      <div id="dbs-status" style="font-size:11px;font-weight:700;color:#166534;margin-bottom:16px">Bu status haydovchilar uchun barcha uch bonus turiga (kunlik/haftalik/har-buyurtma) baravar tegishli — ular bitta umumiy hujjatda saqlanadi.</div>
+      <div id="dbs-status" style="font-size:11px;font-weight:700;color:#166534;margin-bottom:4px"></div>
+      <!-- MUHIM: bu izoh #dbs-status'dan TASHQARIDA turishi shart —
+           loadDriverBonusSettingsForm() o'sha elementning butun matnini
+           almashtiradi, shuning uchun ilgari bu jumla forma yuklangan
+           zahoti yo'qolib ketardi va foydalanuvchi uni deyarli hech
+           qachon ko'rmasdi. -->
+      <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-bottom:16px">Yuqoridagi filial tanlovi haydovchilar uchun barcha uch bonus turiga (kunlik / haftalik / har-buyurtma) baravar tegishli — ular bitta umumiy hujjatda saqlanadi.</div>
 
       <div style="display:flex;flex-direction:column;gap:14px">
         <div class="form-field">
@@ -6916,9 +6948,9 @@ function renderBonusSettings(){
         </div>
 
         <div class="form-field">
-          <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa (km)</label>
-          <input class="form-input" id="dbs-weekly-min-distance" type="number" min="0" step="0.5" placeholder="Masalan: 2">
-          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu masofa chegarasi kunlik VA haftalik bonus uchun umumiy qo'llaniladi.</div>
+          <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa</label>
+          <div id="dbs-weekly-min-distance-note" style="font-size:13px;font-weight:600;color:rgba(0,0,0,0.6);padding:10px 0">—</div>
+          <div style="font-size:11px;color:rgba(0,0,0,0.4)">Bu chegara uchala bonus turi uchun umumiy — uni yuqoridagi "kunlik bonus" kartasida o'zgartiriladi.</div>
         </div>
       </div>
 
@@ -6942,9 +6974,9 @@ function renderBonusSettings(){
         </div>
 
         <div class="form-field">
-          <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa (km)</label>
-          <input class="form-input" id="dbs-perorder-min-distance" type="number" min="0" step="0.5" placeholder="Masalan: 2">
-          <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:4px">Bu masofa chegarasi kunlik, haftalik VA har buyurtma bonusi uchun umumiy qo'llaniladi.</div>
+          <label class="form-label">Bitta safar hisobga kirishi uchun minimal masofa</label>
+          <div id="dbs-perorder-min-distance-note" style="font-size:13px;font-weight:600;color:rgba(0,0,0,0.6);padding:10px 0">—</div>
+          <div style="font-size:11px;color:rgba(0,0,0,0.4)">Bu chegara uchala bonus turi uchun umumiy — uni yuqoridagi "kunlik bonus" kartasida o'zgartiriladi.</div>
         </div>
       </div>
 
@@ -7022,14 +7054,62 @@ async function loadBonusSettingsForm(){
   updateBonusStatusNote('bs-status',cfg.isBranchOverride===true);
 }
 
+// Bo'sh maydon jimgina 0 ga aylanib qolmasligi uchun.
+// Avval barcha bonus maydonlarida `parseFloat(...)||0` ishlatilardi —
+// ya'ni cashback foizini tozalab "Saqlash" bosilsa, hech qanday
+// ogohlantirishsiz `earnPercent: 0` yozilib, bonus butunlay o'chib
+// qolardi (va buni sezish deyarli imkonsiz edi). Endi bo'sh maydon
+// xato deb hisoblanadi: nolni ATAYLAB qo'yish uchun aniq "0" yozish
+// kerak. Qiymat yaroqsiz bo'lsa null qaytariladi va saqlash to'xtaydi.
+// Cloud Function bonusni faqat "Faol" VA tegishli raqam noldan katta
+// bo'lganda beradi (getDriverBonusSettings + onOrderCompletedCheckDriverBonus).
+// Ya'ni tugma "Faol" turgani bilan chegara yoki summa 0 bo'lsa, bonus
+// jimgina ishlamaydi — buni interfeys hech qayerda aytmasdi. Endi
+// saqlashdan oldin ogohlantiramiz.
+function warnIfEnabledButZero(enabled,values,label){
+  if(!enabled)return true;
+  if(values.every(v=>v>0))return true;
+  return confirm(
+    label+' "Faol" qilingan, lekin qiymatlaridan biri 0.\n\n'+
+    'Bunday holatda bonus umuman berilmaydi. Baribir saqlansinmi?'
+  );
+}
+
+function readBonusNumberField(id,label){
+  const el=document.getElementById(id);
+  const raw=(el?.value??'').toString().trim();
+  if(raw===''){
+    alert('"'+label+'" maydoni bo\'sh.\n\nUni to\'ldiring. Agar bu qoidani o\'chirmoqchi bo\'lsangiz, aniq 0 deb yozing yoki kartaning yuqorisidagi "Faol/Nofaol" tugmasidan foydalaning.');
+    el?.focus();
+    return null;
+  }
+  const n=parseFloat(raw);
+  if(!isFinite(n)||n<0){
+    alert('"'+label+'" maydoniga to\'g\'ri son kiriting.');
+    el?.focus();
+    return null;
+  }
+  return n;
+}
+
 async function saveBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
+  const earnPercent=readBonusNumberField('bs-earn-percent','Cashback (%)');
+  if(earnPercent===null)return;
+  const minBalanceToUse=readBonusNumberField('bs-min-balance','Bonusdan foydalanish uchun eng kam balans');
+  if(minBalanceToUse===null)return;
+  const perOrderCapValue=readBonusNumberField('bs-cap-value','Bitta buyurtma uchun bonus chegarasi');
+  if(perOrderCapValue===null)return;
   const cfg={
-    earnPercent:parseFloat(document.getElementById('bs-earn-percent')?.value)||0,
-    minBalanceToUse:parseFloat(document.getElementById('bs-min-balance')?.value)||0,
-    perOrderCapType:document.getElementById('bs-cap-type')?.value==='percent'?'percent':'amount',
-    perOrderCapValue:parseFloat(document.getElementById('bs-cap-value')?.value)||0,
+    earnPercent,
+    minBalanceToUse,
+    // MUHIM: noma'lum qiymatda 'percent' tanlanadi — Cloud Function
+    // (getBonusSettings) ham aynan shunday qiladi. Avval bu yerda
+    // teskarisi ('amount') edi va hujjatda maydon yo'q bo'lsa dashboard
+    // "so'm", server esa "%" deb ishlab, ikkalasi turlicha hisoblardi.
+    perOrderCapType:document.getElementById('bs-cap-type')?.value==='amount'?'amount':'percent',
+    perOrderCapValue,
   };
   if(window.saveClientBonusSettings){
     await window.saveClientBonusSettings(cfg,branchId);
@@ -7048,17 +7128,26 @@ async function loadDriverBonusSettingsForm(){
   const distEl=document.getElementById('dbs-min-distance');
   const weeklyThEl=document.getElementById('dbs-weekly-trip-threshold');
   const weeklyAmtEl=document.getElementById('dbs-weekly-bonus-amount');
-  const weeklyDistEl=document.getElementById('dbs-weekly-min-distance');
+  const weeklyDistNote=document.getElementById('dbs-weekly-min-distance-note');
   const perOrderAmtEl=document.getElementById('dbs-perorder-bonus-amount');
-  const perOrderDistEl=document.getElementById('dbs-perorder-min-distance');
+  const perOrderDistNote=document.getElementById('dbs-perorder-min-distance-note');
   if(thEl&&typeof cfg.dailyTripThreshold==='number')thEl.value=cfg.dailyTripThreshold;
   if(amtEl&&typeof cfg.bonusAmount==='number')amtEl.value=cfg.bonusAmount;
   if(distEl&&typeof cfg.minTripDistanceKm==='number')distEl.value=cfg.minTripDistanceKm;
   if(weeklyThEl&&typeof cfg.weeklyTripThreshold==='number')weeklyThEl.value=cfg.weeklyTripThreshold;
   if(weeklyAmtEl&&typeof cfg.weeklyBonusAmount==='number')weeklyAmtEl.value=cfg.weeklyBonusAmount;
-  if(weeklyDistEl&&typeof cfg.minTripDistanceKm==='number')weeklyDistEl.value=cfg.minTripDistanceKm;
   if(perOrderAmtEl&&typeof cfg.perOrderBonusAmount==='number')perOrderAmtEl.value=cfg.perOrderBonusAmount;
-  if(perOrderDistEl&&typeof cfg.minTripDistanceKm==='number')perOrderDistEl.value=cfg.minTripDistanceKm;
+  // MUHIM: minimal masofa — bitta umumiy sozlama (`minTripDistanceKm`).
+  // Avval uchala kartada ham TAHRIRLANADIGAN input turardi, lekin
+  // uchalasi bir xil kalitga yozardi: haftalik kartada o'zgartirilsa
+  // kunlikniki ham o'zgarib ketardi, bo'sh qoldirib saqlansa esa
+  // `||0` tufayli chegara 0 ga tushib, soxta (nol kilometrli)
+  // buyurtmalarga qarshi himoya butun tizim bo'ylab o'chib qolardi.
+  // Endi u faqat kunlik kartada tahrirlanadi, qolgan ikkitasida esa
+  // joriy qiymat ko'rsatiladi.
+  const distLabel=typeof cfg.minTripDistanceKm==='number'?cfg.minTripDistanceKm+' km':'—';
+  if(weeklyDistNote)weeklyDistNote.textContent=distLabel;
+  if(perOrderDistNote)perOrderDistNote.textContent=distLabel;
   // Eski sozlamalarda dailyEnabled/weeklyEnabled maydoni bo'lmasligi
   // mumkin — kunlik bonus ilgari har doim faol edi (standart true),
   // haftalik esa ESKI qoida (weeklyTripThreshold>0) bo'yicha faol edi.
@@ -7073,11 +7162,20 @@ async function loadDriverBonusSettingsForm(){
 async function saveDailyBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
+  const dailyTripThreshold=readBonusNumberField('dbs-trip-threshold','Kunlik safar chegarasi');
+  if(dailyTripThreshold===null)return;
+  const bonusAmount=readBonusNumberField('dbs-bonus-amount','Bonus summasi');
+  if(bonusAmount===null)return;
+  const minTripDistanceKm=readBonusNumberField('dbs-min-distance','Minimal masofa');
+  if(minTripDistanceKm===null)return;
+  const dailyEnabled=window._dbsDailyEnabled!==false;
+  if(!warnIfEnabledButZero(dailyEnabled,[dailyTripThreshold,bonusAmount],'Kunlik bonus'))return;
   const cfg={
-    dailyEnabled:window._dbsDailyEnabled!==false,
-    dailyTripThreshold:parseInt(document.getElementById('dbs-trip-threshold')?.value,10)||15,
-    bonusAmount:parseFloat(document.getElementById('dbs-bonus-amount')?.value)||0,
-    minTripDistanceKm:parseFloat(document.getElementById('dbs-min-distance')?.value)||0,
+    dailyEnabled,
+    dailyTripThreshold:Math.round(dailyTripThreshold),
+    bonusAmount,
+    // Uchala bonus turi uchun umumiy chegara — faqat SHU forma yozadi.
+    minTripDistanceKm,
   };
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg,branchId);
@@ -7089,11 +7187,16 @@ async function saveDailyBonusSettingsForm(){
 async function saveWeeklyBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
+  const weeklyTripThreshold=readBonusNumberField('dbs-weekly-trip-threshold','Haftalik safar chegarasi');
+  if(weeklyTripThreshold===null)return;
+  const weeklyBonusAmount=readBonusNumberField('dbs-weekly-bonus-amount','Haftalik bonus summasi');
+  if(weeklyBonusAmount===null)return;
+  const weeklyEnabled=window._dbsWeeklyEnabled===true;
+  if(!warnIfEnabledButZero(weeklyEnabled,[weeklyTripThreshold,weeklyBonusAmount],'Haftalik bonus'))return;
   const cfg={
-    weeklyEnabled:window._dbsWeeklyEnabled===true,
-    weeklyTripThreshold:parseInt(document.getElementById('dbs-weekly-trip-threshold')?.value,10)||0,
-    weeklyBonusAmount:parseFloat(document.getElementById('dbs-weekly-bonus-amount')?.value)||0,
-    minTripDistanceKm:parseFloat(document.getElementById('dbs-weekly-min-distance')?.value)||0,
+    weeklyEnabled,
+    weeklyTripThreshold:Math.round(weeklyTripThreshold),
+    weeklyBonusAmount,
   };
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg,branchId);
@@ -7105,10 +7208,13 @@ async function saveWeeklyBonusSettingsForm(){
 async function savePerOrderBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
   if(!guardBranchWrite(branchId))return;
+  const perOrderBonusAmount=readBonusNumberField('dbs-perorder-bonus-amount','Bonus summasi');
+  if(perOrderBonusAmount===null)return;
+  const perOrderEnabled=window._dbsPerOrderEnabled===true;
+  if(!warnIfEnabledButZero(perOrderEnabled,[perOrderBonusAmount],'Har buyurtma uchun bonus'))return;
   const cfg={
-    perOrderEnabled:window._dbsPerOrderEnabled===true,
-    perOrderBonusAmount:parseFloat(document.getElementById('dbs-perorder-bonus-amount')?.value)||0,
-    minTripDistanceKm:parseFloat(document.getElementById('dbs-perorder-min-distance')?.value)||0,
+    perOrderEnabled,
+    perOrderBonusAmount,
   };
   if(window.saveDriverBonusSettings){
     await window.saveDriverBonusSettings(cfg,branchId);

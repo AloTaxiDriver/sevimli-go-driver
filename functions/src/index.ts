@@ -170,6 +170,29 @@ function computePerOrderBonusCap(
     : Math.floor((price * settings.perOrderCapValue) / 100);
 }
 
+// ============================================================
+// SAFARNING TO'LIQ QIYMATI — bonus, cashback va komissiya uchun
+// YAGONA hisob bazasi.
+// ============================================================
+// Avval har bir hisob boshqa-boshqa bazadan olinardi va bu chalkashlik
+// hamda haqiqiy pul yo'qotishiga olib kelardi:
+//   - mijoz ilovasi chegirma chegarasini (price + extrasTotal) dan,
+//   - Cloud Function esa faqat `price` dan hisoblardi — natijada mijozga
+//     ko'rsatilgan chegirma balansdan yechilganidan KATTA bo'lib,
+//     ayirmasi hech kimdan undirilmasdan qolardi;
+//   - cashback `price` dan, komissiya esa `finalPrice` dan olinardi.
+// Endi uchalasi ham shu yagona `tripTotal` ustidan ishlaydi.
+//
+// `price` — safar oxirida metrланган (haqiqiy) yo'l narxi
+// (finalizeOrderPrice uni qayta yozadi), `extrasTotal` — mijoz tanlagan
+// qo'shimcha xizmatlar. `finalPrice` (mijoz naqd to'laydigan summa) esa
+// shundan bonus ayrilgani — u komissiya bazasi sifatida ISHLATILMAYDI.
+function computeTripTotal(orderData: FirebaseFirestore.DocumentData): number {
+  const price = typeof orderData.price === "number" ? orderData.price : 0;
+  const extrasTotal = typeof orderData.extrasTotal === "number" ? orderData.extrasTotal : 0;
+  return Math.max(0, price + extrasTotal);
+}
+
 // Admin dashboard'ning "Haydovchilar uchun kunlik bonus" va "Haydovchilar
 // uchun haftalik bonus" (alohida kartalar, har birida Faol/Nofaol
 // vklyuchateli) bo'limlarida sozlanadi (settings/driverBonus hujjati).
@@ -734,19 +757,27 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         const currentBalance =
           typeof customerDoc.data()?.bonusBalance === "number" ? customerDoc.data()!.bonusBalance : 0;
 
-        const price = typeof orderData.price === "number" ? orderData.price : 0;
+        // MUHIM: baza — safarning TO'LIQ qiymati (yo'l narxi + qo'shimcha
+        // xizmatlar), aynan mijoz ilovasi chegirmani hisoblaganidek.
+        // Avval bu yerda faqat `price` ishlatilardi, mijoz ilovasida esa
+        // `price + extrasTotal` — natijada mijozga ko'rsatilgan chegirma
+        // balansdan yechilganidan katta bo'lib, ayirmasi yo'qolardi.
+        const tripTotal = computeTripTotal(orderData);
         const bonusUsed = typeof orderData.bonusUsed === "number" ? Math.max(0, orderData.bonusUsed) : 0;
-        const earnAmount = Math.floor((price * bonusSettings.earnPercent) / 100);
+        const earnAmount = Math.floor((tripTotal * bonusSettings.earnPercent) / 100);
 
-        // Mijoz haqiqatan ham bonus ishlatishga huquqli bo'lganini
-        // (minBalanceToUse) va bitta buyurtma uchun admin belgilagan
-        // chegaradan (perOrderCap) oshmaganini SERVER TOMONDA qayta
-        // tekshiramiz — mijoz ilovasi `bonusUsed`ni o'zboshimchalik
-        // bilan kattaroq yuborsa ham, undan ortig'i hech qachon
-        // balansdan yechilmaydi.
-        const eligible = currentBalance >= bonusSettings.minBalanceToUse;
-        const perOrderCap = eligible ? computePerOrderBonusCap(price, bonusSettings) : 0;
-        const actualSpent = eligible ? Math.min(bonusUsed, currentBalance, perOrderCap) : 0;
+        // Bitta buyurtma uchun admin belgilagan chegara SERVER TOMONDA
+        // qayta qo'llanadi — mijoz ilovasi `bonusUsed`ni o'zboshimchalik
+        // bilan kattaroq yuborsa ham, undan ortig'i balansdan yechilmaydi.
+        //
+        // `minBalanceToUse` bu yerda ATAYLAB qayta tekshirilmaydi: u —
+        // buyurtma BERISH paytidagi shart (mijoz ilovasi shunda tumblerni
+        // o'chiradi). Safar oxirida qayta tekshirilsa, chegirma allaqachon
+        // mijozga berilgan bo'la turib balansdan yechilmasdan qolar edi —
+        // ya'ni tizim uchun sof yo'qotish. Balansdan ortiq yechilishidan
+        // esa quyidagi `currentBalance` cheklovi himoya qiladi.
+        const perOrderCap = computePerOrderBonusCap(tripTotal, bonusSettings);
+        const actualSpent = Math.min(bonusUsed, currentBalance, perOrderCap);
         const newBalance = currentBalance - actualSpent + earnAmount;
 
         tx.set(customerRef, { bonusBalance: newBalance }, { merge: true });
@@ -773,7 +804,7 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
 
         logger.info(
           `Buyurtma ${orderId}: bonus qo'llanildi (mijoz ${customerId}) — ` +
-            `narx: ${price}, sarflangan: ${actualSpent}, olingan: ${earnAmount}`
+            `safar qiymati: ${tripTotal}, sarflangan: ${actualSpent}, olingan: ${earnAmount}`
         );
       });
     } catch (error) {
@@ -833,28 +864,65 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
           }
         }
 
-        // Haydovchi mijozdan haqiqatda naqd olgan summa (bonus/qo'shimcha
-        // xizmatlar hisobga olingan) — shu summadan komissiya hisoblanadi.
-        const price =
-          typeof orderData.finalPrice === "number"
-            ? orderData.finalPrice
-            : typeof orderData.price === "number"
-            ? orderData.price
-            : 0;
+        // Komissiya safarning TO'LIQ qiymatidan hisoblanadi — mijoz bonus
+        // ishlatgan-ishlatmaganidan qat'i nazar, haydovchi bajargan ish
+        // bir xil.
+        const tripTotal = computeTripTotal(orderData);
         const commissionAmount =
-          commissionType === "fixed" ? driverCommission : Math.round((price * driverCommission) / 100);
+          commissionType === "fixed"
+            ? driverCommission
+            : Math.round((tripTotal * driverCommission) / 100);
+
+        // MIJOZ BONUSINI KOMPANIYA QOPLAYDI.
+        // Mijoz bonus ishlatsa, u naqd `finalPrice` to'laydi — ya'ni
+        // haydovchi qo'liga safar qiymatidan aynan shu ayirma miqdorida
+        // KAM pul tushadi, garchi ishni to'liq bajargan bo'lsa ham. Avval
+        // bu ayirmani hech kim qoplamasdi va komissiya ham kamaygan
+        // summadan olinardi: haydovchi mijozning bonusini o'z cho'ntagidan
+        // to'lagan bo'lib chiqardi va vaqt o'tib bonusli buyurtmalardan
+        // qochishi tabiiy edi. Endi ayirma balansiga qaytariladi.
+        //
+        // Ayirma `tripTotal - finalPrice` sifatida olinadi (to'g'ridan-
+        // to'g'ri `bonusUsed` emas): shu tariqa kompensatsiya hech qachon
+        // safar qiymatidan oshmaydi, hatto buyurtmada `bonusUsed` xato
+        // yoki o'zboshimchalik bilan katta yozilgan bo'lsa ham.
+        const finalPrice =
+          typeof orderData.finalPrice === "number" ? orderData.finalPrice : tripTotal;
+        const bonusCompensation = Math.max(0, tripTotal - finalPrice);
 
         const driverDoc = await tx.get(driverRef);
         const currentBalance =
           typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
-        const newBalance = currentBalance - commissionAmount;
+        const newBalance = currentBalance - commissionAmount + bonusCompensation;
 
         tx.set(driverRef, { balance: newBalance }, { merge: true });
-        tx.set(orderRef, { commissionApplied: true }, { merge: true });
+        // Summalar buyurtmaning o'ziga ham yoziladi — avval faqat
+        // `commissionApplied` bayrog'i qo'yilardi va haydovchi ilovasi
+        // komissiya qancha yechilganini KO'RSATA OLMASDI (buyurtmada
+        // bunday maydon umuman yo'q edi). Endi "Pul" bo'limi haqiqiy
+        // raqamlarni ko'rsata oladi.
+        tx.set(
+          orderRef,
+          { commissionApplied: true, commissionAmount, bonusCompensation },
+          { merge: true }
+        );
+
+        // Kompensatsiya haydovchi uchun ko'rinadigan bo'lsin — aks holda
+        // balansdagi o'zgarish sababsizday tuyuladi.
+        if (bonusCompensation > 0) {
+          tx.set(driverRef.collection("bonusHistory").doc(`compensation-${orderId}`), {
+            period: "bonus_compensation",
+            date: tashkentDateStr(),
+            amount: bonusCompensation,
+            orderId,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+        }
 
         logger.info(
           `Buyurtma ${orderId}: komissiya yechildi (haydovchi ${driverId}) — ` +
-            `narx: ${price}, komissiya: ${commissionAmount}, yangi balans: ${newBalance}`
+            `safar qiymati: ${tripTotal}, komissiya: ${commissionAmount}, ` +
+            `mijoz bonusi qoplandi: ${bonusCompensation}, yangi balans: ${newBalance}`
         );
       });
     } catch (error) {
@@ -913,7 +981,20 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
           return;
         }
 
-        const distanceKm = typeof orderData.distanceKm === "number" ? orderData.distanceKm : 0;
+        // MUHIM: avval bu yerda `distanceKm` — buyurtma YARATILGANDAGI
+        // taxminiy masofa o'qilardi. Haqiqiy, GPS bo'yicha o'lchangan
+        // masofani haydovchi ilovasi `actualDistanceKm` ga yozadi
+        // (finalizeOrderPrice), `distanceKm`ga esa umuman tegmaydi.
+        // Oqibati: bordyur safarlari (ular `distanceKm: 0` bilan
+        // yaratiladi, chunki manzil oldindan noma'lum) haydovchi 30 km
+        // yursa ham minTripDistanceKm shartidan o'tolmay, HECH QACHON
+        // bonus hisobiga kirmasdi. Endi avval haqiqiy masofa olinadi,
+        // u yo'q bo'lsagina taxminiyga qaytiladi.
+        const actualDistanceKm =
+          typeof orderData.actualDistanceKm === "number" ? orderData.actualDistanceKm : null;
+        const estimatedDistanceKm =
+          typeof orderData.distanceKm === "number" ? orderData.distanceKm : 0;
+        const distanceKm = actualDistanceKm !== null ? actualDistanceKm : estimatedDistanceKm;
         const distanceOk = distanceKm >= driverBonusSettings.minTripDistanceKm;
         const dailyActive = driverBonusSettings.dailyEnabled && driverBonusSettings.dailyTripThreshold > 0;
         const weeklyActive = driverBonusSettings.weeklyEnabled && driverBonusSettings.weeklyTripThreshold > 0;

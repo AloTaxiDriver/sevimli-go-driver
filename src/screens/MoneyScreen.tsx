@@ -26,9 +26,24 @@ type DayEarning = {
   tripsCount: number;
 };
 
-// Oxirgi 7 kun (bugun bilan tugaydi) uchun, yakunlangan buyurtmalar
-// narxidan real daromad hisoblanadi. Bekor qilingan buyurtmalar
-// hisobga olinmaydi.
+// Bitta safardan haydovchi HAQIQATDA topgan summa.
+//
+// Avval bu yerda oddiy `o.price` ishlatilardi — ya'ni xom yo'l narxi:
+// qo'shimcha xizmatlar qo'shilmagan, komissiya yechilmagan. Haydovchi
+// "Jami ishlab topilgan" degan raqamni ko'rib, qo'lidagi puldan katta
+// summani daromad deb o'ylardi. Endi hisob quyidagicha:
+//   safar qiymati (yo'l narxi + qo'shimcha xizmatlar) − komissiya.
+// Mijoz bonus ishlatgan bo'lsa, uning miqdori haydovchiga kompaniya
+// tomonidan qoplanadi (bonusCompensation), shuning uchun bu yerda
+// alohida ayirilmaydi — safar qiymati allaqachon to'liq summa.
+function orderNetEarning(o: FirestoreOrder): number {
+  const tripTotal = o.price + (o.extrasTotal || 0);
+  return Math.max(0, tripTotal - (o.commissionAmount || 0));
+}
+
+// Oxirgi 7 kun (bugun bilan tugaydi) uchun, yakunlangan buyurtmalardan
+// real daromad hisoblanadi. Bekor qilingan buyurtmalar hisobga
+// olinmaydi.
 function buildWeekEarnings(orders: FirestoreOrder[]): DayEarning[] {
   const days: DayEarning[] = [];
   const today = new Date();
@@ -44,7 +59,7 @@ function buildWeekEarnings(orders: FirestoreOrder[]): DayEarning[] {
     od.setHours(0, 0, 0, 0);
     const match = days.find((d) => d.date.getTime() === od.getTime());
     if (match) {
-      match.amount += o.price;
+      match.amount += orderNetEarning(o);
       match.tripsCount += 1;
     }
   });
@@ -171,9 +186,23 @@ export default function MoneyScreen() {
   const selected = weekEarnings[selectedIndex] ?? weekEarnings[weekEarnings.length - 1];
   const totalWeek = weekEarnings.reduce((sum, d) => sum + d.amount, 0);
   const totalAllTime = useMemo(
-    () => orders.filter((o) => o.status === 'completed').reduce((sum, o) => sum + o.price, 0),
+    () => orders.filter((o) => o.status === 'completed').reduce((sum, o) => sum + orderNetEarning(o), 0),
     [orders]
   );
+  // Shu hafta yechilgan komissiya va mijoz bonusi uchun olingan
+  // qoplama — haydovchi raqamlar qayerdan kelganini ko'rib tursin.
+  const weekCommission = useMemo(() => {
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return orders
+      .filter((o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo)
+      .reduce((sum, o) => sum + (o.commissionAmount || 0), 0);
+  }, [orders]);
+  const weekBonusCompensation = useMemo(() => {
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return orders
+      .filter((o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo)
+      .reduce((sum, o) => sum + (o.bonusCompensation || 0), 0);
+  }, [orders]);
 
   const todayStr = useMemo(() => tashkentDateStr(), []);
   const weekStartStr = useMemo(() => tashkentWeekStartStr(), []);
@@ -238,6 +267,23 @@ export default function MoneyScreen() {
               <Text style={styles.cardLabel}>Hafta jami</Text>
               <Text style={styles.cardValue}>{totalWeek.toLocaleString()} so'm</Text>
             </View>
+            {/* Raqam qayerdan chiqqani ko'rinib tursin — avval faqat
+                yakuniy summa ko'rsatilar, komissiya esa umuman
+                ko'rinmasdi. */}
+            {weekCommission > 0 && (
+              <View style={styles.cardSubRow}>
+                <Text style={styles.cardSubLabel}>Komissiya yechilgan</Text>
+                <Text style={styles.cardSubValue}>−{weekCommission.toLocaleString()} so'm</Text>
+              </View>
+            )}
+            {weekBonusCompensation > 0 && (
+              <View style={styles.cardSubRow}>
+                <Text style={styles.cardSubLabel}>Mijoz bonusi qoplandi</Text>
+                <Text style={[styles.cardSubValue, styles.cardSubValuePositive]}>
+                  +{weekBonusCompensation.toLocaleString()} so'm
+                </Text>
+              </View>
+            )}
           </GlassPanel>
 
           <GlassPanel intensity={75} style={[styles.card, styles.glassLight]}>
@@ -246,12 +292,34 @@ export default function MoneyScreen() {
                 <Ionicons name="wallet" size={18} color={COLORS.textMuted} />
                 <View>
                   <Text style={styles.cardLabel}>Jami ishlab topilgan</Text>
-                  <Text style={styles.cardSubLabel}>Barcha vaqt uchun</Text>
+                  <Text style={styles.cardSubLabel}>Komissiya yechilgandan keyin</Text>
                 </View>
               </View>
               <Text style={styles.cardValueBig}>{totalAllTime.toLocaleString()} so'm</Text>
             </View>
           </GlassPanel>
+
+          {/* Har bir safar uchun beriladigan bonus. Bu sozlama ishlab
+              turgan bo'lsa ham ilovada UMUMAN ko'rinmasdi — haydovchi
+              balansiga pul kelardi-yu, sababi noma'lum qolardi. */}
+          {bonusSettings?.perOrderEnabled && bonusSettings.perOrderBonusAmount > 0 && (
+            <>
+              <Text style={styles.sectionTitle}>Har bir safar uchun bonus</Text>
+              <View style={[styles.goalCard, styles.goalCardActive]}>
+                <View style={styles.goalHeaderRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.goalLabel}>Har bir safar uchun</Text>
+                    <Text style={styles.goalDate}>
+                      Kamida {bonusSettings.minTripDistanceKm} km bo'lgan har bir safar uchun
+                    </Text>
+                  </View>
+                  <Text style={styles.goalAmount}>
+                    +{bonusSettings.perOrderBonusAmount.toLocaleString()} so'm
+                  </Text>
+                </View>
+              </View>
+            </>
+          )}
 
           {(bonusSettings?.dailyEnabled || bonusSettings?.weeklyEnabled) ? (
             <>
@@ -399,6 +467,14 @@ const styles = StyleSheet.create({
   cardIconLabel: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   cardLabel: { fontSize: 15, fontWeight: '700', color: COLORS.dark },
   cardSubLabel: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
+  cardSubRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 6,
+  },
+  cardSubValue: { fontSize: 12, fontWeight: '700', color: COLORS.textMuted },
+  cardSubValuePositive: { color: COLORS.success },
   cardValue: { fontSize: 16, fontWeight: '800', color: COLORS.dark },
   cardValueBig: { fontSize: 22, fontWeight: '800', color: COLORS.dark },
 
