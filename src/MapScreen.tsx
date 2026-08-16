@@ -76,6 +76,33 @@ function activeTripStorageKey(driverId: string) {
   return `active_trip_${driverId}`;
 }
 
+// Xaritada yo'l chizig'i qaysi nuqtagacha chizilishini aniqlaydi.
+//
+// MUHIM: olib ketish nuqtasiga yo'l HAR DOIM chiziladi — u har qanday
+// buyurtmada ma'lum. Avval bu ham `toAddress !== ''` shartiga bog'langan
+// edi, ya'ni mijoz manzilni ko'rsatmasdan buyurtma bersa (mijoz ilovasi
+// bunday holda `toAddress` maydonini buyurtmaga UMUMAN yozmaydi),
+// haydovchiga MIJOZGACHA bo'lgan yo'l ham chizilmasdi — u qayerga
+// borishini xaritadan ko'ra olmasdi.
+//
+// Safar boshlangandan keyin (in_progress) esa manzil haqiqatan kerak:
+// u yo'q bo'lsa (bordyur safari yoki manzilsiz buyurtma) chiziladigan
+// yakuniy nuqta ham yo'q.
+function computeRouteTarget(
+  order: Order | null,
+  stage: TripStage,
+  leg: 1 | 2
+): Coords | null {
+  if (!order) return null;
+  if (stage === 'to_pickup') return order.pickupLocation ?? null;
+  if (stage === 'in_progress' && order.toAddress !== '') {
+    return leg === 2 && order.dropoff2Location
+      ? order.dropoff2Location
+      : order.dropoffLocation ?? null;
+  }
+  return null;
+}
+
 export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string }) {
   const insets = useSafeAreaInsets();
   const { driver } = useAuth();
@@ -599,12 +626,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const ROUTE_REFRESH_MS = 15000;
 
   useEffect(() => {
-    const currentDropoff = activeLeg === 2 && activeOrder?.dropoff2Location
-      ? activeOrder.dropoff2Location
-      : activeOrder?.dropoffLocation;
-    const target = activeOrder && activeOrder.toAddress !== '' && (tripStage === 'to_pickup' || tripStage === 'in_progress')
-      ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : currentDropoff)
-      : null;
+    const target = computeRouteTarget(activeOrder, tripStage, activeLeg);
 
     if (!target || !location) {
       setRouteCoords([]); setRouteDistanceKm(0); setRouteDurationMin(0);
@@ -1030,12 +1052,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   }
 
   const hasSecondStop = !!(activeOrder?.toAddress2 && activeOrder?.dropoff2Location);
-  const currentDropoffLocation = activeLeg === 2 && activeOrder?.dropoff2Location
-    ? activeOrder.dropoff2Location
-    : activeOrder?.dropoffLocation;
-  const routeTarget = activeOrder && activeOrder.toAddress !== '' && (tripStage === 'to_pickup' || tripStage === 'in_progress')
-    ? (tripStage === 'to_pickup' ? activeOrder.pickupLocation : currentDropoffLocation)
-    : null;
+  const routeTarget = computeRouteTarget(activeOrder, tripStage, activeLeg);
   const fallbackDistanceKm = routeTarget ? getDistanceKm(location, routeTarget) : 0;
   const liveDistanceKm = routeDistanceKm > 0 ? routeDistanceKm : fallbackDistanceKm;
   const liveDurationMin = routeDurationMin > 0 ? routeDurationMin : estimateDurationMin(fallbackDistanceKm);
