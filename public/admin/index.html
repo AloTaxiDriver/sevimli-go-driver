@@ -881,15 +881,33 @@ input:focus,select:focus,textarea:focus{outline:none;}
   // hozircha AMALDA qo'llanilayotgan qiymatlarni ko'rsatadi).
   // MUHIM: bonusBalance'ning o'zi bu yerda emas, faqat Cloud Function
   // (onOrderCompletedApplyBonus) orqali o'zgaradi — bu shunchaki qoidalar.
+  // Umumiy standart ustiga filial qiymatlarini qo'yadi.
+  //
+  // MUHIM: filial hujjati standartni BUTUNLAY almashtirmaydi — faqat
+  // o'zida ANIQ mavjud maydonlarni ustiga yozadi. Avval filial hujjati
+  // topilsa standart umuman o'qilmasdi: filialga bitta karta saqlangan
+  // zahoti hujjat chala yaratilar va qolgan maydonlar admin belgilagan
+  // standartdan uzilib qolardi (Cloud Function esa ularni o'z zaxira
+  // qiymatlariga tushirardi). Server tomonda ham endi aynan shu mantiq
+  // (functions/src/index.ts, readBranchScopedSettings) — ikkalasi bir
+  // xil natija berishi shart.
+  function mergeBranchScopedSettings(snap, baseId, branchId) {
+    const globalDoc = snap.docs.find((d) => d.id === baseId);
+    const branchDoc = branchId
+      ? snap.docs.find((d) => d.id === baseId + "_branch_" + branchId)
+      : null;
+    if (!globalDoc && !branchDoc) return null;
+    return {
+      ...(globalDoc ? globalDoc.data() : {}),
+      ...(branchDoc ? branchDoc.data() : {}),
+      isBranchOverride: !!branchDoc,
+    };
+  }
+
   window.getClientBonusSettings = async function (branchId) {
     try {
       const snap = await getDocs(collection(db, "settings"));
-      if (branchId) {
-        const branchDoc = snap.docs.find((d) => d.id === "bonus_branch_" + branchId);
-        if (branchDoc) return { ...branchDoc.data(), isBranchOverride: true };
-      }
-      const found = snap.docs.find((d) => d.id === "bonus");
-      return found ? { ...found.data(), isBranchOverride: false } : null;
+      return mergeBranchScopedSettings(snap, "bonus", branchId);
     } catch (err) {
       console.error("Bonus sozlamalarini olishda xato:", err);
       return null;
@@ -916,12 +934,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
   window.getDriverBonusSettings = async function (branchId) {
     try {
       const snap = await getDocs(collection(db, "settings"));
-      if (branchId) {
-        const branchDoc = snap.docs.find((d) => d.id === "driverBonus_branch_" + branchId);
-        if (branchDoc) return { ...branchDoc.data(), isBranchOverride: true };
-      }
-      const found = snap.docs.find((d) => d.id === "driverBonus");
-      return found ? { ...found.data(), isBranchOverride: false } : null;
+      return mergeBranchScopedSettings(snap, "driverBonus", branchId);
     } catch (err) {
       console.error("Haydovchi bonus sozlamalarini olishda xato:", err);
       return null;

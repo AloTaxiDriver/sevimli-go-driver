@@ -120,6 +120,36 @@ function isDriverEligibleForOrder(
 // belgilagan umumiy standart (settings/bonus) ishlatiladi. Shu bilan har
 // bir filial o'z cashback foizini mustaqil belgilay oladi, standart esa
 // filiallar uchun "fallback" bo'lib qoladi.
+// Filial-asosli sozlamani o'qiydi: ADMIN belgilagan umumiy standart
+// ustiga filialning o'z qiymatlari qo'yiladi.
+//
+// MUHIM: filial hujjati globalni BUTUNLAY almashtirmaydi — faqat o'zida
+// ANIQ mavjud maydonlarni ustiga yozadi. Avval mantiq boshqacha edi:
+// filial hujjati topilsa global umuman o'qilmasdi, va hujjatda yo'q
+// maydonlar kod ichidagi zaxira (fallback) qiymatlarga tushardi.
+// Natijada dashboard'da filialga BITTA karta saqlangan zahoti (masalan
+// faqat haftalik bonus) o'sha filial uchun qolgan hamma sozlama admin
+// belgilagan standartdan uzilib, hech kim ko'rsatmagan zaxira raqamlarga
+// o'tib ketardi — minimal masofa 5 km dan 2 km ga tushib, soxta
+// safarlarga qarshi himoya jimgina zaiflashardi.
+async function readBranchScopedSettings(
+  baseDocId: string,
+  branchId?: string | null
+): Promise<FirebaseFirestore.DocumentData | null> {
+  const globalDoc = await db.collection("settings").doc(baseDocId).get();
+  const globalData = globalDoc.data();
+  let branchData: FirebaseFirestore.DocumentData | undefined;
+  if (branchId) {
+    const branchDoc = await db
+      .collection("settings")
+      .doc(`${baseDocId}_branch_${branchId}`)
+      .get();
+    branchData = branchDoc.data();
+  }
+  if (!globalData && !branchData) return null;
+  return { ...(globalData || {}), ...(branchData || {}) };
+}
+
 async function getBonusSettings(branchId?: string | null): Promise<{
   earnPercent: number;
   minBalanceToUse: number;
@@ -133,15 +163,7 @@ async function getBonusSettings(branchId?: string | null): Promise<{
     perOrderCapValue: 50,
   };
   try {
-    let data: FirebaseFirestore.DocumentData | undefined;
-    if (branchId) {
-      const branchDoc = await db.collection("settings").doc(`bonus_branch_${branchId}`).get();
-      data = branchDoc.data();
-    }
-    if (!data) {
-      const globalDoc = await db.collection("settings").doc("bonus").get();
-      data = globalDoc.data();
-    }
+    const data = await readBranchScopedSettings("bonus", branchId);
     if (!data) return fallback;
     return {
       earnPercent: typeof data.earnPercent === "number" ? data.earnPercent : fallback.earnPercent,
@@ -224,15 +246,7 @@ async function getDriverBonusSettings(branchId?: string | null): Promise<{
     perOrderBonusAmount: 0,
   };
   try {
-    let data: FirebaseFirestore.DocumentData | undefined;
-    if (branchId) {
-      const branchDoc = await db.collection("settings").doc(`driverBonus_branch_${branchId}`).get();
-      data = branchDoc.data();
-    }
-    if (!data) {
-      const globalDoc = await db.collection("settings").doc("driverBonus").get();
-      data = globalDoc.data();
-    }
+    const data = await readBranchScopedSettings("driverBonus", branchId);
     if (!data) return fallback;
     const weeklyTripThreshold =
       typeof data.weeklyTripThreshold === "number"
