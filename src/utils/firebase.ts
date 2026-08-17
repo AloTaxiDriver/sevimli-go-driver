@@ -706,8 +706,8 @@ export async function finalizeOrderPrice(
 
   // MUHIM: mijoz bonus/qo'shimcha xizmat tanlagan bo'lsa, order hujjatida
   // shularga mos `finalPrice` (haqiqatda olinishi kerak summa) allaqachon
-  // bor — lekin u eski (metrлanmagan taxminiy) narxga asoslangan edi.
-  // Shu yerda haqiqiy metrланган narx bilan qayta hisoblanadi, aks holda
+  // bor — lekin u eski (metrlanmagan, taxminiy) narxga asoslangan edi.
+  // Shu yerda haqiqiy metrlangan narx bilan qayta hisoblanadi, aks holda
   // bonus chegirmasi safar oxirida noto'g'ri (eski) narxga qo'llanilgan
   // bo'lib qolardi.
   const snap = await orderRef.get();
@@ -769,7 +769,7 @@ export function firestoreOrderToOrder(fo: FirestoreOrder) {
       ? { latitude: fo.dropoff2Lat, longitude: fo.dropoff2Lng }
       : undefined;
 
-  // Mijoz ilovasi olib ketish nuqtasidagi kirish (podъезд) raqamini
+  // Mijoz ilovasi olib ketish nuqtasidagi kirish (podyezd) raqamini
   // yozgan bo'lsa — mavjud "fromAddress" maydoniga qo'shib
   // ko'rsatamiz, shunda alohida UI o'zgarishisiz barcha kartalarda
   // (OrderCard/WaitingCard/TripCard) avtomatik ko'rinadi.

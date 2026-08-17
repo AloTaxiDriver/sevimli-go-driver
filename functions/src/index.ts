@@ -243,7 +243,7 @@ async function getBonusSettings(branchId?: string | null): Promise<{
 //   - cashback `price` dan, komissiya esa `finalPrice` dan olinardi.
 // Endi uchalasi ham shu yagona `tripTotal` ustidan ishlaydi.
 //
-// `price` — safar oxirida metrланган (haqiqiy) yo'l narxi
+// `price` — safar oxirida metrlangan (haqiqiy) yo'l narxi
 // (finalizeOrderPrice uni qayta yozadi), `extrasTotal` — mijoz tanlagan
 // qo'shimcha xizmatlar. `finalPrice` (mijoz naqd to'laydigan summa) esa
 // shundan bonus ayrilgani — u komissiya bazasi sifatida ISHLATILMAYDI.
@@ -779,7 +779,7 @@ export const onNewNotificationSendPush = onDocumentCreated(
 // MUHIM (poyga holati / race condition): haydovchi ilovasi safarni
 // yakunlaganda IKKITA ALOHIDA Firestore yozuvi qiladi — avval
 // updateOrderStatus(id, 'completed'), so'ng finalizeOrderPrice(id, ...)
-// (yakuniy, metrланган narx bilan `price`ni qayta yozadi) — bittasi
+// (yakuniy, metrlangan narx bilan `price`ni qayta yozadi) — bittasi
 // kutilmasdan (E:\Sevimli Go\src\MapScreen.tsx, confirmFinishTrip).
 // Bu ikkala yozuv ham shu triggerni ishga tushiradi va ULARNING
 // FIRESTORE'GA YETIB KELISH TARTIBI KAFOLATLANMAGAN. Shuning uchun:
@@ -915,7 +915,7 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         // (`onOrderCompletedDeductCommission`), `tripTotal - finalPrice`
         // formulasi bilan mustaqil hisoblanardi — ikkalasi turli
         // vaqtda, turli bazadan chiqqani uchun BIR-BIRIGA TENG
-        // BO'LMASDI. Masalan metrланган narx taxmindan past chiqsa,
+        // BO'LMASDI. Masalan metrlangan narx taxmindan past chiqsa,
         // haydovchiga 15 000 berilib, mijozdan 10 000 yechilardi —
         // ayirma har safar kompaniyadan yo'qolardi. Endi bitta manbadan
         // olingani uchun ular teng bo'lmasligi mumkin emas.
@@ -1594,7 +1594,7 @@ export const onOrderStatusChangeNotifyCustomer = onDocumentUpdated(
     if (!customerId) return;
 
     let status: "accepted" | "completed" | "cancelled" | null = null;
-    // "completed" holati uchun narx maydoni yakuniy (metrланган) qiymat
+    // "completed" holati uchun narx maydoni yakuniy (metrlangan) qiymat
     // bilan alohida yozuv orqali kelishi mumkin — shu holatda push matni
     // shu eng so'nggi ma'lumotdan quriladi (pastda tozalanadi).
     let messageData: FirebaseFirestore.DocumentData = after;

@@ -1420,7 +1420,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       // yuborilardi — agar "completed" yozuvi tezroq yetib borsa,
       // komissiya/bonus Cloud Function'lari hali ESKI (buyurtma
       // yaratilgandagi taxminiy) narxni o'qib ulgurib, "bajarildi"
-      // bayrog'ini qo'yib qo'yardi — haqiqiy metrланган narx (pastda)
+      // bayrog'ini qo'yib qo'yardi — haqiqiy metrlangan narx (pastda)
       // keyin kelsa ham, komissiya/bonus qayta hisoblanmasdi. Endi avval
       // yakuniy narx yoziladi (kutiladi), FAQAT SHUNDAN KEYIN holat
       // "completed"ga o'tkaziladi — Cloud Function har doim eng so'nggi
