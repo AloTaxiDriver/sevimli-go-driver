@@ -71,11 +71,41 @@ type ActiveTripSnapshot = {
   tripStage: Exclude<TripStage, null>;
   activeLeg: 1 | 2;
   tripDistanceKm: number;
+  /** Snapshot qachon yozilgani. Ilova yopiq turgan vaqtda dispetcher
+   * buyurtmani orqaga qaytargan bo'lishi mumkin — juda eski snapshot
+   * o'sha o'zgarishni bosib ketmasligi uchun kerak. */
+  savedAt?: number;
 };
 
 function activeTripStorageKey(driverId: string) {
   return `active_trip_${driverId}`;
 }
+
+// Safar bosqichlari qat'iy TARTIBDA boradi. Tiklashda ikki manba
+// (Firestore va quridagi snapshot) qaysi biri OLDINDA ekanini shu
+// tartibga qarab solishtiramiz.
+const TRIP_STAGE_ORDER: Exclude<TripStage, null>[] = [
+  'ready_to_start',
+  'to_pickup',
+  'waiting',
+  'in_progress',
+];
+function tripStageRank(stage: Exclude<TripStage, null>): number {
+  return TRIP_STAGE_ORDER.indexOf(stage);
+}
+
+// Firestore buyurtma holatidan mahalliy bosqichni chiqaradi. MUHIM:
+// bu FAQAT ENG PAST chegara — `accepted` holatida haydovchi
+// "Boshlash"ni surgan-surmagani Firestore'ga umuman yozilmaydi.
+function stageFromOrderStatus(status: FirestoreOrder['status']): Exclude<TripStage, null> {
+  if (status === 'in_progress') return 'in_progress';
+  if (status === 'arrived') return 'waiting';
+  return 'ready_to_start';
+}
+
+// Snapshot shundan eski bo'lsa, Firestore'ni bosib o'tishga ruxsat
+// berilmaydi. Bitta safar 12 soat davom etmaydi.
+const TRIP_SNAPSHOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 // Xaritada yo'l chizig'i qaysi nuqtagacha chizilishini aniqlaydi.
 //
@@ -229,6 +259,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       tripStage: stage,
       activeLeg: activeLegRef.current,
       tripDistanceKm: tripDistanceRef.current,
+      savedAt: Date.now(),
     };
     AsyncStorage.setItem(activeTripStorageKey(driverId), JSON.stringify(snapshot)).catch(() => {});
   };
@@ -308,19 +339,45 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           return;
         }
 
-        // Firestore holati mahalliy bosqichga o'giriladi. "accepted"
-        // ikkala mahalliy bosqichga ham mos keladi (haydovchi
-        // "Boshlash"ni surgan-surmagani Firestore'ga yozilmaydi) —
-        // snapshot bo'lsa o'shanga ishonamiz, aks holda eng xavfsiz
-        // variant: haydovchi qayta suradi.
-        const stage: Exclude<TripStage, null> =
-          fo.status === 'in_progress'
-            ? 'in_progress'
-            : fo.status === 'arrived'
-            ? 'waiting'
-            : snapshot?.tripStage === 'to_pickup'
-            ? 'to_pickup'
-            : 'ready_to_start';
+        // ---- Ikki manbani yarashtirish ----
+        // Firestore va qurilmadagi snapshot BIR-BIRIDAN ORTDA QOLISHI
+        // mumkin, va har ikki yo'nalishda ham:
+        //
+        //  * Snapshot oldinda: haydovchi "Safarni boshlash"ni surdi,
+        //    lekin `updateOrderStatus(...)` yozuvi yetib bormadi
+        //    (u ataylab `.catch(console.warn)` bilan, kutilmasdan
+        //    chaqiriladi) — aloqa yo'q edi yoki ilova o'sha zahoti
+        //    quladi. Firestore hamon `accepted` deb turadi.
+        //  * Firestore oldinda: dispetcher panelda buyurtmani o'zi
+        //    ilgari surgan.
+        //
+        // Avval bu yerda FAQAT Firestore holati hisobga olinardi, va
+        // snapshotdan bor-yo'g'i `to_pickup` o'qilardi. Ya'ni birinchi
+        // holatda haydovchi safar o'rtasida turib boshiga qaytarilardi
+        // — eng yomoni, bosib o'tilgan masofa ham tiklanmasdi (u faqat
+        // `in_progress` bosqichida tiklanadi), shuning uchun safar
+        // oxirida narx eng past tarifga qulab tushardi.
+        //
+        // Endi ikkalasining OLDINROG'I olinadi.
+        const firestoreStage = stageFromOrderStatus(fo.status);
+        const snapshotStage =
+          snapshot && snapshot.orderId === fo.id ? snapshot.tripStage : null;
+        // Juda eski snapshot Firestore'ni bosib o'tmasin.
+        const snapshotFresh =
+          typeof snapshot?.savedAt === 'number' &&
+          Date.now() - snapshot.savedAt < TRIP_SNAPSHOT_MAX_AGE_MS;
+
+        let stage: Exclude<TripStage, null> = firestoreStage;
+        if (snapshotStage && tripStageRank(snapshotStage) > tripStageRank(stage)) {
+          // `to_pickup` Firestore'da alohida holat sifatida UMUMAN
+          // saqlanmaydi (u `accepted` ichida yashaydi), shuning uchun
+          // unga ishonish hech qanday ziddiyat tug'dirmaydi — hatto
+          // eski, `savedAt`siz snapshotlarda ham (ilova yangilangandan
+          // keyingi birinchi tiklash).
+          if (snapshotStage === 'to_pickup' || snapshotFresh) {
+            stage = snapshotStage;
+          }
+        }
 
         activeOrderSourceId.current = fo.id;
         // Aks holda o'sha buyurtma push/overlay orqali qayta "qabul
@@ -332,6 +389,23 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         setIsOnline(true);
         setTripStage(stage);
         startPan.setValue(0);
+
+        // Snapshot Firestore'dan oldinda chiqdi — demak holatni yozish
+        // urinishi yo'qolgan. Uni QAYTA yozamiz, aks holda ikkala tomon
+        // bir-biriga zid bo'lib qolaveradi: haydovchi safarni davom
+        // ettiradi, dispetcher panelida esa buyurtma hamon "safar
+        // boshlanmagan" bo'lib turadi, va buyurtma tugaganda ham
+        // holatlar mos kelmaydi. `to_pickup` uchun yozadigan narsa yo'q
+        // — u Firestore'da saqlanmaydi.
+        const statusForStage =
+          stage === 'in_progress' ? 'in_progress' : stage === 'waiting' ? 'arrived' : null;
+        if (statusForStage && statusForStage !== fo.status) {
+          console.log(
+            `Buyurtma ${fo.id}: holat "${fo.status}" -> "${statusForStage}" qayta yozilmoqda ` +
+              '(qurilmadagi holat oldinda edi)'
+          );
+          updateOrderStatus(fo.id, statusForStage).catch(console.warn);
+        }
 
         if (stage === 'in_progress') {
           // Bosib o'tilgan masofani tiklaymiz — aks holda hisoblagich
