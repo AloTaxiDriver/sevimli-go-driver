@@ -940,6 +940,40 @@ export async function setDriverBusyStatus(
   }
 }
 
+/** Haydovchi tizimdan chiqqanda Firestore'dagi ish holatini bo'shatadi.
+ *
+ * Avval chiqishda haydovchi hujjatiga UMUMAN tegilmasdi. Oqibati:
+ *   * `isOnline: true` bo'lib qolardi — dispetcher panelida u onlayn
+ *     ko'rinar, buyurtma taqsimlash funksiyasi esa unga navbat berib,
+ *     javob kutib turardi. Ya'ni chiqib ketgan haydovchi haqiqiy
+ *     haydovchilarga buyurtma tushishini SEKINLASHTIRARDI;
+ *   * `pushToken` saqlanib qolardi — chiqib ketgan telefonga yangi
+ *     buyurtma bildirishnomalari kelaverardi;
+ *   * `busy: true` bo'lib qolgan bo'lsa, u ham tozalanmasdi.
+ *
+ * MUHIM: "band" bayrog'i faqat HAQIQATAN tugallanmagan safar
+ * bo'lmaganda tozalanadi. Haydovchi safar o'rtasida chiqib ketgan
+ * bo'lsa, buyurtma hamon uniki — bayroqni tozalash dispetcherga unga
+ * IKKINCHI buyurtmani yuborishga yo'l ochib qo'yardi.
+ */
+export async function releaseDriverOnLogout(driverId: string): Promise<void> {
+  // pushToken: null + isOnline: false
+  await saveDriverPushToken(driverId, null);
+  try {
+    const activeOrder = await fetchActiveOrderForDriver(driverId);
+    if (activeOrder) {
+      console.warn(
+        `Haydovchi ${driverId} tugallanmagan safar bilan chiqdi (${activeOrder.id}) — ` +
+          '"band" bayrog\'i saqlab qolindi'
+      );
+      return;
+    }
+    await setDriverBusyStatus(driverId, false);
+  } catch (error) {
+    console.warn('Chiqishda haydovchi holatini bo\'shatishda xato:', error);
+  }
+}
+
 export function listenToForegroundMessages(
   onMessage: (title: string, body: string) => void
 ): () => void {

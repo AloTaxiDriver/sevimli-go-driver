@@ -2,6 +2,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import firestore from '@react-native-firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import { releaseDriverOnLogout } from '../utils/firebase';
 import { stopDriverLocationTracking } from '../utils/locationTask';
 import { SAVED_PHONE_KEY } from '../utils/sessionKeys';
 
@@ -183,8 +184,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [driver?.id]);
 
   function logout() {
+    // MUHIM: ID ni `setDriver(null)` dan OLDIN olamiz — keyin kech
+    // bo'ladi.
+    const leavingDriverId = driver?.id;
     setDriver(null);
     AsyncStorage.removeItem(SAVED_PHONE_KEY).catch(() => {});
+    // Firestore'dagi ish holati ham bo'shatiladi: `isOnline: false`,
+    // push tokeni o'chiriladi va (tugallanmagan safar bo'lmasa) "band"
+    // bayrog'i tozalanadi. Avval bunga umuman tegilmasdi — chiqib
+    // ketgan haydovchi panelda onlayn ko'rinib turar, buyurtma
+    // taqsimlash unga navbat berib javob kutar, telefoniga esa yangi
+    // buyurtma bildirishnomalari kelaverardi.
+    if (leavingDriverId) {
+      releaseDriverOnLogout(leavingDriverId).catch((e) =>
+        console.warn('[AUTH] Chiqishda holatni bo\'shatishda xato:', e)
+      );
+    }
     // Fon rejimidagi joylashuv kuzatuvi va uning doimiy bildirishnomasi
     // ham to'xtashi shart. Avval bu MapScreen'ning unmount cleanup'iga
     // tayanardi — lekin u faqat ekran haqiqatan montaj qilingan VA
