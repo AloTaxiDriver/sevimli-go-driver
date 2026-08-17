@@ -826,32 +826,97 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
 
   const [routeDistanceKm, setRouteDistanceKm] = useState(0);
   const [routeDurationMin, setRouteDurationMin] = useState(0);
-  const lastRouteFetchAt = useRef(0);
   const ROUTE_REFRESH_MS = 15000;
+  // Joylashuv kelmagan yoki so'rov muvaffaqiyatsiz bo'lgan holatda
+  // qisqaroq kutamiz — 15 soniya birinchi chizish uchun juda uzun.
+  const ROUTE_RETRY_MS = 3000;
 
+  // Joriy joylashuv effekt ICHIDA o'qiladi, unga BOG'LANMASDAN — sababi
+  // pastdagi izohda. Ref effekt orqali yangilanadi (render paytida
+  // emas).
+  const routeLocationRef = useRef(location);
+  useEffect(() => {
+    routeLocationRef.current = location;
+  }, [location]);
+
+  // ============================================================
+  // YO'L CHIZIG'I
+  // ============================================================
+  // MUHIM: bu effekt ATAYLAB `location` ga bog'lanmagan.
+  //
+  // Avval u `[..., location]` bilan ishlardi va ichida 15 soniyalik
+  // cheklov bor edi. `location` esa har ~3 soniyada yangilanadi, ya'ni
+  // effekt har 3 soniyada QAYTA ishga tushardi va tozalash funksiyasi
+  // `cancelled = true` qilib, HALI JAVOB KUTAYOTGAN so'rovni bekor
+  // qilardi. Yangi so'rov esa 15 soniyalik cheklov tufayli
+  // yuborilmasdi. Natijada:
+  //
+  //   so'rov 3 soniyadan uzoq davom etsa — u HAR SAFAR bekor qilinadi
+  //   va yo'l chizig'i UMUMAN chizilmaydi.
+  //
+  // Tez internetda so'rov 3 soniyagacha ulgurgani uchun hammasi
+  // joyida ko'rinardi; sekin internetda esa xarita hech qachon yo'l
+  // ko'rsatmasdi va buning sababi hech qayerda bilinmasdi.
+  //
+  // Endi so'rov faqat MANZIL o'zgarganda (buyurtma / bosqich / oyoq)
+  // yoki ekran yopilganda bekor qilinadi. Haydovchining o'zi bir necha
+  // metr siljigani — bekor qilish uchun sabab emas. Yangilanish esa
+  // taymer bilan, so'rov TUGAGANIDAN keyin rejalashtiriladi, shuning
+  // uchun sekin tarmoqda so'rovlar ustma-ust ham tushmaydi.
   useEffect(() => {
     const target = computeRouteTarget(activeOrder, tripStage, activeLeg);
 
-    if (!target || !location) {
+    if (!target) {
       setRouteCoords([]); setRouteDistanceKm(0); setRouteDurationMin(0);
-      lastRouteFetchAt.current = 0;
       return;
     }
-    const now = Date.now();
-    if (lastRouteFetchAt.current !== 0 && now - lastRouteFetchAt.current < ROUTE_REFRESH_MS) return;
 
     let cancelled = false;
-    lastRouteFetchAt.current = now;
-    getRoute(location, target).then((result) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const schedule = (delayMs: number) => {
+      if (cancelled) return;
+      timer = setTimeout(fetchOnce, delayMs);
+    };
+
+    async function fetchOnce() {
+      if (cancelled) return;
+      const from = routeLocationRef.current;
+      if (!from) {
+        // GPS hali tayyor emas — chizishga boshlang'ich nuqta yo'q.
+        schedule(ROUTE_RETRY_MS);
+        return;
+      }
+      // getRoute o'zi xatoni yutadi va to'g'ri chiziq qaytaradi
+      // (src/utils/routing.ts), lekin har ehtimolga qarshi.
+      let result;
+      try {
+        result = await getRoute(from, target!);
+      } catch (e) {
+        console.warn("Yo'l chizig'ini olishda xato:", e);
+        schedule(ROUTE_RETRY_MS);
+        return;
+      }
       if (cancelled) return;
       setRouteCoords(result.coordinates);
       if (result.distanceKm > 0) {
         setRouteDistanceKm(result.distanceKm);
         setRouteDurationMin(result.durationMin);
+        schedule(ROUTE_REFRESH_MS);
+      } else {
+        // Marshrut xizmati javob bermadi (to'g'ri chiziq qaytdi) —
+        // tezroq qayta urinamiz.
+        schedule(ROUTE_RETRY_MS);
       }
-    });
-    return () => { cancelled = true; };
-  }, [tripStage, activeOrder?.id, activeLeg, location]);
+    }
+
+    fetchOnce();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tripStage, activeOrder?.id, activeLeg]);
 
   const isNavigatingRef = useRef(false);
   // Boshlang'ich "fitToCoordinates" dan keyin, necha marta location
@@ -1140,7 +1205,9 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // Firestore holatini o'zgartirmaymiz, faqat mahalliy "oyoq"ni almashtiramiz.
   function handleReachedStop1() {
     setActiveLeg(2);
-    lastRouteFetchAt.current = 0;
+    // `activeLeg` o'zgargani yo'l chizig'i effektini qayta ishga
+    // tushiradi va u DARHOL yangi manzilga so'rov yuboradi — shuning
+    // uchun alohida "cheklovni nolga tushirish" endi kerak emas.
     setRouteCoords([]);
   }
   // "Safarni yakunlash" bosilganda darhol buyurtmani tugatmaymiz —
