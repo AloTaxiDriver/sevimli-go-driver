@@ -2,6 +2,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import firestore from '@react-native-firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
+import { stopDriverLocationTracking } from '../utils/locationTask';
 
 export type Driver = {
   id: string;
@@ -67,6 +68,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     (async () => {
+      let sessionRestored = false;
       try {
         const savedPhone = await AsyncStorage.getItem(SAVED_PHONE_KEY);
         console.log('[AUTH] Saqlangan telefon:', savedPhone);
@@ -75,6 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           const data = doc.data();
           if (doc.exists() && data) {
             setDriver(mapFirestoreDriver(savedPhone, data));
+            sessionRestored = true;
             console.log('[AUTH] Sessiya tiklandi:', savedPhone);
           } else {
             await AsyncStorage.removeItem(SAVED_PHONE_KEY);
@@ -85,6 +88,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         console.warn('[AUTH] Sessiyani tiklashda xato:', e);
       } finally {
         setBootstrapping(false);
+      }
+      // Sessiya yo'q — demak hech kim onlayn bo'la olmaydi. Oldingi
+      // ishga tushishdan qolib ketgan foreground service bo'lsa (ilova
+      // onlayn holatda o'ldirilgan bo'lishi mumkin — xizmat ATAYLAB
+      // ilovadan omon qoladi) uni shu yerda to'xtatamiz. MapScreen
+      // ichidagi bir xil himoya faqat haydovchi tizimga kirgan holatni
+      // qamrab oladi, bu esa chiqib ketgan holatni.
+      if (!sessionRestored) {
+        stopDriverLocationTracking();
       }
     })();
   }, []);
@@ -160,6 +172,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   function logout() {
     setDriver(null);
     AsyncStorage.removeItem(SAVED_PHONE_KEY).catch(() => {});
+    // Fon rejimidagi joylashuv kuzatuvi va uning doimiy bildirishnomasi
+    // ham to'xtashi shart. Avval bu MapScreen'ning unmount cleanup'iga
+    // tayanardi — lekin u faqat ekran haqiqatan montaj qilingan VA
+    // effektning onlayn shoxi ishlagan bo'lsa bajariladi. Chiqish esa
+    // istalgan holatdan bo'lishi mumkin, shuning uchun bu yerda aniq
+    // chaqiriladi. Kuzatuv ishlamayotgan bo'lsa, funksiya hech narsa
+    // qilmaydi.
+    stopDriverLocationTracking();
   }
 
   const value: AuthContextType = {

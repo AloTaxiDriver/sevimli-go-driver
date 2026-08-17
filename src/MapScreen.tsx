@@ -593,6 +593,27 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   useEffect(() => {
     if (!isOnline) {
       saveDriverPushToken(driverId, null).catch(console.warn);
+      // MUHIM: foreground service ATAYLAB ilova yopilganda ham tirik
+      // qoladi (killServiceOnDestroy: false) — safar o'rtasida kuzatuv
+      // uzilib qolmasligi uchun. Lekin buning teskari tomoni bor:
+      // ilova butunlay o'ldirilsa (Android xotira uchun yopdi,
+      // haydovchi ro'yxatdan surib tashladi, yoki ilova quladi) xizmat
+      // O'ZI QOLIB KETADI — doimiy bildirishnoma turaveradi va
+      // joylashuv yozilaveradi.
+      //
+      // Ilova qayta ochilganda `isOnline` HAR DOIM false'dan boshlanadi,
+      // uni to'xtatadigan esa hech kim yo'q edi: quyidagi cleanup faqat
+      // effektning onlayn shoxi BIR MARTA ishlagan bo'lsagina
+      // chaqiriladi, yangi ishga tushishda esa u umuman ishlamagan.
+      // Natijada haydovchi o'chirib bo'lmaydigan bildirishnoma bilan
+      // qolardi, dispetcher panelida esa "oflayn, lekin harakatlanyapti"
+      // degan g'alati holat ko'rinardi.
+      //
+      // Endi oflayn holatining O'ZI xizmatni to'xtatadi — demak ilova
+      // ochilishi bilan qolib ketgan xizmat yig'ishtiriladi. Haydovchi
+      // haqiqatan safarda bo'lsa, safar tiklanishi `isOnline`ni true
+      // qiladi va kuzatuv darhol qaytadan boshlanadi.
+      stopDriverLocationTracking();
       return;
     }
     registerForPushNotifications().then((token) => {
