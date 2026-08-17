@@ -55,8 +55,13 @@ export type Order = {
   pickupCount: number;
   dropoffCount: number;
   customer: Customer;
-  pickupLocation: { latitude: number; longitude: number };
-  dropoffLocation: { latitude: number; longitude: number };
+  // MUHIM: `null` bo'lishi MUMKIN — buyurtmada koordinata berilmagan
+  // bo'lsa (dispetcher manzilni qo'lda yozgan, xaritadan tanlamagan).
+  // Bunday holatda xaritada yo'l chizilmaydi va marker qo'yilmaydi;
+  // tasodifiy nuqta o'ylab topish ATAYLAB olib tashlangan (qarang:
+  // src/utils/firebase.ts, firestoreOrderToOrder).
+  pickupLocation: { latitude: number; longitude: number } | null;
+  dropoffLocation: { latitude: number; longitude: number } | null;
 };
 
 export const FREE_WAIT_SECONDS = 180; // 3 daqiqa bepul kutish

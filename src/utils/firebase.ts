@@ -665,37 +665,38 @@ export async function finalizeOrderPrice(
 // FirestoreOrder -> Order
 // ============================================================
 
-function randomNearbyPoint(center: { latitude: number; longitude: number }) {
-  const radiusKm = 1 + Math.random() * 3;
-  const angle = Math.random() * 2 * Math.PI;
-  const deltaLat = (radiusKm / 111) * Math.cos(angle);
-  const deltaLng =
-    (radiusKm / (111 * Math.cos((center.latitude * Math.PI) / 180))) *
-    Math.sin(angle);
-  return {
-    latitude: center.latitude + deltaLat,
-    longitude: center.longitude + deltaLng,
-  };
-}
-
-export function firestoreOrderToOrder(
-  fo: FirestoreOrder,
-  driverLocation: { latitude: number; longitude: number }
-) {
+// MUHIM: koordinata yetishmasa `null` qaytariladi — U HECH QACHON
+// O'YLAB TOPILMAYDI.
+//
+// Avval bu yerda `randomNearbyPoint(driverLocation)` degan funksiya
+// ishlatilardi: u haydovchining atrofidan 1–4 km radiusda TASODIFIY
+// nuqta yasab berardi. Bu demo ma'lumotlar davridan qolgan edi, lekin
+// jonli tizimda haqiqiy buyurtmalarga ham qo'llanilib kelayotgan edi.
+//
+// Oqibati: dispetcher koordinatasi yo'q manzil bilan buyurtma yaratsa
+// (dashboard'da manzil qo'lda yozilgan, xaritadan tanlanmagan bo'lsa
+// shunday bo'ladi), haydovchiga xaritada BUTUNLAY YOLG'ON joyga yo'l
+// chizilardi. U hech kim yo'q joyga borar, mijoz esa boshqa yerda
+// kutib turardi — va ikkalasi ham nima bo'layotganini tushunmasdi.
+// Har safar boshqa tasodifiy nuqta chiqqani uchun buni tekshirish ham
+// deyarli imkonsiz edi.
+//
+// Endi koordinata yo'q bo'lsa yo'l umuman chizilmaydi, haydovchi esa
+// manzil MATNINI ko'radi va mijozga qo'ng'iroq qila oladi.
+export function firestoreOrderToOrder(fo: FirestoreOrder) {
   const pickupLocation =
     fo.pickupLat != null && fo.pickupLng != null
       ? { latitude: fo.pickupLat, longitude: fo.pickupLng }
-      : randomNearbyPoint(driverLocation);
+      : null;
 
   const dropoffLocation =
     fo.dropoffLat != null && fo.dropoffLng != null
       ? { latitude: fo.dropoffLat, longitude: fo.dropoffLng }
-      // B manzil haqiqatan berilmagan bo'lsa (toAddress bo'sh), tasodifiy
-      // nuqta o'ylab topilmasin — aks holda xaritada soxta B manzil chiqadi.
-      // Faqat toAddress mavjud-u koordinata yetishmayotgan eski/noto'g'ri
-      // ma'lumotlar uchun zaxira sifatida tasodifiy nuqta ishlatiladi.
       : fo.toAddress
-      ? randomNearbyPoint(driverLocation)
+      // Manzil bor, lekin koordinatasi yo'q — nuqta o'ylab topilmaydi.
+      ? null
+      // Manzil UMUMAN berilmagan (bordyur safari yoki manzilsiz
+      // buyurtma) — safar boshlangan joyning o'zi olinadi.
       : pickupLocation;
 
   // Ikkinchi manzil (mavjud bo'lsa) — faqat koordinatasi ham

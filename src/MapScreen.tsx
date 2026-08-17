@@ -283,13 +283,19 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // ============================================================
   // SAFARNI TIKLASH — ilova safar o'rtasida yopilgan/qulagan bo'lsa
   // ============================================================
-  // Bu effekt ilova ochilganda BIR MARTA ishlaydi (joylashuv tayyor
-  // bo'lgach — firestoreOrderToOrder unga bog'liq). Firestore'da shu
+  // Bu effekt ilova ochilganda BIR MARTA ishlaydi. Firestore'da shu
   // haydovchining tugallanmagan buyurtmasi bo'lsa, safar aynan
   // to'xtagan joyidan tiklanadi. Bo'lmasa — haydovchida qolib ketgan
   // "band" bayrog'i tozalanadi.
+  //
+  // MUHIM: avval bu yerda `location` kelishi KUTILARDI, chunki
+  // `firestoreOrderToOrder` haydovchi joylashuvini talab qilardi — u
+  // koordinatasi yo'q buyurtmalar uchun shu joylashuv atrofidan
+  // tasodifiy nuqta yasab berardi. O'sha "o'ylab topish" olib
+  // tashlangach, bog'liqlik ham yo'qoldi: endi safar GPS umuman
+  // ishlamasa ham tiklanadi (ichkarida, ruxsat berilmagan telefonda).
   useEffect(() => {
-    if (!location || tripRestoreStartedRef.current) return;
+    if (tripRestoreStartedRef.current) return;
     tripRestoreStartedRef.current = true;
 
     (async () => {
@@ -389,7 +395,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         // qilinishi" mumkin edi.
         processedAcceptId.current = fo.id;
         startWatchingOrderCancellation(fo.id);
-        setActiveOrder(firestoreOrderToOrder(fo, location));
+        setActiveOrder(firestoreOrderToOrder(fo));
         setActiveLeg(snapshot?.activeLeg === 2 ? 2 : 1);
         setIsOnline(true);
         setTripStage(stage);
@@ -439,7 +445,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         setRestoringTrip(false);
       }
     })();
-  }, [location, driverId]);
+  }, [driverId]);
 
   // Tiklash uchun ZAXIRA CHEGARA. Yuqoridagi effektning `finally` bloki
   // faqat xato chiqqanda ishlaydi — javob bermay QOTIB QOLGAN chaqiruvda
@@ -700,12 +706,23 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
 
         activeOrderSourceId.current = orderId;
         startWatchingOrderCancellation(orderId);
-        setActiveOrder(firestoreOrderToOrder(fo, location));
+        const order = firestoreOrderToOrder(fo);
+        setActiveOrder(order);
         setActiveLeg(1);
         setIsOnline(true);
         setTripStage('ready_to_start');
         startPan.setValue(0);
         setPendingAcceptId(null);
+        // Koordinatasiz buyurtma — xaritada yo'l chizilmaydi. Buni
+        // haydovchiga AYTISH shart: aks holda u xarita ishlamayapti deb
+        // o'ylaydi. (Avval bunday holatda tasodifiy nuqta o'ylab
+        // topilardi va u soxta manzilga haydab ketardi.)
+        if (!order.pickupLocation) {
+          Alert.alert(
+            'Manzil xaritada belgilanmagan',
+            `Bu buyurtmada olib ketish nuqtasining koordinatasi yo'q, shuning uchun xaritada yo'l chizilmaydi.\n\nManzil: ${order.fromAddress}\n\nMijozga qo'ng'iroq qilib aniqlashtiring.`
+          );
+        }
         setDriverBusyStatus(driverId, true).catch(() => {});
         console.log('Buyurtma qabul qilindi, tasdiqlash ekrani ko\'rsatilmoqda');
       } catch (e) {
@@ -1265,7 +1282,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             } />
           </>
         )}
-        {tripStage === 'waiting' && activeOrder && (
+        {tripStage === 'waiting' && activeOrder?.pickupLocation && (
           <Marker coordinate={activeOrder.pickupLocation} pinColor={COLORS.success} />
         )}
       </MapView>
@@ -1491,7 +1508,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             ) : (
               <FlatList data={poolOrders} keyExtractor={(i) => i.id} style={styles.poolList}
                 renderItem={({ item }) => {
-                  const order = firestoreOrderToOrder(item, location);
+                  const order = firestoreOrderToOrder(item);
                   return <PoolOrderItem order={order} onTake={() => handleTakePoolOrder(order)} />;
                 }} />
             )}
