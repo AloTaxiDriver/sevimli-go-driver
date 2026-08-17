@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import MapView, { Circle, Marker, Polyline } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import BackgroundLocationDisclosure from './components/BackgroundLocationDisclosure';
 import CancelOrderModal from './components/CancelOrderModal';
 import GlassPanel from './components/GlassPanel';
 import OrderCard from './components/OrderCard';
@@ -34,6 +35,10 @@ import {
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
 } from './utils/firebase';
+import {
+  getBackgroundLocationConsent,
+  setBackgroundLocationConsent,
+} from './utils/backgroundLocationConsent';
 import { startDriverLocationTracking, stopDriverLocationTracking } from './utils/locationTask';
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
 import { getRoute } from './utils/routing';
@@ -158,6 +163,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     work?: { lat: number; lng: number; address?: string };
   }>({});
   const [locationSettingsVisible, setLocationSettingsVisible] = useState(false);
+  const [bgLocationDisclosureVisible, setBgLocationDisclosureVisible] = useState(false);
   const lastSeenNotifAtRef = useRef(0);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [tripStage, setTripStage] = useState<TripStage>(null);
@@ -784,11 +790,33 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     // bemalol o'ldirardi (safar o'rtasida ilovadan chiqib ketishning
     // asosiy sababi). Endi kuzatuv foreground service orqali ketadi:
     // doimiy bildirishnoma turgan ekan tizim ilovaga tegmaydi.
-    startDriverLocationTracking(driverId);
+    //
+    // MUHIM: fon rejimidagi joylashuv uchun Google Play ilova ichida
+    // ALOHIDA tushuntirish ko'rsatishni va aniq rozilik olishni talab
+    // qiladi (Prominent Disclosure) — tizimning ruxsat oynasidan OLDIN.
+    // Shuning uchun haydovchi hali javob bermagan bo'lsa, avval o'sha
+    // oyna ochiladi; kuzatuv javobdan keyin boshlanadi.
+    (async () => {
+      if ((await getBackgroundLocationConsent()) === null) {
+        setBgLocationDisclosureVisible(true);
+        return;
+      }
+      startDriverLocationTracking(driverId);
+    })();
     return () => {
       stopDriverLocationTracking();
     };
   }, [isOnline, driverId]);
+
+  // Tushuntirish oynasidagi javob. Ikkala holatda ham kuzatuv
+  // boshlanadi — farqi shundaki, rad etilsa `startDriverLocationTracking`
+  // tizimdan fon ruxsatini SO'RAMAYDI, ya'ni ilova butunlay yopilganda
+  // kuzatuv to'xtaydi.
+  async function handleBgLocationDisclosure(accepted: boolean) {
+    setBgLocationDisclosureVisible(false);
+    await setBackgroundLocationConsent(accepted ? 'granted' : 'declined');
+    startDriverLocationTracking(driverId);
+  }
 
   useEffect(() => {
     return listenToForegroundMessages((title, body) => {
@@ -1683,6 +1711,12 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         visible={cancelModalVisible}
         onClose={() => setCancelModalVisible(false)}
         onConfirm={handleCancelOrder}
+      />
+
+      <BackgroundLocationDisclosure
+        visible={bgLocationDisclosureVisible}
+        onAccept={() => handleBgLocationDisclosure(true)}
+        onDecline={() => handleBgLocationDisclosure(false)}
       />
     </View>
   );

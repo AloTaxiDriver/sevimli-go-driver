@@ -27,6 +27,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import firestore from '@react-native-firebase/firestore';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import { getBackgroundLocationConsent } from './backgroundLocationConsent';
 
 export const DRIVER_LOCATION_TASK = 'sevimli-go-driver-location';
 const DRIVER_ID_KEY = 'location_task_driver_id';
@@ -74,10 +75,19 @@ export async function startDriverLocationTracking(driverId: string): Promise<voi
     const foreground = await Location.getForegroundPermissionsAsync();
     if (!foreground.granted) return;
 
-    // Fon ruxsati bo'lmasa ham davom etamiz: foreground service
-    // ishlayotgan paytda Android uni talab qilmaydi, lekin ruxsat
-    // berilgan bo'lsa kuzatuv ancha ishonchli bo'ladi.
-    await Location.requestBackgroundPermissionsAsync().catch(() => {});
+    // MUHIM: fon ruxsatini SO'RASHDAN OLDIN foydalanuvchi ilova ichidagi
+    // tushuntirishni ko'rib, aniq rozilik bergan bo'lishi SHART — bu
+    // Google Play talabi (Prominent Disclosure). Avval bu yerda tizim
+    // oynasi to'g'ridan-to'g'ri, hech qanday tushuntirishsiz
+    // chaqirilardi; bunday ilovani Google rad etadi.
+    //
+    // Rozilik berilmagan bo'lsa ham kuzatuv BOSHLANADI: foreground
+    // service ishlayotgan paytda Android fon ruxsatini talab qilmaydi.
+    // Ya'ni haydovchi rad etsa ham ishlay oladi, faqat ilova butunlay
+    // yopilganda kuzatuv to'xtaydi.
+    if ((await getBackgroundLocationConsent()) === 'granted') {
+      await Location.requestBackgroundPermissionsAsync().catch(() => {});
+    }
 
     const already = await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK);
     if (already) return;
