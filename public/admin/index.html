@@ -590,6 +590,31 @@ input:focus,select:focus,textarea:focus{outline:none;}
     );
   };
 
+  // Telefon raqami bo'yicha mijozni topadi (ilovada ro'yxatdan
+  // o'tganlar ichidan). Dispetcher buyurtmasida bonus berish uchun
+  // kerak: bonus MIJOZNING balansidan yechiladi, ya'ni buyurtma qaysi
+  // mijozniki ekani ma'lum bo'lishi shart.
+  //
+  // MUHIM: bu yerda ro'yxat KEShIDAN emas, to'g'ridan-to'g'ri
+  // so'raladi — "Mijozlar" sahifasi ochilmagan bo'lsa kesh bo'sh
+  // bo'ladi va bonus asossiz ravishda rad etilardi.
+  window.findCustomerIdByPhone = async function (phone) {
+    const digits = String(phone || "").replace(/\D/g, "").slice(-9);
+    if (digits.length < 7) return null;
+    try {
+      const snap = await getDocs(collection(db, "customers"));
+      let found = null;
+      snap.forEach((d) => {
+        const p = String(d.data()?.phone || "").replace(/\D/g, "").slice(-9);
+        if (p && p === digits) found = d.id;
+      });
+      return found;
+    } catch (err) {
+      console.error("Mijozni telefon bo'yicha qidirishda xato:", err);
+      return null;
+    }
+  };
+
   // Admin dashboard'dan mijozning bonus hisobiga qo'lda summa qo'shadi
   // (masalan reklama aksiyasi, xatoni tuzatish uchun). MUHIM: bu ham
   // (Cloud Function'dagi onOrderCompletedApplyBonus kabi) bonusHistory'ga
@@ -620,6 +645,14 @@ input:focus,select:focus,textarea:focus{outline:none;}
   // holatini yozadi (driverId = telefon raqami). merge:true bo'lgani
   // uchun, mobil ilova yozgan lat/lng/isOnline/busy maydonlari
   // o'chirilmaydi.
+  // Haydovchi balansini ORTTIRADI (mutlaq qiymat yozmaydi) — shu bilan
+  // ayni paytda server tomonda yechilgan komissiyani bekor qilib
+  // yubormaydi.
+  window.addToDriverBalance = async function (phone, delta) {
+    if (!phone || !delta) return;
+    await updateDoc(doc(db, "drivers", phone), { balance: increment(delta) });
+  };
+
   window.saveDriverToFirestore = async function (phone, driverData) {
     if (!phone) return;
     try {
@@ -723,12 +756,31 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   };
 
+  // Haydovchining "band" bayrog'ini tozalaydi — dispetcher safarni
+  // panel orqali yakunlaganda (haydovchi ilovasi buni o'zi bilmaydi).
+  window.clearDriverBusy = async function (driverId) {
+    if (!driverId) return;
+    try {
+      await updateDoc(doc(db, "drivers", driverId), { busy: false });
+    } catch (err) {
+      console.error("Haydovchi 'band' bayrog'ini tozalashda xato:", err);
+    }
+  };
+
+  // MUHIM: natija QAYTARILADI. Qoidalarda `orders` uchun
+  // `allow delete: if false` turgani sababli bu chaqiruv HAR DOIM rad
+  // etilardi, xato esa faqat konsolga yozilardi: dispetcher savatcha
+  // belgisini bosar, tasdiqlar, modal yopilar — va satr joyida
+  // qolaverardi. (Qoidaning o'zi ham tuzatildi: endi xodim o'chira
+  // oladi.)
   window.deleteOrderFromFirestore = async function (orderId) {
-    if (!orderId) return;
+    if (!orderId) return false;
     try {
       await deleteDoc(doc(db, "orders", orderId));
+      return true;
     } catch (err) {
       console.error("Buyurtmani o'chirishda xato:", err);
+      return false;
     }
   };
 
@@ -926,8 +978,10 @@ input:focus,select:focus,textarea:focus{outline:none;}
     try {
       const docId = branchId ? "bonus_branch_" + branchId : "bonus";
       await setDoc(doc(db, "settings", docId), cfg, { merge: true });
+        return true;
     } catch (err) {
       console.error("Bonus sozlamalarini yozishda xato:", err);
+      return false;
     }
   };
 
@@ -959,8 +1013,10 @@ input:focus,select:focus,textarea:focus{outline:none;}
     try {
       const docId = branchId ? "driverBonus_branch_" + branchId : "driverBonus";
       await setDoc(doc(db, "settings", docId), cfg, { merge: true });
+        return true;
     } catch (err) {
       console.error("Haydovchi bonus sozlamalarini yozishda xato:", err);
+      return false;
     }
   };
 
@@ -1165,7 +1221,7 @@ let isDark=localStorage.getItem('taxi_theme')==='dark';
 // ============================================================
 // DATA STORE
 // ============================================================
-const KEYS={orders:'at_orders',drivers:'at_drivers',workers:'at_workers',clients:'at_clients',branches:'at_branches',tariffs:'at_tariffs',services:'at_services',addresses:'at_addresses',groups:'at_groups',balance:'at_balance',sms:'at_sms',settings:'at_settings',carBrands:'at_carBrands',carColors:'at_carColors'};
+const KEYS={orders:'at_orders',drivers:'at_drivers',workers:'at_workers',clients:'at_clients',branches:'at_branches',tariffs:'at_tariffs',services:'at_services',addresses:'at_addresses',groups:'at_groups',balance:'at_balance',sms:'at_sms',settings:'at_settings',carBrands:'at_carBrands',carColors:'at_carColors',driverTxns:'at_driver_txns'};
 const now=()=>new Date().toISOString();
 const uid=()=>Math.random().toString(36).slice(2,8).toUpperCase();
 
@@ -1292,13 +1348,14 @@ const SEED={
     {id:'T3',type:'expense',amount:15000,desc:'Haydovchi to’lovi',date:now()},
     {id:'T4',type:'income',amount:19000,desc:'Buyurtma #ORD006',date:now()},
   ]},
-  driverTxns:[
-    {id:'TX001',driverId:'DRV001',driverName:'Bobur Mirzayev',branch:'Toshkent Markaz',type:'expense',amount:500,reason:'Buyurtma uchun to’lov',date:'2026-06-18T13:03:00'},
-    {id:'TX002',driverId:'DRV002',driverName:'Akbar Salimov',branch:'Yunusabod filiali',type:'expense',amount:500,reason:'Buyurtma uchun to’lov',date:'2026-06-18T13:01:00'},
-    {id:'TX003',driverId:'DRV001',driverName:'Bobur Mirzayev',branch:'Toshkent Markaz',type:'income',amount:50000,reason:'Hisobni to’ldirish (admin)',date:'2026-06-17T10:00:00'},
-    {id:'TX004',driverId:'DRV003',driverName:'Sardor Holiqov',branch:'Toshkent Markaz',type:'income',amount:1500,reason:'Buyurtma uchun to’lov',date:'2026-06-18T13:00:00'},
-    {id:'TX005',driverId:'DRV004',driverName:'Kamol Rahimov',branch:'Yunusabod filiali',type:'expense',amount:5000,reason:'Jarima',date:'2026-06-16T09:30:00'},
-  ],
+  // MUHIM: bu yerda avval TO'RTTA namunaviy (o'ylab topilgan)
+  // tranzaksiya turardi — DRV001/DRV002 degan, Firestore'da
+  // umuman mavjud bo'lmagan haydovchilar uchun. Admin "Balans"
+  // sahifasida ularni ham qo'shib hisoblardi: "Jami kirim" 50 000
+  // ga, "Jami chiqim" 1 000 ga oshib ko'rinardi. Menejerlar esa
+  // ularni ko'rmasdi (filial topilmagani uchun filtrlanardi), ya'ni
+  // admin va menejer jamlari doim bir-biriga mos kelmasdi.
+  driverTxns: [],
   sms:[
     {id:'S1',to:'Barcha haydovchilar',text:'Bugungi smena boshlanmoqda!',status:'sent',date:now(),count:5},
   ],
@@ -1744,8 +1801,125 @@ function sdot(status){
   return `<span class="sdot"><span class="sdot-dot" style="background:${s.c}"></span>${s.l}</span>`;
 }
 
+
+// Yangi ID yasaydi: prefiks + mavjudlaridagi ENG KATTA raqamdan keyingi.
+//
+// MUHIM: avval hamma joyda `ro'yxat.length + 1` ishlatilardi. Bitta
+// yozuv o'chirilishi bilan uzunlik kamayadi va KEYINGI yaratilgan
+// yozuv MAVJUD birining ID'sini oladi — `setDoc(..., {merge:true})`
+// esa uni jimgina USTIDAN YOZADI.
+//
+// Eng og'ir holati tariflarda: TRF001..TRF003 bo'lsa va TRF002
+// o'chirilsa, keyingi yangi tarif TRF003 ni oladi va Comfort
+// tarifining nomi, kilometr narxi va KOMISSIYA foizini almashtirib
+// yuboradi — o'sha tarifga bog'langan barcha haydovchi va
+// buyurtmalar shu zahoti yangi stavkalar bo'yicha hisoblanadi.
+// Filiallarda esa qayta ishlatilgan BRN ID eski filialning bonus
+// sozlamasini (settings/bonus_branch_BRNxxx) meros qilib oladi.
+function nextSeqId(list, prefix, width){
+  let max=0;
+  (list||[]).forEach((item)=>{
+    const id=String(item&&item.id||'');
+    if(!id.startsWith(prefix))return;
+    const n=parseInt(id.slice(prefix.length),10);
+    if(!isNaN(n)&&n>max)max=n;
+  });
+  return prefix+String(max+1).padStart(width||3,'0');
+}
+
+
+// ============================================================
+// QO'NG'IROQ YOZUVLARI PLEYERI
+// ============================================================
+// MUHIM: `toggleAudio`, `seekAudio` va `stopAudio` HTML'da
+// chaqirilardi (qo'ng'iroqlar tarixi va yozuvlar ro'yxatida), lekin
+// hech qayerda E'LON QILINMAGAN edi. Ya'ni "tinglash" tugmasi
+// bosilganda konsolga `ReferenceError` tushar, yozuv esa umuman
+// ijro etilmasdi — dispetcher nizoli qo'ng'iroqni tekshira olmasdi.
+const audioPlayers = {};
+function fmtAudioTime(sec){
+  if(!isFinite(sec)||sec<0)sec=0;
+  const m=Math.floor(sec/60);
+  const s=Math.floor(sec%60);
+  return m+':'+String(s).padStart(2,'0');
+}
+function setAudioIcon(id,playing){
+  const ico=document.getElementById('aico-'+id);
+  if(!ico)return;
+  ico.innerHTML=playing
+    ?'<rect x="6" y="4" width="4" height="16" fill="#fff"/><rect x="14" y="4" width="4" height="16" fill="#fff"/>'
+    :'<polygon points="5 3 19 12 5 21 5 3" fill="#fff"/>';
+}
+function toggleAudio(id,url){
+  // Bir vaqtda faqat bitta yozuv ijro etilsin.
+  Object.keys(audioPlayers).forEach((k)=>{
+    if(k!==id&&!audioPlayers[k].paused){audioPlayers[k].pause();setAudioIcon(k,false);}
+  });
+  let a=audioPlayers[id];
+  if(!a){
+    if(!url){alert("Bu qo'ng'iroq uchun yozuv topilmadi.");return;}
+    a=new Audio(url);
+    audioPlayers[id]=a;
+    a.addEventListener('loadedmetadata',()=>{
+      const dur=document.getElementById('adur-'+id);
+      if(dur)dur.textContent=fmtAudioTime(a.duration);
+    });
+    a.addEventListener('timeupdate',()=>{
+      const prog=document.getElementById('aprog-'+id);
+      const cur=document.getElementById('acur-'+id);
+      if(prog&&a.duration)prog.style.width=((a.currentTime/a.duration)*100)+'%';
+      if(cur)cur.textContent=fmtAudioTime(a.currentTime);
+    });
+    a.addEventListener('ended',()=>{
+      setAudioIcon(id,false);
+      const prog=document.getElementById('aprog-'+id);
+      if(prog)prog.style.width='0%';
+      const cur=document.getElementById('acur-'+id);
+      if(cur)cur.textContent='0:00';
+    });
+    a.addEventListener('error',()=>{
+      setAudioIcon(id,false);
+      alert("Yozuvni ijro etib bo'lmadi — fayl topilmadi yoki formati qo'llab-quvvatlanmaydi.");
+    });
+  }
+  if(a.paused){
+    a.play().then(()=>setAudioIcon(id,true)).catch(()=>{
+      setAudioIcon(id,false);
+      alert("Yozuvni ijro etib bo'lmadi.");
+    });
+  }else{
+    a.pause();
+    setAudioIcon(id,false);
+  }
+}
+function seekAudio(id,event){
+  const a=audioPlayers[id];
+  if(!a||!a.duration||!event||!event.currentTarget)return;
+  const rect=event.currentTarget.getBoundingClientRect();
+  const ratio=Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width));
+  a.currentTime=ratio*a.duration;
+}
+function stopAudio(id){
+  const a=audioPlayers[id];
+  if(!a)return;
+  a.pause();
+  a.currentTime=0;
+  setAudioIcon(id,false);
+  const prog=document.getElementById('aprog-'+id);
+  if(prog)prog.style.width='0%';
+  const cur=document.getElementById('acur-'+id);
+  if(cur)cur.textContent='0:00';
+}
+
 function fmtPrice(n){return(n||0).toLocaleString('uz-UZ')+' so’m';}
-function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+// MUHIM: apostrof (') ham qochiriladi. Bu matn nafaqat HTML ichiga,
+// balki BIR TIRNOQLI onclick argumentiga ham qo'yiladi:
+//   onclick="toggleExtra('${s.id}','${esc(s.name)}',${s.price})"
+// O'zbekchada apostrof juda keng tarqalgan ("Qo'shimcha yuk"), va u
+// qochirilmaganda hosil bo'lgan kod sintaksis xatosiga aylanardi —
+// o'sha qo'shimcha xizmatni buyurtmaga QO'SHIB BO'LMASDI va uning
+// narxi hech qachon olinmasdi.
+function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
 function initials(name){return(name||'').split(' ').map(w=>w[0]||'').join('').slice(0,2).toUpperCase();}
 
 function getDistanceKm(lat1,lng1,lat2,lng2){
@@ -2182,10 +2356,15 @@ function renderOrdersTable(){
 // Haydovchi tanlash ro'yxatini quradi — avval "Haydovchilar" sahifasi
 // ochilgan bo'lsa firestoreDriversList'dan (to'liq, jonli), aks holda
 // afterRenderOrders'da bir martalik olingan orderDriverNames'dan
+// MUHIM: filialsiz zaxira ro'yxat (`orderDriverNames`) OLIB
+// TASHLANDI. U `getDocs(collection(db,"drivers"))` dan keladi,
+// ya'ni BUTUN kompaniyaning haydovchilari. `firestoreDriversList`
+// bo'sh bo'lganda (masalan menejerning filialida hali haydovchi
+// ro'yxatdan o'tmagan) tanlov ro'yxatiga BEGONA filialning
+// haydovchilari chiqib qolardi va ulardan biri buyurtmaga
+// biriktirilishi mumkin edi.
 function buildDriverOptions(selectedId){
-  const entries=firestoreDriversList.length>0
-    ?firestoreDriversList.map(d=>({id:d.id,name:d.name}))
-    :Object.keys(orderDriverNames).map(id=>({id,name:orderDriverNames[id]}));
+  const entries=firestoreDriversList.map(d=>({id:d.id,name:d.name}));
   return entries.map(d=>`<option value="${esc(d.id)}"${selectedId===d.id?' selected':''}>${esc(d.name)}</option>`).join('');
 }
 
@@ -2217,19 +2396,34 @@ function editOrderModal(orderId){
 }
 
 // Manzil matnidan koordinata topadi (Yandex geokoder). Topilmasa null.
+// MUHIM: vaqt chegarasi SHART. `ymaps.ready(fn)` bitta argument bilan
+// FAQAT muvaffaqiyat ishlovchisini ro'yxatdan o'tkazadi — Yandex
+// skripti yuklanib, lekin ishga tushmasa (kalit rad etildi, kvota
+// tugadi, host bloklandi) u HECH QACHON chaqirilmaydi va va'da na
+// bajariladi, na rad etiladi. Tashqi try/catch ham yordam bermaydi
+// (xato keyingi taktda bo'ladi).
+//
+// Oqibati: dispetcher manzilni tahrirlab "Saqlash"ni bosardi, `await`
+// abadiy kutardi — buyurtma umuman yangilanmasdi va modal ochiq
+// qolaverardi. Ayni modalda kiritilgan ism/telefon/narx/haydovchi
+// o'zgarishlari ham yo'qolardi.
+const GEOCODE_TIMEOUT_MS = 8000;
 function geocodeAddressText(text){
   return new Promise((resolve)=>{
     if(!text||typeof ymaps==='undefined'){resolve(null);return;}
+    let done=false;
+    const finish=(v)=>{if(done)return;done=true;resolve(v);};
+    setTimeout(()=>finish(null),GEOCODE_TIMEOUT_MS);
     try{
       ymaps.ready(()=>{
         ymaps.geocode(text,{results:1}).then((res)=>{
           const obj=res.geoObjects.get(0);
-          if(!obj){resolve(null);return;}
+          if(!obj){finish(null);return;}
           const c=obj.geometry.getCoordinates();
-          resolve({lat:c[0],lng:c[1]});
-        },()=>resolve(null));
+          finish({lat:c[0],lng:c[1]});
+        },()=>finish(null));
       });
-    }catch(e){resolve(null);}
+    }catch(e){finish(null);}
   });
 }
 
@@ -2352,7 +2546,19 @@ function deleteOrderConfirm(orderId){
     'Buyurtmani o\u2019chirish',
     'Bu buyurtma butunlay o\u2019chiriladi. Bu amalni qaytarib bo\u2019lmaydi.',
     ()=>{
-      if(window.deleteOrderFromFirestore)window.deleteOrderFromFirestore(orderId);
+      if(window.deleteOrderFromFirestore){
+
+        window.deleteOrderFromFirestore(orderId).then((ok)=>{
+
+          // MUHIM: avval natija tekshirilmasdi — o'chirish rad
+
+          // etilsa ham modal yopilar, satr esa joyida qolaverardi.
+
+          if(!ok)alert("Buyurtmani o'chirib bo'lmadi. Sizda bunga ruxsat bo'lmasligi mumkin.");
+
+        });
+
+      }
     },
     'Ha, o\u2019chirish',
     true
@@ -2385,6 +2591,18 @@ function completeOrderFromDashboard(orderId){
     return;
   }
   if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,{status:'completed'});
+  // MUHIM: haydovchining "band" bayrog'ini ham tozalaymiz. Haydovchi
+  // ilovasi buyurtmaning `completed` holatini TINGLAMAYDI (u faqat
+  // `cancelled` ni tinglaydi), shuning uchun dispetcher "✓ Yakunla"
+  // bosganda haydovchi telefonida safar ekrani qolib ketardi va
+  // `busy: true` hech kim tomonidan tozalanmasdi.
+  //
+  // Buyurtma taqsimlash funksiyasi esa band haydovchini o'tkazib
+  // yuboradi — ya'ni u smena oxirigacha bitta ham buyurtma olmasdi.
+  // Yagona chora ilovani butunlay qayta ishga tushirish edi (safarni
+  // tiklash bayroqni tozalaydi). Bekor qilishda bu allaqachon to'g'ri
+  // ishlaydi; yakunlashda o'tkazib yuborilgan edi.
+  if(o.driverId&&window.clearDriverBusy)window.clearDriverBusy(o.driverId);
 }
 
 function openCompleteOrderDistanceModal(orderId){
@@ -2618,7 +2836,7 @@ function filterAddrsTo(){
   if(sel)sel.innerHTML='<option value="">Manzili</option>'+filtered.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
   calcTotal();
 }
-function submitOrder(){
+async function submitOrder(){
   const client=document.getElementById('f-client')?.value?.trim()||'Noma\u2019lum mijoz';
   const phone=document.getElementById('f-phone')?.value?.trim();
   const from=document.getElementById('f-from')?.value;
@@ -2628,15 +2846,37 @@ function submitOrder(){
   // tasodifiy B nuqta o'ylab topadi va uni xaritada ko'rsatadi.
   const to=document.getElementById('f-to')?.value?.trim()||'';
   if(!phone||!from){alert("Telefon va qayerdan majburiy!");return;}
-  const tariffs=dbGet('tariffs');
   const sel=document.getElementById('f-tariff')?.value;
-  const trf=tariffs.find(t=>t.id===sel)||tariffs[0]||{minDistancePrice:0};
+  // MUHIM: `dbGet('tariffs')` — BUTUN kompaniyaning tariflari.
+  // Zaxira sifatida `tariffs[0]` olinardi, ya'ni tarif tanlanmagan
+  // (bu esa formaning STANDART holati — birinchi variant bo'sh)
+  // buyurtma massivdagi BIRINCHI tarif bilan yaratilardi. U odatda
+  // boshqa filialniki bo'lib chiqardi va komissiya ham o'sha
+  // filialning stavkasi bo'yicha yechilardi.
+  const allowedTariffs=filterByAllowedBranches(dbGet('tariffs'),t=>t.branchIds);
+  const trf=allowedTariffs.find(t=>t.id===sel)||null;
+  if(!trf){alert("Ta'rifni tanlang!");return;}
   const routeDistanceKm=getRouteDistanceKm();
   const rawBase=computeTariffRawBase(trf,routeDistanceKm);
   const base=Math.ceil(rawBase/1000)*1000;
   const extras=[...selectedExtras];
   const extrasTotal=extras.reduce((s,e)=>s+e.price,0);
-  const bonusAmt=useBonus?Math.min(parseInt(document.getElementById('bonus-amt')?.value)||0,base+extrasTotal):0;
+  // Bonus — MIJOZNING balansidan yechiladi, ya'ni buyurtma haqiqiy
+  // (ilovada ro'yxatdan o'tgan) mijozga tegishli bo'lishi shart. Uni
+  // telefon raqami bo'yicha topamiz.
+  //
+  // MUHIM: topilmasa chegirma BERILMAYDI va dispetcherga sababi
+  // aytiladi. Avval bunday holatda chegirma baribir qo'llanar, lekin
+  // uni hech kim qoplamasdi — amalda haydovchining puli kamayardi.
+  let bonusCustomerId=null;
+  if(useBonus&&window.findCustomerIdByPhone){
+    bonusCustomerId=await window.findCustomerIdByPhone(phone);
+  }
+  let bonusAmt=useBonus?Math.min(parseInt(document.getElementById('bonus-amt')?.value)||0,base+extrasTotal):0;
+  if(bonusAmt>0&&!bonusCustomerId){
+    alert("Bonus faqat ilovada ro'yxatdan o'tgan mijozga berilishi mumkin. Bu raqam topilmadi — buyurtma chegirmasiz yaratiladi.");
+    bonusAmt=0;
+  }
   const total=Math.max(0,base+extrasTotal-bonusAmt);
   // MUHIM: driverSel bo'sh qoldirilsa (operator aniq haydovchi tanlamasa),
   // buyurtma "umumiy pool"ga tushadi va barcha online haydovchilarga
@@ -2681,7 +2921,33 @@ function submitOrder(){
       // shunchaki hech narsa yechilmaydi).
       tariffId: trf?.id || null,
       branchId: branchId,
-      price: total,
+      // ============================================================
+      // MUHIM — CHEGIRMA KIMNING HISOBIDAN
+      // ============================================================
+      // Avval bu yerda `price: total` yozilardi, ya'ni chegirma
+      // TUSHIRILGAN narx. Oqibati:
+      //   * server safar qiymatini `price + extrasTotal` deb hisoblaydi
+      //     (computeTripTotal), ya'ni chegirma haydovchining safar
+      //     qiymatini KAMAYTIRIB yuborardi — haydovchi kam naqd olardi
+      //     va hech qanday qoplama HAM olmasdi (`bonusUsed` yozilmagan);
+      //   * komissiya ham kamaygan summadan olinardi (kompaniya
+      //     yo'qotardi);
+      //   * mijozning bonus balansidan hech narsa yechilmasdi — ya'ni
+      //     ayni bonusni har bir buyurtmada qayta-qayta "sarflash"
+      //     mumkin edi.
+      // Ya'ni chegirmani jimgina HAYDOVCHI to'lardi.
+      //
+      // Endi `price` — safarning TO'LIQ qiymati, `finalPrice` — mijoz
+      // naqd to'laydigan summa, `bonusUsed` esa chegirma. Bu uchtasi
+      // mijoz ilovasidagi bilan AYNAN bir xil shakl, shuning uchun
+      // server qoplamani ham, komissiyani ham to'g'ri hisoblaydi.
+      price: base,
+      extrasTotal: extrasTotal,
+      finalPrice: total,
+      bonusUsed: bonusAmt,
+      // Bonus mijozning balansidan yechilishi uchun buyurtma QAYSI
+      // mijozniki ekani ma'lum bo'lishi shart.
+      ...(bonusCustomerId ? { customerId: bonusCustomerId } : {}),
       distanceKm: distance,
       // MUHIM: safar davomida narxni jonli hisoblash uchun —
       // mobil ilova shu stavkalar bilan real vaqtda narxni oshirib boradi
@@ -3330,6 +3596,15 @@ function removeDriverDoc(key){
 }
 
 async function saveDriver(id){
+  // MUHIM: Firestore'da haydovchi hujjatining ID'si — TELEFON RAQAMI.
+  // Ya'ni telefonni o'zgartirish yangi hujjat YARATADI, eskisi esa
+  // (balansi, safarlari va PAROLI bilan) joyida qoladi:
+  //   * pul eski hujjatda qolib ketadi, yangisi noldan boshlanadi;
+  //   * haydovchi eski raqami bilan ham kiraverishi mumkin;
+  //   * panelda bitta odam ikkita karta bo'lib ko'rinadi.
+  // Shuning uchun tahrirlashda telefonni o'zgartirishga yo'l
+  // qo'ymaymiz — buning uchun alohida, ehtiyotkor ko'chirish jarayoni
+  // kerak (balans, tarix va parolni birga ko'chirish).
   cacheCurrentDriverTabFields();
   const cache=window._driverFormCache||{};
   const modal=document.getElementById('driver-modal');
@@ -3339,6 +3614,24 @@ async function saveDriver(id){
   if(!merged.firstName||!merged.lastName||!merged.phone){
     switchDriverTab('personal');
     alert('Ism, familiya va telefon raqamini kiriting!');
+    return;
+  }
+
+  // MUHIM: Firestore'da haydovchi hujjatining ID'si — TELEFON RAQAMI
+  // (`saveDriverToFirestore(finalData.phone, ...)`). Ya'ni mavjud
+  // haydovchining telefonini o'zgartirish YANGI hujjat yaratadi, eskisi
+  // esa joyida qoladi:
+  //   * BALANS eski hujjatda qolib ketadi, yangisi noldan boshlanadi
+  //     (tahrirlash yo'li `balance` maydonini umuman yozmaydi);
+  //   * eski hujjatda parol ham qoladi, ya'ni haydovchi (yoki uning
+  //     raqamini olgan boshqa odam) eski hisob bilan kiraverishi
+  //     mumkin;
+  //   * panelda bitta odam ikkita karta bo'lib ko'rinadi.
+  // Bunday ko'chirish balans, safarlar tarixi va parolni birga
+  // ko'chirishni talab qiladi — shuning uchun bu yerda to'siladi.
+  if(id&&merged.phone&&merged.phone!==id){
+    switchDriverTab('personal');
+    alert("Telefon raqami haydovchining hisob raqami — uni bu yerda o'zgartirib bo'lmaydi. Yangi raqam uchun yangi haydovchi qo'shing va eskisini o'chiring.");
     return;
   }
 
@@ -4186,8 +4479,22 @@ function saveAccountTxn(){
   // Haydovchi haqiqiy Firestore hujjati (id = telefon raqami) — shu
   // yerga yozilmasa, o'zgarish faqat dashboard ekranida ko'rinib,
   // haydovchi ilovasidagi balansga ta'sir qilmaydi.
-  const newBalance=(drv.balance||0)+(accountTxnType==='add'?amount:-amount);
-  if(window.saveDriverToFirestore)window.saveDriverToFirestore(driverId,{balance:newBalance});
+  // MUHIM: avval bu yerda MUTLAQ qiymat yozilardi va u modal
+  // ochilgandagi ESKI balansdan hisoblanardi. Hisobchi summa va sababni
+  // yozayotgan bir necha soniya ichida haydovchi safarni yakunlasa,
+  // Cloud Function komissiyani yechib qo'yadi — keyin bu yozuv o'sha
+  // yechimni BEKOR qilib, komissiyani jimgina qaytarib berardi.
+  // Server tomonidagi barcha balans o'zgarishlari tranzaksiya ichida
+  // qayta o'qib yoziladi; bu yagona joy shundan chetda qolgan edi.
+  // `increment` — serverning o'zi qo'shadi, oradagi o'zgarishlar
+  // saqlanib qoladi.
+  const delta=(accountTxnType==='add'?amount:-amount);
+  if(window.addToDriverBalance){
+    window.addToDriverBalance(driverId,delta).catch((err)=>{
+      console.error('Balansni yangilashda xato:',err);
+      alert("Balans yangilanmadi. Internet aloqasini tekshirib, qayta urinib ko'ring.");
+    });
+  }
 
   // Add transaction record
   const txns=dbGet('driverTxns')||[];
@@ -4451,7 +4758,21 @@ function revokeWorkerAccess(workerId){
     'Kirish huquqini bekor qilish',
     `${w.accessEmail} dashboard'ga endi kira olmaydi. Bu amalni qaytarib bo\u2019lmaydi.`,
     async()=>{
-      await window.revokeStaffDashboardAccess(w.accessUid);
+      // MUHIM: natija TEKSHIRILADI. Avval u e'tiborsiz qoldirilar,
+      // pastdagi `accessUid: null` esa SO'ZSIZ yozilardi. Ya'ni
+      // o'chirish o'tmasa ham (tarmoq uzildi, qoida rad etdi) modal
+      // "kirish huquqi yo'q" holatini ko'rsatardi: ishdan bo'shatilgan
+      // xodimning `adminRoles` hujjati JOYIDA qolar, u panelga
+      // kiraverar, admin esa tugma yo'qolgani uchun uni boshqa hech
+      // qachon bekor qila olmasdi.
+      //
+      // Yonidagi `syncWorkerAccessBranches` allaqachon shunday
+      // tekshiradi — bu yerda o'tkazib yuborilgan edi.
+      const ok=await window.revokeStaffDashboardAccess(w.accessUid);
+      if(!ok){
+        alert("Kirish huquqi bekor qilinmadi. Internet aloqasini tekshirib, qayta urinib ko'ring.");
+        return;
+      }
       dbUpdate('workers',workerId,{accessUid:null,accessEmail:null,accessRole:null});
       showWorkerModal(workerId);
     },
@@ -4922,7 +5243,7 @@ function saveBranch(branchId){
   if(branchId){
     branches=branches.map(b=>b.id===branchId?{...b,...finalData,drivers:b.drivers}:b);
   }else{
-    const newId='BRN'+String(branches.length+1).padStart(3,'0');
+    const newId=nextSeqId(branches,'BRN',3);
     branches.push({id:newId,...finalData,drivers:0});
   }
   dbSet('branches',branches);
@@ -5473,6 +5794,23 @@ function closeTariffModal(){
 }
 
 function saveTariff(tariffId){
+  // MUHIM: menejer BUTUN kompaniyaga tegishli (branchIds bo'sh) tarifni
+  // o'zining filialiga "tortib" ololmasin. `guardBranchWrite` bo'sh
+  // ro'yxatni "hammaga ochiq" deb hisoblab ruxsat beradi, quyidagi
+  // forma esa admin bo'lmaganlardan kamida bitta filial tanlashni
+  // TALAB qiladi — ikkalasi birga aynan shu egallab olishga yo'l
+  // ochib berardi: umumiy tarif menejerning filialiga bog'lanib
+  // qolar, qolgan barcha filiallar uni mijoz ilovasida ko'rmay
+  // qolardi.
+  if(tariffId&&window.currentAdminRole!=='admin'){
+    const existing=(dbGet('tariffs')||[]).find(t=>t.id===tariffId);
+    const wasGlobal=!!existing&&(!Array.isArray(existing.branchIds)||existing.branchIds.length===0);
+    if(wasGlobal){
+      alert("Bu tarif barcha filiallar uchun umumiy — uni faqat administrator tahrirlashi mumkin.");
+      return;
+    }
+  }
+
   cacheCurrentTariffTabFields();
   const cache=window._tariffFormCache||{};
   const modal=document.getElementById('tariff-modal');
@@ -5522,7 +5860,7 @@ function saveTariff(tariffId){
   if(tariffId){
     tariffs=tariffs.map(t=>t.id===tariffId?{...t,...finalData}:t);
   }else{
-    const newId='TRF'+String(tariffs.length+1).padStart(3,'0');
+    const newId=nextSeqId(tariffs,'TRF',3);
     tariffs.push({id:newId,...finalData});
     finalTariffId=newId;
   }
@@ -5565,6 +5903,20 @@ function refreshTariffStats(){
 }
 
 function deleteTariffConfirm(tariffId){
+  // Umumiy (barcha filiallarga tegishli) tarifni menejer o'chira
+  // olmasin. `guardBranchWrite` bo'sh `branchIds` ni "hammaga ochiq"
+  // deb hisoblab ruxsat beradi — lekin mahalliy nusxa o'chirilgani
+  // bilan Firestore'dagi hujjat qoidalar tufayli JOYIDA qolardi:
+  // tarif dashboard'dan butunlay yo'qolib, ilovalarda ishlashda
+  // davom etardi va uni hech kim qaytara olmasdi.
+  if(window.currentAdminRole!=='admin'){
+    const t=(dbGet('tariffs')||[]).find(x=>x.id===tariffId);
+    if(t&&(!Array.isArray(t.branchIds)||t.branchIds.length===0)){
+      alert("Bu tarif barcha filiallar uchun umumiy — uni faqat administrator o'chira oladi.");
+      return;
+    }
+  }
+
   const t=dbGet('tariffs').find(x=>x.id===tariffId);
   if(!guardBranchWrite(t&&t.branchIds))return;
   showConfirmModal(
@@ -5859,7 +6211,7 @@ function saveGroup(groupId){
   if(groupId){
     groups=groups.map(g=>g.id===groupId?{...g,name,branch}:g);
   }else{
-    const newId='GRP'+String(groups.length+1).padStart(3,'0');
+    const newId=nextSeqId(groups,'GRP',3);
     const color=palette[groups.length%palette.length];
     groups.push({id:newId,name,branch,color});
   }
@@ -6129,7 +6481,7 @@ function saveAddress(addressId){
   if(addressId){
     addresses=addresses.map(a=>a.id===addressId?{...a,...data}:a);
   }else{
-    const newId='ADR'+String(addresses.length+1).padStart(3,'0');
+    const newId=nextSeqId(addresses,'ADR',3);
     addresses.push({id:newId,...data});
   }
   dbSet('addresses',addresses);
@@ -6823,7 +7175,7 @@ function confirmNewCarBrand(){
   const name=input?.value?.trim();
   if(!name){alert('Marka nomini kiriting!');return;}
   const brands=dbGet('carBrands');
-  const newId='CB'+String(brands.length+1).padStart(3,'0');
+  const newId=nextSeqId(brands,'CB',3);
   brands.push({id:newId,name,models:[]});
   dbSet('carBrands',brands);
   input.value='';
@@ -6899,7 +7251,7 @@ function addCarColor(){
   const name=input?.value?.trim();
   if(!name){alert('Rang nomini kiriting!');return;}
   const colors=dbGet('carColors');
-  const newId='CC'+String(colors.length+1).padStart(3,'0');
+  const newId=nextSeqId(colors,'CC',3);
   colors.push({id:newId,name});
   dbSet('carColors',colors);
   input.value='';
@@ -7326,7 +7678,24 @@ async function saveBonusSettingsForm(){
     perOrderCapValue,
   };
   if(window.saveClientBonusSettings){
-    await window.saveClientBonusSettings(cfg,branchId);
+    // MUHIM: natija TEKSHIRILADI. Avval yozuv o'tdimi-yo'qmi,
+
+    // baribir "saqlandi" deb aytilardi — va shu zahoti forma
+
+    // ESKI qiymatlar bilan qayta chizilib, xabarga o'zi zid
+
+    // bo'lib turardi.
+
+    const saveOk = await window.saveClientBonusSettings(cfg,branchId);
+
+    if(saveOk===false){
+
+      alert("Saqlanmadi. Sizda bunga ruxsat bo'lmasligi yoki internet uzilgan bo'lishi mumkin.");
+
+      return;
+
+    }
+
     alert('Bonus sozlamalari saqlandi!');
     loadBonusSettingsForm();
   }
@@ -7392,7 +7761,24 @@ async function saveDailyBonusSettingsForm(){
     minTripDistanceKm,
   };
   if(window.saveDriverBonusSettings){
-    await window.saveDriverBonusSettings(cfg,branchId);
+    // MUHIM: natija TEKSHIRILADI. Avval yozuv o'tdimi-yo'qmi,
+
+    // baribir "saqlandi" deb aytilardi — va shu zahoti forma
+
+    // ESKI qiymatlar bilan qayta chizilib, xabarga o'zi zid
+
+    // bo'lib turardi.
+
+    const saveOk = await window.saveDriverBonusSettings(cfg,branchId);
+
+    if(saveOk===false){
+
+      alert("Saqlanmadi. Sizda bunga ruxsat bo'lmasligi yoki internet uzilgan bo'lishi mumkin.");
+
+      return;
+
+    }
+
     alert('Kunlik bonus sozlamalari saqlandi!');
     loadDriverBonusSettingsForm();
   }
@@ -7414,7 +7800,24 @@ async function saveWeeklyBonusSettingsForm(){
     weeklyBonusAmount,
   };
   if(window.saveDriverBonusSettings){
-    await window.saveDriverBonusSettings(cfg,branchId);
+    // MUHIM: natija TEKSHIRILADI. Avval yozuv o'tdimi-yo'qmi,
+
+    // baribir "saqlandi" deb aytilardi — va shu zahoti forma
+
+    // ESKI qiymatlar bilan qayta chizilib, xabarga o'zi zid
+
+    // bo'lib turardi.
+
+    const saveOk = await window.saveDriverBonusSettings(cfg,branchId);
+
+    if(saveOk===false){
+
+      alert("Saqlanmadi. Sizda bunga ruxsat bo'lmasligi yoki internet uzilgan bo'lishi mumkin.");
+
+      return;
+
+    }
+
     alert('Haftalik bonus sozlamalari saqlandi!');
     loadDriverBonusSettingsForm();
   }
@@ -7432,7 +7835,24 @@ async function savePerOrderBonusSettingsForm(){
     perOrderBonusAmount,
   };
   if(window.saveDriverBonusSettings){
-    await window.saveDriverBonusSettings(cfg,branchId);
+    // MUHIM: natija TEKSHIRILADI. Avval yozuv o'tdimi-yo'qmi,
+
+    // baribir "saqlandi" deb aytilardi — va shu zahoti forma
+
+    // ESKI qiymatlar bilan qayta chizilib, xabarga o'zi zid
+
+    // bo'lib turardi.
+
+    const saveOk = await window.saveDriverBonusSettings(cfg,branchId);
+
+    if(saveOk===false){
+
+      alert("Saqlanmadi. Sizda bunga ruxsat bo'lmasligi yoki internet uzilgan bo'lishi mumkin.");
+
+      return;
+
+    }
+
     alert('Har buyurtma uchun bonus sozlamalari saqlandi!');
     loadDriverBonusSettingsForm();
   }
@@ -7819,6 +8239,16 @@ async function sendNotification(evt){
   const textHtml=textEl?.innerHTML||'';
   const to=document.getElementById('notif-to')?.value||'all_drivers';
   if(!title||!text){alert('Sarlavha va xabar matnini kiriting!');return;}
+  // MUHIM: mijozlarga bildirishnoma yuborish YO'LI UMUMAN YO'Q —
+  // Cloud Function (onNewNotificationSendPush) faqat `drivers`
+  // kolleksiyasi bo'ylab yuradi. Avval bu variant tanlanganda hech
+  // narsa yozilmas, lekin pastdagi kod baribir yashil "✓ Yuborildi!"
+  // ko'rsatib, tarixga ham yozib qo'yardi: dispetcher reklama
+  // yuborganman deb o'ylab yuraverardi.
+  if(to==='all_clients'){
+    alert("Mijozlarga bildirishnoma yuborish hozircha ishlamaydi — faqat haydovchilarga yuborish mumkin.");
+    return;
+  }
   if(to!=='all_clients'){
     if(window.sendNotificationToFirestore){
       // MUHIM: menejer/depecher faqat o'z filial(lar)i haydovchilariga
@@ -7892,7 +8322,15 @@ async function sendNotification(evt){
   setTimeout(()=>{btn.innerHTML=origHTML;btn.style.background='linear-gradient(145deg,#22C55E,#16A34A)';},1500);
 }
 
-function renderNotifHistory(){
+// MUHIM: bu ikkalasi HTML'da chaqirilardi (qidiruv maydoni va
+// "Tozalash" tugmasi), lekin hech qayerda E'LON QILINMAGAN edi —
+// haqiqiy nomlari boshqa. Ya'ni qidiruv maydoniga bitta harf yozilishi
+// bilan `ReferenceError` tashlanardi, "Tozalash" esa hech narsa
+// qilmasdi.
+function searchNotifs(q){ renderNotifHistory(q); }
+function clearNotifLog(){ clearNotifHistory(); }
+
+function renderNotifHistory(filterText){
   const el=document.getElementById('notif-history-list');
   if(!el)return;
   const cnt=document.getElementById('notif-sent-count');
@@ -7908,7 +8346,17 @@ function renderNotifHistory(){
   const typeIcons={info:svgInfo,warning:svgWarn,important:svgImportant,success:svgSuccess,urgent:svgImportant};
   const fallbackLabels={important:'Muhim',warning:'Ogohlantirish',info:'Xabar',success:'Muvaffaqiyat',urgent:'Shoshilinch'};
   const fallbackColors={important:'#22C55E',warning:'#F59E0B',info:'#3B82F6',success:'#10B981',urgent:'#16A34A'};
-  el.innerHTML=notifHistory.map((n,idx)=>{
+  // Qidiruv matni bo'lsa — sarlavha va matn bo'yicha filtrlaymiz.
+  const q=(filterText||'').trim().toLowerCase();
+  const shown=q
+    ? notifHistory.map((n,idx)=>({n,idx})).filter(({n})=>
+        (n.title||'').toLowerCase().includes(q)||(n.text||'').toLowerCase().includes(q))
+    : notifHistory.map((n,idx)=>({n,idx}));
+  if(!shown.length){
+    el.innerHTML='<div style="padding:40px;text-align:center;color:#aaa;font-size:13px">Hech narsa topilmadi</div>';
+    return;
+  }
+  el.innerHTML=shown.map(({n,idx})=>{
     const typeLabel=n.typeLabel||fallbackLabels[n.type]||'Xabar';
     const typeColor=n.typeColor||fallbackColors[n.type]||'#3B82F6';
     return `
@@ -8699,7 +9147,18 @@ function startGlobalOrdersListener(){
 // eng so'nggi holatga moslashtiriladi, boshqa kompyuterda kiritilgan
 // o'zgarish shu yerda darhol ko'rinadi.
 // ============================================================
-const DASHBOARD_SYNC_KEYS=['branches','tariffs','workers','clients','services','addresses','groups','sms','settings','carBrands','carColors','balance'];
+// MUHIM: 'driverTxns' (haydovchi pul harakatlari daftari) bu ro'yxatda
+// ham, yuqoridagi KEYS xaritasida ham YO'Q edi. Oqibati ikki qavat:
+//   * `dbGet('driverTxns')` — `localStorage.getItem(undefined)` ga
+//     aylanardi, ya'ni yozuvlar "undefined" degan kalit ostida
+//     saqlanardi;
+//   * Firestore'ga umuman sinxronlanmasdi, ya'ni har bir dispetcher
+//     O'Z brauzeridagi ro'yxatni ko'rardi va saqlagani boshqalarning
+//     yozuvlarini butunlay bosib ketardi.
+// Haydovchi BALANSI esa Firestore'da (drivers/{telefon}) to'g'ri
+// yangilanardi — ya'ni balans bilan uni tushuntiruvchi daftar
+// doimiy ravishda bir-biriga mos kelmasdi.
+const DASHBOARD_SYNC_KEYS=['branches','tariffs','workers','clients','services','addresses','groups','sms','settings','carBrands','carColors','balance','driverTxns'];
 function startDashboardDataSync(){
   if(!window.listenToDashboardDataLive){setTimeout(startDashboardDataSync,300);return;}
   DASHBOARD_SYNC_KEYS.forEach(key=>{
