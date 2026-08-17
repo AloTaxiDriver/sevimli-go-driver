@@ -85,7 +85,24 @@ export async function startDriverLocationTracking(driverId: string): Promise<voi
     await Location.startLocationUpdatesAsync(DRIVER_LOCATION_TASK, {
       accuracy: Location.Accuracy.High,
       timeInterval: 10000,
-      distanceInterval: 20,
+      // MUHIM: 0 bo'lishi SHART. Bu yerda avval 20 (metr) turardi va bu
+      // og'ir xato edi — Android'da `distanceInterval` VA mantig'i bilan
+      // ishlaydi, YOKI emas: expo-location uni `setMinUpdateDistanceMeters`
+      // ga o'giradi (node_modules/expo-location/.../LocationHelpers.kt),
+      // ya'ni yangilanish faqat "10 soniya o'tdi VA 20 metr YURILDI"
+      // bo'lgandagina yetkaziladi.
+      //
+      // Demak svetoforda, tirbandlikda yoki mijozni kutib turgan
+      // haydovchidan HECH QANDAY yangilanish kelmasdi. Dashboard esa
+      // 90 soniyadan keyin joylashuvni "eskirgan" deb belgilaydi
+      // (DRIVER_LOCATION_STALE_MS) — dispetcher ishlab turgan
+      // haydovchini "aloqa uzilgan" deb ko'rardi, mijoz esa xaritada
+      // qotib qolgan mashinani.
+      //
+      // 0 bilan yangilanish faqat vaqt bo'yicha, har 10 soniyada
+      // keladi — bu ilovaning fon-rejimga o'tishidan oldingi
+      // xatti-harakati bilan bir xil.
+      distanceInterval: 0,
       // Shu bildirishnoma turgan ekan, Android ilovani o'ldirmaydi.
       foregroundService: {
         notificationTitle: 'Sevimli Go — ish rejimi',
