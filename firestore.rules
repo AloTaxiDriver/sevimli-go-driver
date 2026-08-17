@@ -50,6 +50,19 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
 
+    // Dashboard xodimi — rol hujjati bo'yicha (`isStaff()`), YOKI eski
+    // yo'l bilan (email/parol bilan kirgan). Ikkinchisi ATAYLAB
+    // saqlanmoqda: birinchi (bootstrap) admin hisobida `adminRoles`
+    // hujjati bo'lmasligi mumkin — dashboard'ning o'zi ham rol
+    // topilmasa "admin" deb hisoblaydi. Uni birdaniga olib tashlash
+    // panelni butunlay ishdan chiqarib qo'yishi mumkin edi.
+    //
+    // MUHIM: bu yumshoq shox PULGA tegadigan joylarda ISHLAMAYDI.
+    function customerReader() {
+      return isStaff() ||
+        (isSignedIn() && request.auth.token.firebase.sign_in_provider == 'password');
+    }
+
     // ============================================================
     // ORDERS / DRIVERS
     // ============================================================
@@ -73,25 +86,85 @@ service cloud.firestore {
     // qilish, yakuniy narx). Dashboard xodimi esa (u haqiqiy Firebase
     // Auth bilan kiradi) hech qanday cheklovga uchramaydi.
     // ============================================================
+    // Haydovchi ilovasi (Firebase Auth'siz) buyurtmada FAQAT shu
+    // maydonlarni o'zgartiradi — kod bo'ylab tekshirilgan:
+    //   acceptOrder           -> status, driverId, acceptedAt
+    //   updateOrderStatus     -> status
+    //   finalizeOrderPrice    -> price, finalPrice, actualDistanceKm
+    //   cancelOrder           -> status, cancelReason, cancelledBy, cancelledAt
+    //   revertOrderAcceptance -> status, driverId
+    function driverOrderFields() {
+      return [
+        'status', 'driverId', 'acceptedAt',
+        'price', 'finalPrice', 'actualDistanceKm',
+        'cancelReason', 'cancelledBy', 'cancelledAt'
+      ];
+    }
+    // Mijoz ilovasi (haqiqiy Firebase Auth bilan) o'zgartiradigan
+    // maydonlar: qo'shimcha xizmatlar, bonus, olib ketish nuqtasi,
+    // bekor qilish.
+    function customerOrderFields() {
+      return [
+        'extras', 'extrasTotal', 'bonusUsed', 'finalPrice',
+        'pickupLat', 'pickupLng', 'fromAddress',
+        'status', 'cancelReason', 'cancelledBy'
+      ];
+    }
+    // Dispetcher panelidan tahrirlanadigan maydonlar. `bonusUsed` va
+    // `extrasTotal` ATAYLAB YO'Q — panel ularni yozmaydi, va aynan
+    // shu ikkitasi orqali pul o'g'irlash mumkin edi.
+    function dispatcherOrderFields() {
+      return [
+        'customerName', 'customerPhone', 'fromAddress', 'toAddress', 'note',
+        'price', 'finalPrice', 'driverId', 'status', 'branchId',
+        'tariffId', 'tariffName', 'perKm', 'minDistance', 'minDistancePrice',
+        'distanceKm', 'pickupLat', 'pickupLng', 'dropoffLat', 'dropoffLng',
+        'cancelReason', 'cancelledBy', 'cancelledAt'
+      ];
+    }
+
     match /orders/{orderId} {
       allow read: if true;
       // Yangi buyurtma allaqachon "komissiya olingan" deb belgilangan
       // holda tug'ilmasin.
       allow create: if isStaff() ||
         !request.resource.data.keys().hasAny(serverMoneyFields());
-      allow update: if isStaff() || (
-        !changedKeys().hasAny(serverMoneyFields()) &&
-        // `bonusUsed` — mijozning bonusidan qancha yechilishini
-        // belgilaydi, ya'ni haydovchiga beriladigan qoplama shunga
-        // bog'liq. Uni faqat buyurtma EGASI (mijoz ilovasi, u real
-        // Firebase Auth bilan kiradi) yoki xodim o'zgartira oladi —
-        // haydovchi ilovasi bu maydonni umuman yozmaydi.
-        // `get(..., '')` ATAYLAB: maydon yo'q hujjatda to'g'ridan-to'g'ri
-        // `resource.data.customerId` o'qish qoidani XATOGA olib keladi.
-        (!changedKeys().hasAny(['bonusUsed']) ||
-         (isSignedIn() && request.auth.uid == resource.data.get('customerId', '')))
-      );
-      allow delete: if false;
+
+      allow update: if
+        // 1) Xodim — cheklovsiz (haqiqiy Firebase Auth + adminRoles).
+        isStaff()
+        // 2) Buyurtma EGASI (mijoz ilovasi) — faqat o'z maydonlari.
+        //    `get(..., '')` ATAYLAB: maydon yo'q hujjatda
+        //    `resource.data.customerId` ni to'g'ridan-to'g'ri o'qish
+        //    qoidani XATOGA olib keladi.
+        || (isSignedIn() &&
+            request.auth.uid == resource.data.get('customerId', '') &&
+            changedKeys().hasOnly(customerOrderFields()))
+        // 3) Haydovchi ilovasi — autentifikatsiyasiz, shuning uchun
+        //    ro'yxat QAT'IY.
+        //
+        //    MUHIM: avval bu shox "server maydonlariga tegmasa —
+        //    qolgan hammasi mumkin" edi. Ya'ni internetdagi har kim
+        //    `price: 0` yoki `extrasTotal: 100000000` yozib qo'ya
+        //    olardi. Komissiya ham, bonus ham AYNAN shu ikkisidan
+        //    hisoblanadi (computeTripTotal = price + extrasTotal):
+        //    birinchisi bilan haydovchi umrbod komissiyasiz ishlardi,
+        //    ikkinchisi bilan istalgan haydovchining balansini
+        //    manfiyga tushirib, uni butunlay ishdan to'xtatish mumkin
+        //    edi (balans <= 0 bo'lsa ilova buyurtma qabul qildirmaydi).
+        //    `extrasTotal` endi FAQAT mijozniki.
+        || changedKeys().hasOnly(driverOrderFields())
+        // 4) Rol hujjati hali yaratilmagan dashboard xodimi (bootstrap
+        //    admin) — panel maydonlari. `customerReader()` izohiga
+        //    qarang: bu yumshoq shox ataylab qoldirilgan, lekin u ham
+        //    `bonusUsed`/`extrasTotal` ga TEGOLMAYDI.
+        || (customerReader() && changedKeys().hasOnly(dispatcherOrderFields()));
+
+      // Xodim keraksiz/sinov buyurtmasini o'chira olishi kerak. Avval
+      // bu `if false` edi — panelda "O'chirish" tugmasi bor, lekin u
+      // hech qachon ishlamasdi va xatoni jimgina yutardi: dispetcher
+      // tugmani bosaverar, satr esa joyida qolaverardi.
+      allow delete: if isStaff() || customerReader();
     }
     match /drivers/{driverId} {
       allow read: if true;
@@ -103,8 +176,17 @@ service cloud.firestore {
       // `balance` — pul. `password` — hisobga kirish (ilovada parolni
       // o'zgartirish imkoniyati umuman yo'q, faqat ro'yxatdan o'tishda
       // bir marta yoziladi).
+      // `balance` — pul, `password` — hisobga kirish. Bulardan
+      // tashqari yana ikkitasi qo'shildi:
+      //   `approved` — rad etilgan yoki hali tasdiqlanmagan haydovchi
+      //     o'zini tasdiqlab qo'ymasin (u holda tizimga kirib, buyurtma
+      //     ola boshlardi);
+      //   `branch` — begona filialning navbatiga o'zini qo'shib
+      //     qo'ymasin (dispatch faqat shu maydonga qarab filtrlaydi).
+      // Ikkalasini ham haydovchi ilovasi YANGILAMAYDI — ular faqat
+      // ro'yxatdan o'tishda, hujjat YARATILGANDA yoziladi.
       allow update: if isStaff() ||
-        !changedKeys().hasAny(['balance', 'password']);
+        !changedKeys().hasAny(['balance', 'password', 'approved', 'branch']);
       // MUHIM: avval bu yerda `allow write: if true` turardi va pastda
       // `allow delete: if false` yozilgan edi. Firestore qoidalari
       // BIR-BIRINI BEKOR QILMAYDI — ular OR bilan qo'shiladi, va
@@ -238,27 +320,64 @@ service cloud.firestore {
     // CUSTOMERS / ADMIN ROLES — o'zgarishsiz (joriy jonli
     // qoidalardan olingan, allaqachon to'g'ri auth-asosli).
     // ============================================================
+    // MUHIM: bu blokda avval `sign_in_provider == 'password'` sharti
+    // "dashboard xodimi" degan ma'noda ishlatilardi. Bu XAVFLI xato
+    // edi — u kirish USULINI tekshiradi, ROLNI emas. Email/parol
+    // provayderi loyihada yoqilgan (xodimlar shu bilan kiradi), va
+    // Firebase'ning ochiq API kaliti bilan HAR KIM o'ziga email/parol
+    // hisobi ochib olishi mumkin. Ya'ni istalgan begona odam:
+    //   * barcha mijozlarning ismi va telefon raqamini o'qiy olardi;
+    //   * O'ZIGA istalgan miqdorda `bonusBalance` yozib qo'ya olardi,
+    //     keyin uni haqiqiy safarda ishlatardi — kompaniya esa o'sha
+    //     summani haydovchiga naqd pulda qoplab berardi.
+    // Endi shart ROLGA bog'langan: `isStaff()` — ya'ni adminRoles/{uid}
+    // hujjatiga ega dashboard xodimi.
     match /customers/{uid} {
-      allow read: if request.auth != null &&
-        (request.auth.uid == uid ||
-         request.auth.token.firebase.sign_in_provider == 'password');
+      // TODO (xavfsizlik): `customerReader()` dagi ikkinchi shox
+      // email/parol bilan ro'yxatdan o'tgan HAR QANDAY hisobga barcha
+      // mijozlarning ismi va telefonini ochib beradi. Uni olib tashlash
+      // uchun avval har bir xodimda `adminRoles/{uid}` hujjati borligiga
+      // ishonch hosil qilish kerak (dashboard > Ishchilar > kirish
+      // huquqi), keyin bu yerda `isStaff()` qoldiriladi.
+      allow read: if (isSignedIn() && request.auth.uid == uid) || customerReader();
 
-      allow create: if request.auth != null && request.auth.uid == uid &&
+      allow create: if isSignedIn() && request.auth.uid == uid &&
         request.resource.data.bonusBalance == 0;
 
-      allow update: if request.auth != null &&
-        (
-          (request.auth.uid == uid &&
-           request.resource.data.bonusBalance == resource.data.bonusBalance) ||
-          request.auth.token.firebase.sign_in_provider == 'password'
-        );
+      // ============================================================
+      // MUHIM — BU YERDA KATTA TESHIK BOR EDI
+      // ============================================================
+      // Avval shart shunday edi: `sign_in_provider == 'password'`, ya'ni
+      // "email/parol bilan kirgan bo'lsa, mijoz hujjatiga XOHLAGANINI
+      // yozsin". Bu kirish USULINI tekshiradi, ROLNI emas — va
+      // Firebase'ning ochiq API kaliti bilan HAR KIM o'ziga email/parol
+      // hisobi ochib olishi mumkin.
+      //
+      // Ya'ni istalgan begona odam o'ziga `bonusBalance: 10000000` yozib
+      // qo'yib, keyin uni haqiqiy safarda ishlatardi — kompaniya esa
+      // o'sha summani haydovchiga naqd pulda qoplab berardi.
+      //
+      // Endi BALANSGA tegish uchun haqiqiy rol (`adminRoles` hujjati)
+      // talab qilinadi. Balansga tegmaydigan yozuvlar (mijozning o'z
+      // ismi, telefoni, push tokeni) avvalgidek ishlayveradi.
+      allow update: if
+        // Mijozning o'zi — balansdan tashqari hamma narsa.
+        (isSignedIn() && request.auth.uid == uid &&
+         request.resource.data.bonusBalance == resource.data.bonusBalance)
+        // Xodim — cheklovsiz (panelda qo'lda bonus qo'shish).
+        || isStaff()
+        // Rol hujjati hali yaratilmagan xodim — lekin BALANSGA
+        // TEGOLMAYDI.
+        || (customerReader() &&
+            request.resource.data.bonusBalance == resource.data.bonusBalance);
 
       match /bonusHistory/{historyId} {
-        allow read: if request.auth != null &&
-          (request.auth.uid == uid ||
-           request.auth.token.firebase.sign_in_provider == 'password');
-        allow create: if request.auth != null &&
-          request.auth.token.firebase.sign_in_provider == 'password';
+        allow read: if (isSignedIn() && request.auth.uid == uid) || customerReader();
+        // Yozuvni odatda Cloud Function yaratadi (Admin SDK qoidalarni
+        // chetlab o'tadi); panel ham qo'lda bonus qo'shganda yozadi.
+        // Mijozning O'ZI esa "bonus qo'shildi" degan soxta yozuv yasay
+        // olmasin.
+        allow create: if customerReader();
       }
     }
     match /adminRoles/{uid} {

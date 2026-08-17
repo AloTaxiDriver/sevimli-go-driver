@@ -4,7 +4,7 @@ import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
-import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { onDocumentCreated, onDocumentUpdated, onDocumentWritten } from "firebase-functions/v2/firestore";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import { defineSecret } from "firebase-functions/params";
@@ -75,14 +75,42 @@ async function getRadiusConfig(): Promise<{
 // Haydovchi hujjatidagi joylashuv vaqti (millisekundda). Avval AYNAN
 // joylashuv vaqti (`locationUpdatedAt` — uni faqat haydovchi ilovasidagi
 // joylashuv vazifasi yozadi), topilmasa umumiy `updatedAt`.
+function tsMillis(ts: any): number {
+  if (!ts) return 0;
+  if (typeof ts.toMillis === "function") return ts.toMillis();
+  if (typeof ts.seconds === "number") return ts.seconds * 1000;
+  return 0;
+}
+
 function driverLocationMillis(data: FirebaseFirestore.DocumentData): number {
-  const pick = (ts: any): number => {
-    if (!ts) return 0;
-    if (typeof ts.toMillis === "function") return ts.toMillis();
-    if (typeof ts.seconds === "number") return ts.seconds * 1000;
-    return 0;
-  };
-  return pick(data.locationUpdatedAt) || pick(data.updatedAt);
+  return tsMillis(data.locationUpdatedAt) || tsMillis(data.updatedAt);
+}
+
+/** Haydovchidan OXIRGI MARTA qachon xabar kelgani — ikkala vaqtning
+ * YANGIROG'I.
+ *
+ * MUHIM: bu yuqoridagi `driverLocationMillis` dan ATAYLAB farq qiladi,
+ * va ularni almashtirib yuborish jiddiy zarar keltiradi.
+ *
+ *   * `driverLocationMillis` — "KOORDINATASI yangimi?" degan savolga
+ *     javob beradi, shuning uchun `locationUpdatedAt` USTUN turadi:
+ *     push tokeni yoki "band" bayrog'i yozilishi koordinatani
+ *     yangilamaydi, lekin `updatedAt`ni yangilaydi. Buyurtma
+ *     taqsimlashda aynan shu kerak.
+ *
+ *   * bu funksiya esa BOSHQA savolga javob beradi: "SEANS tirikmi?".
+ *     Bu yerda `locationUpdatedAt`ni ustun qo'yish XATO bo'lardi.
+ *     Kechagi GPS yozuvi bor haydovchi bugun ishga chiqib "onlayn"
+ *     tugmasini bossa, `updatedAt` YANGI, `locationUpdatedAt` esa hamon
+ *     KECHAGI bo'ladi — birinchi GPS nuqtasi kelguncha (yerto'lada,
+ *     sovuq startda, yoki joylashuvga ruxsat berilmagan telefonda u
+ *     umuman kelmaydi). Eskirgan qiymatga qarab uni oflayn qilib
+ *     qo'yish haydovchini BUTUN SMENA davomida buyurtmasiz qoldirardi:
+ *     ilovada `isOnline` faqat mahalliy holat, va uni hech kim qayta
+ *     yozmaydi — haydovchi qo'lda oflayn/onlayn qilmaguncha.
+ */
+function driverLastSeenMillis(data: FirebaseFirestore.DocumentData): number {
+  return Math.max(tsMillis(data.locationUpdatedAt), tsMillis(data.updatedAt));
 }
 
 // `isOnline: true` — bu SHUNCHAKI hujjatdagi bayroq, va u ilova
@@ -102,6 +130,11 @@ function driverLocationMillis(data: FirebaseFirestore.DocumentData): number {
 // narxi kattaroq (haqiqiy haydovchi buyurtmadan mahrum bo'ladi), va
 // tunnel/lift kabi qisqa uzilishlar hisobga olinishi kerak.
 const DRIVER_DISPATCH_STALE_MS = 5 * 60 * 1000;
+
+// Ketma-ket taklif sikli uchun umumiy vaqt byudjeti. Funksiyaning
+// o'z chegarasi 540 soniya — undan xavfsiz masofada to'xtaymiz,
+// shunda yakuniy xulosa jurnalga albatta yoziladi.
+const DISPATCH_LOOP_BUDGET_MS = 7 * 60 * 1000;
 
 // Haydovchi hali safarda deb hisoblanadigan buyurtma holatlari.
 const ACTIVE_ORDER_STATUSES = ["accepted", "arrived", "in_progress"] as const;
@@ -580,13 +613,55 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     }
 
     // ── KETMA-KET DISPATCH ────────────────────────────────────
+    // MUHIM: butun sikl uchun vaqt chegarasi. Funksiyaning o'z chegarasi
+    // 540 soniya (yuqorida), bitta haydovchiga esa `timeoutSeconds`
+    // (odatda 20s) kutiladi — ya'ni 27 ta haydovchidan keyin funksiya
+    // OG'ZIDA uziladi: qolganlariga taklif bormaydi va oxirgi
+    // xulosa yozuvi ham chiqmaydi, ya'ni jurnalda hammasi joyidaday
+    // ko'rinadi. Endi sikl o'zi to'xtaydi va NECHTASI qolib
+    // ketganini AYTADI.
+    const dispatchDeadline = Date.now() + DISPATCH_LOOP_BUDGET_MS;
+    let notOffered = 0;
+
     for (let i = 0; i < nearbyDrivers.length; i++) {
       const driver = nearbyDrivers[i];
+
+      if (Date.now() > dispatchDeadline) {
+        notOffered = nearbyDrivers.length - i;
+        logger.warn(
+          `Buyurtma ${orderId}: vaqt chegarasiga yetildi — ${notOffered} ta haydovchiga ` +
+            `taklif YUBORILMADI (ular "Ochiq buyurtmalar"da ko'radi)`
+        );
+        break;
+      }
 
       const stillPending = await isOrderStillPending(orderId);
       if (!stillPending) {
         logger.info(`Buyurtma ${orderId} qabul qilindi yoki bekor qilindi (${i}. haydovchida)`);
         return;
+      }
+
+      // MUHIM: haydovchining "band"ligi YUQORIDAGI ro'yxat tuzilganda
+      // BIR MARTA tekshirilgan edi, sikl esa daqiqalab davom etadi.
+      // Navbat shu haydovchiga yetguncha u boshqa buyurtmani olib
+      // ulgurgan bo'lishi mumkin — o'sha holatda unga taklif yuborish
+      // ikkinchi buyurtmani qabul qilishiga yo'l ochadi (haydovchi
+      // ilovasidagi tekshiruv ham, `acceptOrder` ham "band"ni
+      // ko'rmaydi), va birinchi safar hech qachon yakunlanmay qoladi.
+      // Shuning uchun taklifdan OLDIN holat qayta o'qiladi.
+      let stillFree = true;
+      try {
+        const fresh = await db.collection("drivers").doc(driver.id).get();
+        const freshData = fresh.data();
+        stillFree = !!freshData && freshData.busy !== true && freshData.isOnline === true;
+      } catch (error) {
+        // O'qib bo'lmadi — eski ma'lumot bilan davom etamiz (taklif
+        // yubormaslikdan ko'ra yuborgan yaxshi: buyurtma mijozniki).
+        logger.warn(`Haydovchi ${driver.id} holatini qayta o'qib bo'lmadi`, error);
+      }
+      if (!stillFree) {
+        logger.info(`Buyurtma ${orderId}: haydovchi ${driver.id} endi band/oflayn — o'tkazib yuborildi`);
+        continue;
       }
 
       logger.info(
@@ -882,6 +957,15 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         // ko'tarmasligi kerak. Ayirmani kompaniya qoplaydi.
         const actualSpent = discount;
         const newBalance = Math.max(0, currentBalance - discount) + earnAmount;
+        // MIJOZ BALANSIDAN haqiqatda yechilgan summa. Bu `discount` dan
+        // KAM bo'lishi mumkin (balans yetmagan holat) — va aynan shu
+        // farq qaytarishda muhim: qaytarishda `discount` ni tiklash
+        // mijozga YO'QDAN bonus yasab berardi.
+        //   Misol: balans 5 000, bonusUsed 8 000, cashback 1 200.
+        //   Yechildi: 5 000 (balans 0 ga tushdi), qo'shildi: 1 200.
+        //   Qaytarishda 8 000 tiklansa -> 8 000. Mijoz 5 000 bilan
+        //   kirib, 8 000 bilan chiqadi: 3 000 yo'qdan paydo bo'ldi.
+        const actuallyDeducted = Math.min(currentBalance, discount);
 
         tx.set(customerRef, { bonusBalance: newBalance }, { merge: true });
         // `bonusCompensation` — haydovchiga qoplab berilgan summa. U
@@ -897,6 +981,7 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
             // bo'ladi: onOrderLeftCompletedRevertMoney AYNAN qancha
             // berilgani va KIMGA berilganini shulardan biladi.
             bonusEarned: earnAmount,
+            bonusDeducted: actuallyDeducted,
             bonusCompensationDriverId: actualSpent > 0 && txDriverId ? txDriverId : null,
           },
           { merge: true }
@@ -924,7 +1009,13 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
             typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
           tx.set(txDriverRef, { balance: driverBalance + actualSpent }, { merge: true });
           // Haydovchi balansidagi o'zgarish sababsiz ko'rinmasin.
-          tx.set(txDriverRef.collection("bonusHistory").doc(`compensation-`), {
+          // MUHIM: ID ichida `${orderId}` bo'lishi SHART. Avval u tushib
+          // qolgan edi (`compensation-`), ya'ni HAR BIR qoplama bitta
+          // hujjatni qayta yozardi: haydovchi uchta safar uchun qoplama
+          // olsa ham tarixda faqat oxirgisi ko'rinardi. Qaytarish esa
+          // `compensation-${orderId}` ni o'chirishga urinardi va hech
+          // narsa topmasdi — eski yozuv abadiy qolib ketardi.
+          tx.set(txDriverRef.collection("bonusHistory").doc(`compensation-${orderId}`), {
             period: "bonus_compensation",
             date: tashkentDateStr(),
             amount: actualSpent,
@@ -992,7 +1083,6 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
     }
 
     const orderRef = after.ref;
-    const driverRef = db.collection("drivers").doc(driverId);
 
     try {
       await db.runTransaction(async (tx) => {
@@ -1001,6 +1091,22 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
         if (!orderData || orderData.status !== "completed" || orderData.commissionApplied) {
           return;
         }
+
+        // MUHIM: haydovchi TRANZAKSIYA ICHIDAGI o'qishdan olinadi, hodisa
+        // suratidan emas. Eventarc kafolati "kamida bir marta" — ya'ni
+        // eski hodisa qayta yetkazilishi mumkin. Buyurtma oradan qayta
+        // ochilib boshqa haydovchiga o'tgan bo'lsa, hodisa suratidagi
+        // `driverId` ALLAQACHON eskirgan bo'ladi va komissiya
+        // NOTO'G'RI haydovchidan yechilardi (yangisidan esa umuman
+        // yechilmasdi — bayroq allaqachon qo'yilgan bo'lardi).
+        // `onOrderCompletedApplyBonus` shu tarzda allaqachon tuzatilgan.
+        const txDriverId: string | undefined =
+          typeof orderData.driverId === "string" ? orderData.driverId : undefined;
+        if (!txDriverId) {
+          logger.info(`Buyurtma ${orderId} driverId'siz — komissiya hisoblanmadi`);
+          return;
+        }
+        const driverRef = db.collection("drivers").doc(txDriverId);
 
         // MUHIM (poyga holati): xuddi bonus funksiyasidagi kabi, "completed"ga
         // o'tish va yakuniy narxni yozish ikkita alohida yozuv — shuning uchun
@@ -1051,12 +1157,12 @@ export const onOrderCompletedDeductCommission = onDocumentUpdated(
         // (onOrderLeftCompletedRevertMoney).
         tx.set(
           orderRef,
-          { commissionApplied: true, commissionAmount, commissionDriverId: driverId },
+          { commissionApplied: true, commissionAmount, commissionDriverId: txDriverId },
           { merge: true }
         );
 
         logger.info(
-          `Buyurtma ${orderId}: komissiya yechildi (haydovchi ${driverId}) — ` +
+          `Buyurtma ${orderId}: komissiya yechildi (haydovchi ${txDriverId}) — ` +
             `safar qiymati: ${tripTotal}, komissiya: ${commissionAmount}, ` +
             `yangi balans: ${newBalance}`
         );
@@ -1093,11 +1199,8 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
     if (!driverId) return;
 
     const orderRef = after.ref;
-    const driverRef = db.collection("drivers").doc(driverId);
     const dateStr = tashkentDateStr();
     const weekStartStr = tashkentWeekStartStr();
-    const dailyStatsRef = driverRef.collection("dailyBonusStats").doc(dateStr);
-    const weeklyStatsRef = driverRef.collection("weeklyBonusStats").doc(weekStartStr);
     // Buyurtmaning branchId'si — dispatch bosqichida haydovchining o'z
     // filialiga mos ravishda tayinlangan (onNewOrderNotifyDrivers faqat
     // shu filialdagi haydovchilarga yuboradi), shuning uchun bu yerda
@@ -1116,6 +1219,18 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
         if (!orderData || orderData.status !== "completed" || orderData.driverBonusChecked) {
           return;
         }
+
+        // MUHIM: haydovchi TRANZAKSIYA ICHIDAN o'qiladi — hodisa surati
+        // eskirgan bo'lishi mumkin (izohi onOrderCompletedDeductCommission
+        // ichida). Aks holda buyurtma qayta ochilib boshqa haydovchiga
+        // o'tgan bo'lsa, safar ESKI haydovchining kunlik/haftalik
+        // hisobiga yozilardi.
+        const txDriverId: string | undefined =
+          typeof orderData.driverId === "string" ? orderData.driverId : undefined;
+        if (!txDriverId) return;
+        const driverRef = db.collection("drivers").doc(txDriverId);
+        const dailyStatsRef = driverRef.collection("dailyBonusStats").doc(dateStr);
+        const weeklyStatsRef = driverRef.collection("weeklyBonusStats").doc(weekStartStr);
 
         // MUHIM: avval bu yerda `distanceKm` — buyurtma YARATILGANDAGI
         // taxminiy masofa o'qilardi. Haqiqiy, GPS bo'yicha o'lchangan
@@ -1185,7 +1300,7 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
           orderRef,
           {
             driverBonusChecked: true,
-            driverBonusDriverId: driverId,
+            driverBonusDriverId: txDriverId,
             driverBonusStatsDate: dateStr,
             driverBonusStatsWeek: weekStartStr,
             driverBonusDailyCounted: dailyQualifies,
@@ -1249,7 +1364,7 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
               createdAt: FieldValue.serverTimestamp(),
             });
             logger.info(
-              `Haydovchi ${driverId}: kunlik bonus (${dateStr}) berildi — ${newCount} safar, ` +
+              `Haydovchi ${txDriverId}: kunlik bonus (${dateStr}) berildi — ${newCount} safar, ` +
                 `+${driverBonusSettings.bonusAmount} so'm`
             );
           }
@@ -1268,7 +1383,7 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
               createdAt: FieldValue.serverTimestamp(),
             });
             logger.info(
-              `Haydovchi ${driverId}: haftalik bonus (${weekStartStr}) berildi — ${weeklyNewCount} safar, ` +
+              `Haydovchi ${txDriverId}: haftalik bonus (${weekStartStr}) berildi — ${weeklyNewCount} safar, ` +
                 `+${driverBonusSettings.weeklyBonusAmount} so'm`
             );
           }
@@ -1282,15 +1397,15 @@ export const onOrderCompletedCheckDriverBonus = onDocumentUpdated(
               createdAt: FieldValue.serverTimestamp(),
             });
             logger.info(
-              `Haydovchi ${driverId}: buyurtma-bonus (${orderId}) berildi — ` +
+              `Haydovchi ${txDriverId}: buyurtma-bonus (${orderId}) berildi — ` +
                 `+${driverBonusSettings.perOrderBonusAmount} so'm`
             );
           }
 
-          logger.info(`Haydovchi ${driverId}: yangi balans ${newBalance}`);
+          logger.info(`Haydovchi ${txDriverId}: yangi balans ${newBalance}`);
         } else if (dailyQualifies || weeklyQualifies) {
           logger.info(
-            `Buyurtma ${orderId}: haydovchi ${driverId} hisobga qo'shildi — ` +
+            `Buyurtma ${orderId}: haydovchi ${txDriverId} hisobga qo'shildi — ` +
               (dailyQualifies ? `kunlik ${newCount}/${driverBonusSettings.dailyTripThreshold}` : "kunlik o'chirilgan") +
               (weeklyQualifies ? `, haftalik ${weeklyNewCount}/${driverBonusSettings.weeklyTripThreshold}` : "")
           );
@@ -1411,7 +1526,22 @@ export const onOrderLeftCompletedRevertMoney = onDocumentUpdated(
 
         // Har bir summa faqat O'SHA qismi qaytarilishi mumkin bo'lsa
         // hisobga olinadi (yuqoridagi izohga qarang).
+        // Haydovchidan qaytarib olinadigan summa — unga BERILGAN qoplama.
         const bonusSpent = canRevertBonus ? Math.max(0, num(o.bonusCompensation)) : 0;
+        // Mijozga qaytariladigan summa esa — undan HAQIQATDA yechilgani.
+        // Bu ikkalasi TENG EMAS: balans yetmagan holatda kompaniya
+        // haydovchiga to'liq qoplab beradi, mijozdan esa bori yechiladi.
+        // Ikkalasini birlashtirib yuborish mijozga yo'qdan bonus yasab
+        // berardi (izohi `bonusDeducted` yozilgan joyda).
+        //
+        // Eski buyurtmalarda `bonusDeducted` maydoni yo'q — ularda
+        // avvalgidek `bonusCompensation` ishlatiladi (ular uchun bu
+        // ikkalasi deyarli har doim teng bo'lgan).
+        const bonusReturnedToCustomer = canRevertBonus
+          ? typeof o.bonusDeducted === "number"
+            ? Math.max(0, o.bonusDeducted)
+            : bonusSpent
+          : 0;
         const bonusEarned = canRevertBonus ? Math.max(0, num(o.bonusEarned)) : 0;
         const commissionAmount = canRevertCommission ? num(o.commissionAmount) : 0;
         const perOrderBonus = canRevertDriverBonus ? Math.max(0, num(o.driverBonusPerOrderAmount)) : 0;
@@ -1458,20 +1588,20 @@ export const onOrderLeftCompletedRevertMoney = onDocumentUpdated(
 
         // ---- 2-qadam: shu nuqtadan e'tiboran faqat yozishlar ----
 
-        if (customerRef && customerDoc && (bonusSpent > 0 || bonusEarned > 0)) {
+        if (customerRef && customerDoc && (bonusReturnedToCustomer > 0 || bonusEarned > 0)) {
           const currentBalance = num(customerDoc.data()?.bonusBalance);
           // Sarflangani qaytariladi, hisoblangan cashback esa bekor
           // qilinadi. Nolda to'xtaydi: mijoz cashbackni allaqachon
           // boshqa safarda ishlatib yuborgan bo'lishi mumkin, balans
           // esa hech qachon manfiy bo'lmasligi kerak.
-          const restored = Math.max(0, currentBalance + bonusSpent - bonusEarned);
+          const restored = Math.max(0, currentBalance + bonusReturnedToCustomer - bonusEarned);
           tx.set(customerRef, { bonusBalance: restored }, { merge: true });
           const history = customerRef.collection("bonusHistory");
           // Tarix mijozga ko'rinadi — balans sababsiz o'zgarmasin.
-          if (bonusSpent > 0) {
+          if (bonusReturnedToCustomer > 0) {
             tx.set(history.doc(), {
               type: "earned",
-              amount: bonusSpent,
+              amount: bonusReturnedToCustomer,
               orderId,
               note: "Buyurtma qayta ochildi — bonus qaytarildi",
               createdAt: FieldValue.serverTimestamp(),
@@ -2124,7 +2254,12 @@ export const createStaffAccount = onCall(async (request) => {
 // MUHIM: `updatedAt` ATAYLAB YOZILMAYDI. Aks holda arvoh haydovchi
 // "hozirgina yangilangan" bo'lib ko'rinib, eski koordinatasi yangiday
 // qabul qilinardi.
-const GHOST_ONLINE_STALE_MS = 30 * 60 * 1000;
+// Chegara ATAYLAB keng (bir soat). Bu yerda xatoning narxi
+// nosimmetrik: ortiqcha kutish faqat panelda bitta eskirgan yozuv
+// qoldiradi, erta bosish esa ISHLAYOTGAN haydovchini buyurtmasiz
+// qoldiradi. Haqiqiy muammo — soatlab/kunlab osilib qolganlar, ular
+// bu chegaradan baribir o'tadi.
+const GHOST_ONLINE_STALE_MS = 60 * 60 * 1000;
 
 export const cleanupGhostOnlineDrivers = onSchedule(
   {
@@ -2149,8 +2284,10 @@ export const cleanupGhostOnlineDrivers = onSchedule(
 
     for (const doc of snapshot.docs) {
       const data = doc.data();
-      const locationMillis = driverLocationMillis(data);
-      if (locationMillis !== 0 && now - locationMillis <= GHOST_ONLINE_STALE_MS) continue;
+      // MUHIM: bu yerda AYNAN `driverLastSeenMillis` — "seans tirikmi",
+      // "koordinatasi yangimi" EMAS. Farqi katta, izohi funksiya ustida.
+      const lastSeen = driverLastSeenMillis(data);
+      if (lastSeen !== 0 && now - lastSeen <= GHOST_ONLINE_STALE_MS) continue;
 
       const patch: Record<string, unknown> = { isOnline: false };
 
@@ -2194,5 +2331,99 @@ export const cleanupGhostOnlineDrivers = onSchedule(
           `${busyCleared} ta "band" tozalandi, ${keptBusy} tasida safar bor edi`
       );
     }
+  }
+);
+
+
+// ============================================================
+// `bonusUsed` NI SERVER TOMONDA CHEKLASH
+// ============================================================
+// `bonusUsed` — mijoz bonusidan qancha yechilishini belgilaydigan
+// maydon, va uni MIJOZ ILOVASI yozadi. Safar yakunlanganda kompaniya
+// aynan shu summani haydovchiga naqd pulda QOPLAB BERADI
+// (onOrderCompletedApplyBonus). Ya'ni bu maydon — to'g'ridan-to'g'ri
+// pul.
+//
+// Firestore qoidalari uni faqat buyurtma EGASI yozishini
+// ta'minlaydi, lekin QANCHA yozishini cheklay olmaydi: qoidalar
+// boshqa hujjatdagi (customers/{uid}.bonusBalance) qiymat bilan
+// solishtira olmaydi. Ya'ni o'zgartirilgan ilova bilan mijoz balansida
+// 0 bonus bilan `bonusUsed: 500000` yozib, safarni bepul qilib olishi,
+// kompaniya esa haydovchiga o'sha 500 000 ni to'lab berishi mumkin edi.
+//
+// Shuning uchun tekshiruv SERVER tomonda, safar boshlanishidan oldin
+// bajariladi: bonus mijozning HAQIQIY balansidan va safar narxidan
+// oshib ketolmaydi. Tuzatish darhol yoziladi, ya'ni haydovchi ham,
+// mijoz ham ekranda to'g'ri summani ko'radi.
+//
+// Halqa xavfi yo'q: tuzatishdan keyingi qayta ishga tushishda
+// `bonusUsed` allaqachon chegara ichida bo'ladi va funksiya hech
+// narsa yozmaydi.
+const BONUS_EDITABLE_STATUSES = ["pending", "accepted", "arrived", "in_progress"];
+
+export const onOrderBonusUsedClamp = onDocumentWritten(
+  "orders/{orderId}",
+  async (event) => {
+    const after = event.data?.after;
+    if (!after?.exists) return;
+    const o = after.data();
+    if (!o) return;
+
+    // Safar yakunlangandan keyin tegmaymiz — u yerda hisob-kitob
+    // allaqachon bo'lgan.
+    if (!BONUS_EDITABLE_STATUSES.includes(o.status)) return;
+
+    const claimed = typeof o.bonusUsed === "number" ? o.bonusUsed : 0;
+    if (claimed <= 0) return;
+
+    // Qiymat o'zgarmagan bo'lsa qayta tekshirmaymiz (har bir yozuvda
+    // mijoz hujjatini o'qib o'tirmaslik uchun).
+    const before = event.data?.before;
+    const prevClaimed =
+      before?.exists && typeof before.data()?.bonusUsed === "number"
+        ? before.data()!.bonusUsed
+        : null;
+    const prevTotal = before?.exists ? computeTripTotal(before.data()!) : null;
+    const tripTotal = computeTripTotal(o);
+    if (prevClaimed === claimed && prevTotal === tripTotal) return;
+
+    const orderId = event.params.orderId;
+    const customerId: unknown = o.customerId;
+
+    // Mijozsiz buyurtma (dispetcher paneldan yaratilgan) — bunda
+    // mijoz bonusi tushunchasi umuman yo'q, chunki balansni yechadigan
+    // hisob ham yo'q.
+    if (typeof customerId !== "string" || !customerId) {
+      logger.warn(
+        `Buyurtma ${orderId}: customerId yo'q, lekin bonusUsed=${claimed} — nolga tushirildi`
+      );
+      await after.ref.update({ bonusUsed: 0, finalPrice: Math.max(0, tripTotal) });
+      return;
+    }
+
+    let balance = 0;
+    try {
+      const snap = await db.collection("customers").doc(customerId).get();
+      const raw = snap.data()?.bonusBalance;
+      balance = typeof raw === "number" ? raw : 0;
+    } catch (error) {
+      // O'qib bo'lmadi — tegmaymiz. Kamaytirmaslik xavfsizroq:
+      // mijozga ko'rsatilgan chegirmani o'zgartirib yuborish ham
+      // zarar (u boshqa summani kutadi).
+      logger.warn(`Buyurtma ${orderId}: mijoz balansini o'qib bo'lmadi`, error);
+      return;
+    }
+
+    const allowed = Math.max(0, Math.min(claimed, balance, tripTotal));
+    if (allowed === claimed) return;
+
+    await after.ref.update({
+      bonusUsed: allowed,
+      finalPrice: Math.max(0, tripTotal - allowed),
+    });
+    logger.warn(
+      `Buyurtma ${orderId}: bonusUsed ${claimed} -> ${allowed} ` +
+        `(mijoz balansi: ${balance}, safar qiymati: ${tripTotal})`
+    );
   }
 );
