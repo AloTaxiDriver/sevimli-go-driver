@@ -781,6 +781,10 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       // haqiqatan safarda bo'lsa, safar tiklanishi `isOnline`ni true
       // qiladi va kuzatuv darhol qaytadan boshlanadi.
       stopDriverLocationTracking();
+      // Tushuntirish oynasi ochiq qolgan bo'lsa yopamiz — u endi
+      // ma'nosiz, va javob kelganda oflayn holatda kuzatuv boshlanib
+      // ketishiga sabab bo'lardi.
+      setBgLocationDisclosureVisible(false);
       return;
     }
     registerForPushNotifications().then((token) => {
@@ -822,7 +826,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   async function handleBgLocationDisclosure(accepted: boolean) {
     setBgLocationDisclosureVisible(false);
     await setBackgroundLocationConsent(accepted ? 'granted' : 'declined');
-    startDriverLocationTracking(driverId);
+    // MUHIM: oyna ochiq turgan vaqt ichida haydovchi oflayn bo'lgan
+    // bo'lishi mumkin — javobni o'qib, keyin "Ishni tugatish"ni bosgan
+    // bo'lsa. Avval bu yerda shartsiz `startDriverLocationTracking`
+    // chaqirilardi va xizmat oflayn holatda yonib ketardi.
+    if (isOnline) startDriverLocationTracking(driverId);
   }
 
   useEffect(() => {

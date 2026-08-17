@@ -77,10 +77,52 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
   }
 });
 
+// ============================================================
+// BOSHLASH/TO'XTATISH POYGASI
+// ============================================================
+// Kuzatuvni boshlash — uzun asinxron zanjir: AsyncStorage yozuvi,
+// ruxsat tekshiruvlari, ehtimol TIZIM RUXSAT OYNASI (u ochiq turganda
+// bir necha soniya o'tishi mumkin), va nihoyat
+// `startLocationUpdatesAsync`. To'xtatish ham asinxron.
+//
+// Ikkalasi ham kutilmasdan (fire-and-forget) chaqiriladi, shuning uchun
+// ular BIR-BIRINING USTIGA tushishi mumkin edi:
+//
+//   haydovchi onlayn bo'ldi -> boshlash zanjiri ketdi (2 soniya)
+//   haydovchi 1 soniyada oflayn bo'ldi -> to'xtatish chaqirildi, lekin
+//     `hasStartedLocationUpdatesAsync` hali FALSE qaytardi (boshlash
+//     tugamagan) -> to'xtatish hech narsa qilmadi
+//   boshlash zanjiri tugadi -> XIZMAT YONDI
+//
+// Natijada haydovchi oflayn bo'la turib, doimiy bildirishnoma bilan
+// qolardi va joylashuvi yuborilaverardi. Uni o'chirishning yagona
+// yo'li — qayta onlayn bo'lib, yana oflayn bo'lish edi.
+//
+// Yechim: buyruqlar holatni to'g'ridan-to'g'ri o'zgartirmaydi, balki
+// "KUZATUV YOQILGAN BO'LISHI KERAKMI" degan yagona niyatni yozadi
+// (`desiredTracking`), so'ng navbat (`trackingQueue`) orqali birma-bir
+// bajariladigan yarashtiruvchi haqiqatni shu niyatga moslaydi.
+let desiredTracking = false;
+let trackingDriverId: string | null = null;
+let trackingQueue: Promise<void> = Promise.resolve();
+
+function enqueueTrackingWork(work: () => Promise<void>): Promise<void> {
+  // `.then(work, work)` — oldingi ish xato bilan tugasa ham navbat
+  // to'xtab qolmasin.
+  trackingQueue = trackingQueue.then(work, work);
+  return trackingQueue;
+}
+
 /** Fon rejimida joylashuv kuzatuvini boshlaydi (haydovchi onlayn
  * bo'lganda). Qayta chaqirilsa hech narsa buzilmaydi — allaqachon
  * ishlab turgan bo'lsa qayta ishga tushirilmaydi. */
 export async function startDriverLocationTracking(driverId: string): Promise<void> {
+  desiredTracking = true;
+  trackingDriverId = driverId;
+  return enqueueTrackingWork(() => applyDesiredTracking());
+}
+
+async function beginTracking(driverId: string): Promise<void> {
   try {
     await AsyncStorage.setItem(DRIVER_ID_KEY, driverId);
 
@@ -100,6 +142,12 @@ export async function startDriverLocationTracking(driverId: string): Promise<voi
     if ((await getBackgroundLocationConsent()) === 'granted') {
       await Location.requestBackgroundPermissionsAsync().catch(() => {});
     }
+
+    // MUHIM: ruxsat oynasi ochiq turgan vaqt ichida (u soniyalab
+    // cho'zilishi mumkin) haydovchi oflayn bo'lib ulgurgan bo'lishi
+    // mumkin. Xizmatni yoqishdan OLDIN niyatni oxirgi marta
+    // tekshiramiz.
+    if (!desiredTracking) return;
 
     const already = await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK);
     if (already) return;
@@ -140,9 +188,7 @@ export async function startDriverLocationTracking(driverId: string): Promise<voi
   }
 }
 
-/** Kuzatuvni to'xtatadi — haydovchi oflayn bo'lganda yoki tizimdan
- * chiqqanda. Doimiy bildirishnoma ham shunda yo'qoladi. */
-export async function stopDriverLocationTracking(): Promise<void> {
+async function endTracking(): Promise<void> {
   try {
     const already = await Location.hasStartedLocationUpdatesAsync(DRIVER_LOCATION_TASK);
     if (already) {
@@ -151,5 +197,28 @@ export async function stopDriverLocationTracking(): Promise<void> {
     await AsyncStorage.removeItem(DRIVER_ID_KEY);
   } catch (e) {
     console.warn('Joylashuv kuzatuvini to\'xtatishda xato:', e);
+  }
+}
+
+/** Kuzatuvni to'xtatadi — haydovchi oflayn bo'lganda yoki tizimdan
+ * chiqqanda. Doimiy bildirishnoma ham shunda yo'qoladi. */
+export async function stopDriverLocationTracking(): Promise<void> {
+  desiredTracking = false;
+  trackingDriverId = null;
+  return enqueueTrackingWork(() => applyDesiredTracking());
+}
+
+// Haqiqatni oxirgi niyatga moslaydi. Navbat tufayli bir vaqtda faqat
+// bittasi ishlaydi, shuning uchun boshlash va to'xtatish bir-birining
+// o'rtasiga tushib qololmaydi.
+async function applyDesiredTracking(): Promise<void> {
+  if (desiredTracking) {
+    if (trackingDriverId) await beginTracking(trackingDriverId);
+    // Boshlash zanjiri davomida "to'xtat" kelgan bo'lsa, navbatdagi
+    // keyingi ish uni baribir o'chiradi — lekin ortiqcha kutmaslik
+    // uchun shu yerda ham darhol tekshiramiz.
+    if (!desiredTracking) await endTracking();
+  } else {
+    await endTracking();
   }
 }
