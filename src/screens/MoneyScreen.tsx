@@ -41,6 +41,23 @@ function orderNetEarning(o: FirestoreOrder): number {
   return Math.max(0, tripTotal - (o.commissionAmount || 0));
 }
 
+// MUHIM: `commissionAmount` maydoni buyurtmaga YAQINDA yozila
+// boshlandi. Undan oldingi safarlarda komissiya HAQIQATDA yechilgan
+// (haydovchi balansidan), lekin qancha ekani buyurtmada saqlanmagan.
+//
+// Yuqoridagi `|| 0` shunday safarlarni "komissiyasiz" deb hisoblaydi,
+// ya'ni ular haqiqiy daromaddan YUQORI ko'rinadi. Grafikda esa bu
+// sun'iy zinapoya bo'lib chiqadi: eski kunlar baland, yangilari past —
+// go'yo haydovchining daromadi to'satdan tushib ketgandek. Aslida
+// hech narsa o'zgarmagan, faqat hisob aniqroq bo'lgan.
+//
+// Summani orqaga tiklab bo'lmaydi (tarif stavkasi buyurtmada yo'q),
+// shuning uchun raqamni O'YLAB TOPMAYMIZ — shunchaki nechta bunday
+// safar borligini sanab, foydalanuvchiga aytamiz.
+function hasUnrecordedCommission(o: FirestoreOrder): boolean {
+  return o.commissionApplied === true && typeof o.commissionAmount !== 'number';
+}
+
 // Oxirgi 7 kun (bugun bilan tugaydi) uchun, yakunlangan buyurtmalardan
 // real daromad hisoblanadi. Bekor qilingan buyurtmalar hisobga
 // olinmaydi.
@@ -203,6 +220,15 @@ export default function MoneyScreen() {
       .filter((o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo)
       .reduce((sum, o) => sum + (o.bonusCompensation || 0), 0);
   }, [orders]);
+  // Komissiyasi buyurtmada saqlanmagan eski safarlar — qarang:
+  // hasUnrecordedCommission. Ular yo'qolib borgani sari bu izoh ham
+  // o'zi yo'qoladi.
+  const weekUnrecordedCommissionCount = useMemo(() => {
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return orders.filter(
+      (o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo && hasUnrecordedCommission(o)
+    ).length;
+  }, [orders]);
 
   const todayStr = useMemo(() => tashkentDateStr(), []);
   const weekStartStr = useMemo(() => tashkentWeekStartStr(), []);
@@ -283,6 +309,12 @@ export default function MoneyScreen() {
                   +{weekBonusCompensation.toLocaleString()} so'm
                 </Text>
               </View>
+            )}
+            {weekUnrecordedCommissionCount > 0 && (
+              <Text style={styles.cardNote}>
+                {weekUnrecordedCommissionCount} ta eski safarda komissiya alohida yozilmagan — ular
+                shu hisobda biroz yuqori ko'rinadi.
+              </Text>
             )}
           </GlassPanel>
 
@@ -467,6 +499,7 @@ const styles = StyleSheet.create({
   cardIconLabel: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   cardLabel: { fontSize: 15, fontWeight: '700', color: COLORS.dark },
   cardSubLabel: { fontSize: 12, color: COLORS.textMuted, marginTop: 2 },
+  cardNote: { fontSize: 11, lineHeight: 16, color: COLORS.textMuted, marginTop: 8 },
   cardSubRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

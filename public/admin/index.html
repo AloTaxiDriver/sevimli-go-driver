@@ -924,13 +924,19 @@ input:focus,select:focus,textarea:focus{outline:none;}
   };
 
   // Haydovchilar uchun bonus (kunlik/haftalik/har-buyurtma) sozlamasi —
-  // settings/driverBonus hujjati (umumiy STANDART) yoki, `branchId`
-  // berilsa, settings/driverBonus_branch_{id} (filialga xos override,
-  // xuddi getClientBonusSettings'dagi kabi "mavjud bo'lmasa standartga
-  // qaytish" mantiqi bilan). MUHIM: haydovchi balansining o'zi bu yerda
-  // emas, faqat Cloud Function (onOrderCompletedCheckDriverBonus) orqali
-  // o'zgaradi — bu shunchaki qoidalar (necha safar, qancha bonus,
-  // minimal masofa).
+  // umumiy STANDART (settings/driverBonus) ustiga, `branchId` berilsa,
+  // filialning o'z qiymatlari (settings/driverBonus_branch_{id})
+  // QO'YILADI.
+  //
+  // MUHIM: bu izohda avval "mavjud bo'lmasa standartga qaytish" deb
+  // yozilgan edi — o'sha paytdagi mantiq shunday edi: filial hujjati
+  // topilsa, standart UMUMAN o'qilmasdi. Bu xatoga olib kelardi
+  // (mergeBranchScopedSettings ustidagi izohga qarang) va tuzatilgan,
+  // lekin izoh eskiligicha qolib ketgan edi.
+  //
+  // Haydovchi balansining o'zi bu yerda emas, faqat Cloud Function
+  // (onOrderCompletedCheckDriverBonus) orqali o'zgaradi — bu shunchaki
+  // qoidalar (necha safar, qancha bonus, minimal masofa).
   window.getDriverBonusSettings = async function (branchId) {
     try {
       const snap = await getDocs(collection(db, "settings"));
@@ -3164,10 +3170,14 @@ function renderDriverTabContent(){
         const weekStartStr=dashboardTashkentWeekStartStr();
         const dailyIsActive=settings?.dailyEnabled!==false;
         const weeklyIsActive=typeof settings?.weeklyEnabled==='boolean'?settings.weeklyEnabled:((settings?.weeklyTripThreshold||0)>0);
-        const fallbackDailyThreshold=settings?.dailyTripThreshold||0;
-        const fallbackDailyAmount=settings?.bonusAmount||0;
-        const fallbackWeeklyThreshold=settings?.weeklyTripThreshold||0;
-        const fallbackWeeklyAmount=settings?.weeklyBonusAmount||0;
+        // MUHIM: `||0` EMAS. Maydon topilmasa Cloud Function o'zining
+        // zaxira qiymatini ishlatadi (15 safar, 20 000 so'm, 2 km) —
+        // panelda esa "0" ko'rsatilardi, ya'ni server hech qachon
+        // ishlatmaydigan raqam. Endi ikkalasi bir xil manbadan oladi.
+        const fallbackDailyThreshold=bonusNumberOr(settings,'dailyTripThreshold',DRIVER_BONUS_DEFAULTS);
+        const fallbackDailyAmount=bonusNumberOr(settings,'bonusAmount',DRIVER_BONUS_DEFAULTS);
+        const fallbackWeeklyThreshold=bonusNumberOr(settings,'weeklyTripThreshold',DRIVER_BONUS_DEFAULTS);
+        const fallbackWeeklyAmount=bonusNumberOr(settings,'weeklyBonusAmount',DRIVER_BONUS_DEFAULTS);
 
         const todayDoc=goals.daily.find(x=>x.id===todayStr);
         const weekDoc=goals.weekly.find(x=>x.id===weekStartStr);
@@ -3209,7 +3219,7 @@ function renderDriverTabContent(){
           <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;background:#FFF7ED;border-radius:11px;border:1px solid rgba(234,88,12,0.15)">
             <div>
               <div style="font-size:13px;font-weight:700;color:#9A3412">Har bir safar uchun</div>
-              <div style="font-size:11px;color:rgba(0,0,0,0.45);margin-top:2px">Kamida ${settings?.minTripDistanceKm||0} km bo'lgan har bir safar uchun</div>
+              <div style="font-size:11px;color:rgba(0,0,0,0.45);margin-top:2px">Kamida ${bonusNumberOr(settings,'minTripDistanceKm',DRIVER_BONUS_DEFAULTS)} km bo'lgan har bir safar uchun</div>
             </div>
             <div style="font-size:15px;font-weight:800;color:#9A3412">+${(settings?.perOrderBonusAmount||0).toLocaleString()} so'm</div>
           </div>`:'';
@@ -7082,6 +7092,27 @@ function toggleDbsPerOrder(){
   renderDbsToggle('dbs-perorder-toggle',window._dbsPerOrderEnabled);
 }
 
+// "Umumiy standart" sozlama BARCHA filiallarga taalluqli, shuning
+// uchun uni faqat admin o'zgartira oladi.
+//
+// MUHIM: bu yerda `guardBranchWrite` yetarli emas — u filialsiz
+// yozuvni "hammaga ochiq" deb hisoblaydi (yangi umumiy tarif yaratish
+// uchun ataylab shunday qilingan). Bonus sozlamasida esa filialsiz
+// degani AYNAN "hamma filial uchun standart" degani.
+//
+// Firestore qoidalari bunday yozuvni allaqachon rad etadi, lekin panel
+// bu haqda hech narsa demasdi: menejer "Saqlandi!" xabarini ko'rib,
+// aslida hech narsa yozilmaganini bilmasdan ketardi.
+function guardBonusSettingsWrite(branchId){
+  if(branchId)return guardBranchWrite(branchId);
+  if(getAllowedBranchIds()===null)return true; // admin
+  alert(
+    "Umumiy standart sozlamani faqat administrator o'zgartira oladi.\n\n" +
+    "Yuqoridagi ro'yxatdan o'z filialingizni tanlang — o'zgarish faqat shu filialga tegishli bo'ladi."
+  );
+  return false;
+}
+
 // Sahifa boshidagi filial-tanlagich o'zgarganda ikkala forma (mijoz +
 // haydovchi) shu yangi filial uchun qayta yuklanadi.
 function onBonusSettingsBranchChange(){
@@ -7220,7 +7251,7 @@ function readBonusTripCountField(id,label){
 
 async function saveBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
-  if(!guardBranchWrite(branchId))return;
+  if(!guardBonusSettingsWrite(branchId))return;
   const earnPercent=readBonusNumberField('bs-earn-percent','Cashback (%)');
   if(earnPercent===null)return;
   const minBalanceToUse=readBonusNumberField('bs-min-balance','Bonusdan foydalanish uchun eng kam balans');
@@ -7286,7 +7317,7 @@ async function loadDriverBonusSettingsForm(){
 
 async function saveDailyBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
-  if(!guardBranchWrite(branchId))return;
+  if(!guardBonusSettingsWrite(branchId))return;
   const dailyTripThreshold=readBonusTripCountField('dbs-trip-threshold','Kunlik safar chegarasi');
   if(dailyTripThreshold===null)return;
   const bonusAmount=readBonusNumberField('dbs-bonus-amount','Bonus summasi');
@@ -7312,7 +7343,7 @@ async function saveDailyBonusSettingsForm(){
 
 async function saveWeeklyBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
-  if(!guardBranchWrite(branchId))return;
+  if(!guardBonusSettingsWrite(branchId))return;
   const weeklyTripThreshold=readBonusTripCountField('dbs-weekly-trip-threshold','Haftalik safar chegarasi');
   if(weeklyTripThreshold===null)return;
   const weeklyBonusAmount=readBonusNumberField('dbs-weekly-bonus-amount','Haftalik bonus summasi');
@@ -7334,7 +7365,7 @@ async function saveWeeklyBonusSettingsForm(){
 
 async function savePerOrderBonusSettingsForm(){
   const branchId=window._bonusSettingsBranchId||null;
-  if(!guardBranchWrite(branchId))return;
+  if(!guardBonusSettingsWrite(branchId))return;
   const perOrderBonusAmount=readBonusNumberField('dbs-perorder-bonus-amount','Bonus summasi');
   if(perOrderBonusAmount===null)return;
   const perOrderEnabled=window._dbsPerOrderEnabled===true;

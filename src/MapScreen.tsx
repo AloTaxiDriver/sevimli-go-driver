@@ -267,23 +267,49 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // shuning uchun watchPositionAsync ichidagi (bo'sh deps bilan bir
   // marta yaratilgan, ya'ni "qotib qolgan" closure'li) callback'dan ham
   // xavfsiz chaqiriladi — .current har renderda yangilanib turadi.
+  //
+  // MUHIM: ref RENDER PAYTIDA emas, effekt ichida yangilanadi. Render
+  // funksiyasi "sof" bo'lishi kerak — React uni bekor qilishi yoki
+  // ekranga chiqarmasdan qayta chaqirishi mumkin, va o'shanda ref
+  // ko'rsatilmagan holatga ishora qilib qolardi. Hozircha zararsiz,
+  // lekin bu — jimgina buziladigan turdagi xato.
   const writeTripSnapshot = useRef(() => {});
-  writeTripSnapshot.current = () => {
-    const orderId = activeOrderSourceId.current;
-    const stage = tripStageRef.current;
-    if (!orderId || !stage) return;
-    const snapshot: ActiveTripSnapshot = {
-      orderId,
-      tripStage: stage,
-      activeLeg: activeLegRef.current,
-      tripDistanceKm: tripDistanceRef.current,
-      savedAt: Date.now(),
+  useEffect(() => {
+    writeTripSnapshot.current = () => {
+      const orderId = activeOrderSourceId.current;
+      const stage = tripStageRef.current;
+      if (!orderId || !stage) return;
+      const snapshot: ActiveTripSnapshot = {
+        orderId,
+        tripStage: stage,
+        activeLeg: activeLegRef.current,
+        tripDistanceKm: tripDistanceRef.current,
+        savedAt: Date.now(),
+      };
+      AsyncStorage.setItem(activeTripStorageKey(driverId), JSON.stringify(snapshot)).catch(() => {});
     };
-    AsyncStorage.setItem(activeTripStorageKey(driverId), JSON.stringify(snapshot)).catch(() => {});
-  };
+  });
 
   function clearTripSnapshot() {
     lastTripPersistAtRef.current = 0;
+    // MUHIM: yozuvchi AYNAN shu ikki ref'ga qarab ishlaydi va u React
+    // render siklidan MUSTAQIL — GPS callback'idan chaqiriladi. Ularni
+    // shu yerda tozalamasak, o'chirishdan keyin kelgan birinchi GPS
+    // signali snapshotni QAYTA yozib qo'yardi.
+    //
+    // Yuqoridagi `lastTripPersistAtRef = 0` buni yanada ehtimolli
+    // qiladi: u "oxirgi yozuvdan 10 soniya o'tdi" degan shartni darhol
+    // bajarib qo'yadi, ya'ni keyingi signal KUTMASDAN yozadi.
+    //
+    // Oqibati: safar tugagan yoki bekor qilingan bo'lsa ham qurilmada
+    // uning snapshoti qolib ketardi va ilova keyingi ochilishida
+    // allaqachon yopilgan safarni tiklashga urinardi.
+    //
+    // Chaqiruvchi joylarda bu ref'lar baribir tozalanadi, lekin uchtasida
+    // KEYINROQ — oradagi bo'shliq esa aynan shu poygani ochib berardi.
+    // Shuning uchun tozalash shu yerda, o'chirish bilan BIRGA.
+    activeOrderSourceId.current = null;
+    tripStageRef.current = null;
     AsyncStorage.removeItem(activeTripStorageKey(driverId)).catch(() => {});
   }
 
@@ -540,13 +566,36 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 10 },
         (update) => {
           const newCoord = { latitude: update.coords.latitude, longitude: update.coords.longitude };
-          setLocation(newCoord);
+          // MUHIM: har GPS signalida uchala holat SO'ZSIZ yangilanardi
+          // va MapScreen — ilovaning eng katta komponenti — butunlay
+          // qayta chizilardi. Signal esa qimirlamay turganda ham
+          // keladi, ya'ni ekran bir xil raqamlar bilan behuda qayta
+          // chizilib turardi (batareya va issiqlik).
+          //
+          // Endi holat FAQAT haqiqatan o'zgarganda yoziladi. Bir xil
+          // qiymatda avvalgi obyektning O'ZI qaytariladi — React buni
+          // "o'zgarish yo'q" deb tushunib, qayta chizishni butunlay
+          // o'tkazib yuboradi.
+          setLocation((prev) =>
+            prev && prev.latitude === newCoord.latitude && prev.longitude === newCoord.longitude
+              ? prev
+              : newCoord
+          );
           // speed m/s da keladi, ba'zan noma'lum bo'lsa -1/null bo'lishi
-          // mumkin — shunday holatda 0 deb olamiz
+          // mumkin — shunday holatda 0 deb olamiz. Ekranda u butun son
+          // bo'lib ko'rsatiladi, shuning uchun solishtirish ham
+          // yaxlitlangan qiymat bo'yicha.
           const speedMs = update.coords.speed;
-          setSpeedKmh(speedMs != null && speedMs > 0 ? speedMs * 3.6 : 0);
+          const nextSpeed = speedMs != null && speedMs > 0 ? speedMs * 3.6 : 0;
+          setSpeedKmh((prev) => (Math.round(prev) === Math.round(nextSpeed) ? prev : nextSpeed));
           const hdg = update.coords.heading;
-          setHeading(hdg != null && hdg >= 0 ? hdg : undefined);
+          const nextHeading = hdg != null && hdg >= 0 ? hdg : undefined;
+          setHeading((prev) =>
+            (prev === undefined && nextHeading === undefined) ||
+            (prev !== undefined && nextHeading !== undefined && Math.round(prev) === Math.round(nextHeading))
+              ? prev
+              : nextHeading
+          );
 
           // MUHIM: faqat "in_progress" bosqichida (mijoz mashinada,
           // safar boshlangan) masofani yig'amiz. GPS "sakrashi"dan

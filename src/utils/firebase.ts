@@ -143,6 +143,11 @@ export type FirestoreOrder = {
   /** Buyurtma yakunlangach Cloud Function yozadigan haqiqiy summalar —
    * "Pul" bo'limi shular asosida sof daromadni ko'rsatadi. */
   commissionAmount?: number;
+  /** Komissiya yechilganmi. MUHIM: `commissionAmount` maydoni bundan
+   * KEYINROQ qo'shilgan — ya'ni eski buyurtmalarda bayroq `true`, lekin
+   * summa yo'q. "Pul" bo'limi shu farqni bilishi kerak (qarang:
+   * orderNetEarning). */
+  commissionApplied?: boolean;
   /** Mijoz bonus ishlatgan bo'lsa, kompaniya haydovchiga qoplab bergan
    * summa (haydovchi naqd pulni shu miqdorda kam olgan). */
   bonusCompensation?: number;
@@ -205,6 +210,7 @@ export function mapDocToOrder(
     bonusUsed: typeof data.bonusUsed === 'number' ? data.bonusUsed : undefined,
     extrasTotal: typeof data.extrasTotal === 'number' ? data.extrasTotal : undefined,
     commissionAmount: typeof data.commissionAmount === 'number' ? data.commissionAmount : undefined,
+    commissionApplied: data.commissionApplied === true,
     bonusCompensation:
       typeof data.bonusCompensation === 'number' ? data.bonusCompensation : undefined,
     actualDistanceKm: typeof data.actualDistanceKm === 'number' ? data.actualDistanceKm : undefined,
