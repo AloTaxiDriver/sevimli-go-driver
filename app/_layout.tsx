@@ -1,7 +1,6 @@
 // app/_layout.tsx
 import notifee, { EventType } from '@notifee/react-native';
 import crashlytics from '@react-native-firebase/crashlytics';
-import messaging from '@react-native-firebase/messaging';
 import { router, Stack } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
@@ -9,46 +8,21 @@ import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import LoginScreen from '../src/screens/LoginScreen';
 import RegisterScreen from '../src/screens/RegisterScreen';
 import { COLORS } from '../src/theme/colors';
-import { displayDispatcherNotification, displayFullScreenOrderNotification } from '../src/utils/firebase';
-// MUHIM: shu import fon rejimidagi joylashuv vazifasini (TaskManager
-// task'ini) RO'YXATDAN O'TKAZADI. U komponent ichida emas, fayl
-// yuklanganda bajarilishi shart — Android bu vazifani ilova butunlay
-// yopilgandan keyin ham qayta ishga tushirishi mumkin, o'shanda hech
-// qanday React komponenti mavjud bo'lmaydi.
-import '../src/utils/locationTask';
 
-// MUHIM: bu handler ilova komponent darajasidan TASHQARIDA, fayl
-// yuklanganda darhol ro'yxatdan o'tadi. Shuning uchun ilova butunlay
-// yopiq (killed) holatda bo'lsa ham, Android tizimi push notification
-// kelganda shu funksiyani chaqiradi.
-messaging().setBackgroundMessageHandler(async (remoteMessage) => {
-  console.log('Background push notification:', remoteMessage);
-
-  if (remoteMessage.data?.type === 'new_order') {
-    // MUHIM: bu yerda faqat native overlay chiqariladi. Ilgari shu
-    // joyda router.push('/incoming-order', ...) ham qo'shimcha
-    // "zaxira urinish" sifatida chaqirilardi — lekin bu native
-    // overlay bilan PARALLEL, mustaqil JS ekranini navigatsiya
-    // stackiga qo'shib qo'yardi. Ilova keyinroq (masalan native
-    // overlay'dagi "Qabul qilish" orqali) oldinga chiqqanda, o'sha
-    // unutilgan /incoming-order ekrani ko'rinadigan bo'lib qolib,
-    // o'zining alohida 15s taymeri bilan qayta paydo bo'lardi —
-    // aynan "overlay 0 soniyada qayta chiqadi" muammosining haqiqiy
-    // sababi shu edi. /incoming-order ekrani endi faqat notifee
-    // fallback orqali (overlay ruxsati YO'Q holatlarda) ochiladi —
-    // bu handleNotificationEvent va getInitialNotification orqali
-    // pastdagi useEffect ichida allaqachon to'g'ri ishlaydi.
-    await displayFullScreenOrderNotification(
-      remoteMessage.data as Record<string, string>
-    );
-  } else if (remoteMessage.data?.type === 'dispatcher_notification') {
-    // Dispetcher yuborgan xabar — ilova butunlay yopiq bo'lsa ham
-    // shu yerda oddiy tizim bildirishnomasi ko'rsatiladi.
-    await displayDispatcherNotification(
-      remoteMessage.data as Record<string, string>
-    );
-  }
-});
+// MUHIM: fon rejimidagi push handler (setBackgroundMessageHandler) va
+// joylashuv vazifasi (TaskManager.defineTask) avval AYNAN SHU YERDA,
+// fayl darajasida ro'yxatdan o'tardi. Ular
+// `src/utils/backgroundRegistrations.ts` ga ko'chirildi va endi
+// loyihaning ildizidagi `index.js` orqali chaqiriladi.
+//
+// Sababi: `app/` papkasidagi fayllarni expo-router `require.context`
+// bilan faqat EKRAN RENDER QILINGANDA yuklaydi. Ilova butunlay yopiq
+// holatda Android JS'ni ekransiz ishga tushirganda (push xabar kelishi,
+// foreground service joylashuv yetkazishi) bu fayl umuman bajarilmasdi
+// — demak ikkala ro'yxatdan o'tish ham amalda hech qachon ishlamasdi.
+//
+// Quyidagi useEffect'lar esa ATAYLAB shu yerda qoladi: ular ilova
+// ko'rinib turganda kerak (bildirishnoma bosilganda ekranga o'tish).
 
 export default function RootLayout() {
   // Ilova qulasa, sababi Firebase Crashlytics'ga yoziladi. Avval hech
