@@ -43,7 +43,7 @@ service cloud.firestore {
         'commissionApplied', 'commissionAmount', 'commissionDriverId',
         'driverBonusChecked', 'driverBonusDriverId', 'driverBonusStatsDate',
         'driverBonusStatsWeek', 'driverBonusDailyCounted', 'driverBonusWeeklyCounted',
-        'driverBonusPerOrderAmount', 'moneyRevertedAt'
+        'driverBonusPerOrderAmount', 'moneyRevertedAt', 'ratingCounted'
       ];
     }
     function changedKeys() {
@@ -107,7 +107,13 @@ service cloud.firestore {
       return [
         'extras', 'extrasTotal', 'bonusUsed', 'finalPrice',
         'pickupLat', 'pickupLng', 'fromAddress',
-        'status', 'cancelReason', 'cancelledBy'
+        'status', 'cancelReason', 'cancelledBy',
+        // Safar oxirida mijoz qo'ygan baho. U haydovchi hujjatiga
+        // EMAS, shu yerga yoziladi — haydovchi hujjati
+        // autentifikatsiyasiz yoziladi, ya'ni u yerga baho yozish
+        // har kimga istalgan reytingni "chizib qo'yish"ga yo'l
+        // ochib berardi. O'rtacha reytingni Cloud Function hisoblaydi.
+        'customerRating'
       ];
     }
     // Dispetcher panelidan tahrirlanadigan maydonlar. `bonusUsed` va

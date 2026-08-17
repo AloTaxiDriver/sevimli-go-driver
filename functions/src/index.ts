@@ -2427,3 +2427,68 @@ export const onOrderBonusUsedClamp = onDocumentWritten(
     );
   }
 );
+
+// ============================================================
+// HAYDOVCHI REYTINGI — mijozning bahosidan
+// ============================================================
+// Mijoz safar oxirida yulduzcha qo'yadi. Baho `orders/{id}` ga
+// yoziladi (`customerRating`), chunki buyurtma mijozniki va
+// Firestore qoidalari uni himoya qila oladi.
+//
+// Haydovchi hujjatiga to'g'ridan-to'g'ri yozib bo'lmaydi: haydovchi
+// ilovasida Firebase Auth yo'q, ya'ni `drivers/{id}` autentifikatsiyasiz
+// yoziladi — u yerga bahoni mijoz ilovasidan yozish har kimga
+// istalgan haydovchining reytingini "chizib qo'yish"ga yo'l ochib
+// berardi. O'rtachani shu funksiya hisoblaydi (Admin SDK).
+//
+// Halqa xavfi yo'q: bu funksiya `drivers` hujjatini yozadi, o'zi esa
+// `orders` o'zgarishini tinglaydi.
+export const onOrderRatedUpdateDriverRating = onDocumentUpdated(
+  "orders/{orderId}",
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!after) return;
+
+    const rating = after.customerRating;
+    if (typeof rating !== "number") return;
+    // Faqat YANGI baho (yoki o'zgargan baho) hisobga olinadi.
+    if (before && before.customerRating === rating) return;
+    if (after.ratingCounted === true && before?.customerRating === rating) return;
+
+    const driverId: unknown = after.driverId;
+    if (typeof driverId !== "string" || !driverId) return;
+
+    const orderId = event.params.orderId;
+    const clamped = Math.max(1, Math.min(5, Math.round(rating)));
+    const driverRef = db.collection("drivers").doc(driverId);
+    const orderRef = event.data!.after.ref;
+
+    try {
+      await db.runTransaction(async (tx) => {
+        const orderSnap = await tx.get(orderRef);
+        const o = orderSnap.data();
+        // Ikki marta hisoblanmasin.
+        if (!o || o.ratingCounted === true) return;
+        const driverSnap = await tx.get(driverRef);
+        const d = driverSnap.data() || {};
+        const count = typeof d.ratingCount === "number" ? d.ratingCount : 0;
+        const avg = typeof d.rating === "number" ? d.rating : 0;
+        // Yangi o'rtacha: eski o'rtacha * soni + yangi baho, hammasi
+        // yangi songa bo'linadi. Ikki xonagacha yaxlitlanadi.
+        const nextCount = count + 1;
+        const nextAvg = Math.round(((avg * count + clamped) / nextCount) * 100) / 100;
+
+        tx.set(driverRef, { rating: nextAvg, ratingCount: nextCount }, { merge: true });
+        tx.set(orderRef, { ratingCounted: true }, { merge: true });
+
+        logger.info(
+          `Buyurtma ${orderId}: haydovchi ${driverId} bahosi ${clamped} — ` +
+            `o'rtacha ${avg} (${count} ta) -> ${nextAvg} (${nextCount} ta)`
+        );
+      });
+    } catch (error) {
+      logger.error(`Reytingni yangilashda xato (buyurtma ${orderId}):`, error);
+    }
+  }
+);
