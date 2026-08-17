@@ -117,6 +117,11 @@ const TRIP_SNAPSHOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 // abadiy true bo'lib qolsa haydovchi umuman ishlay olmaydi.
 const TRIP_RESTORE_TIMEOUT_MS = 20000;
 
+// Tarmoq bir lahzaga uzilgani uchun jonli safarni yo'qotmaslik kerak:
+// Firestore so'rovi o'tmasa qayta uriniladi (2s, keyin 4s kutib).
+const TRIP_RESTORE_ATTEMPTS = 3;
+const TRIP_RESTORE_RETRY_MS = 2000;
+
 // Xaritada yo'l chizig'i qaysi nuqtagacha chizilishini aniqlaydi.
 //
 // MUHIM: olib ketish nuqtasiga yo'l HAR DOIM chiziladi — u har qanday
@@ -160,6 +165,15 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const [errorMsg, setErrorMsg] = useState('');
   const [loading, setLoading] = useState(true);
   const [isOnline, setIsOnline] = useState(false);
+  // "Fon rejimida joylashuv" tushuntirish oynasi ochiq turgan vaqt
+  // ichida (haydovchi o'qiyapti — bu bir necha soniya) haydovchi
+  // "Ishni tugatish"ni bosgan bo'lishi mumkin. Javob ishlovchisi esa
+  // `isOnline`ni O'Z RENDERIDAGI qiymatidan o'qiydi, ya'ni oyna
+  // ochilgan paytdagi eski qiymatdan — va oflayn haydovchida kuzatuv
+  // xizmatini yoqib yuborardi. Ref har doim eng oxirgi qiymatni
+  // ko'rsatadi.
+  const isOnlineRef = useRef(false);
+  useEffect(() => { isOnlineRef.current = isOnline; }, [isOnline]);
   const [menuVisible, setMenuVisible] = useState(false);
   const [notifications, setNotifications] = useState<DispatcherNotification[]>([]);
   const [notifModalVisible, setNotifModalVisible] = useState(false);
@@ -349,20 +363,56 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
 
         // Avval snapshotdagi buyurtmani tekshiramiz (bitta o'qish), u
         // yaroqsiz bo'lsa — Firestore'dan qidiramiz.
+        //
+        // MUHIM: so'rov MUVAFFAQIYATSIZ tugagani ("bilmadim") va safar
+        // haqiqatan yo'qligi ("yo'q") — ikki boshqa javob. Avval ikkalasi
+        // ham `null` bo'lib kelardi, va pastdagi blok ikkinchisi deb
+        // o'ylab qurilmadagi safar yozuvini o'chirib tashlardi. Ya'ni
+        // ilova ochilgan lahzada internet uzuq bo'lsa (metroda, lift
+        // ichida, tarmoq almashayotganda) JONLI SAFAR YO'QOLARDI:
+        // "Safarni yakunlash" hech narsa qilmasdi, buyurtma dispetcherda
+        // "qabul qilingan" bo'lib osilib qolardi, haydovchi esa puliga
+        // ham, komissiyasiga ham hisob berolmasdi.
+        //
+        // Endi so'rov o'tmasa BIR NECHA MARTA qayta uriniladi (tarmoq
+        // odatda bir necha soniyada qaytadi), va baribir o'tmasa —
+        // HECH NARSAGA TEGILMAYDI. Yozuv qurilmada qoladi, ilova
+        // keyingi ochilishida safar tiklanadi.
         let fo: FirestoreOrder | null = null;
-        if (snapshot?.orderId) {
-          fo = await fetchOrderById(snapshot.orderId);
-          // Snapshot eskirgan bo'lishi mumkin: buyurtma allaqachon
-          // yakunlangan/bekor qilingan yoki boshqa haydovchiga o'tgan.
-          if (fo && (fo.driverId !== driverId || !ACTIVE_ORDER_STATUSES.includes(fo.status))) {
-            fo = null;
+        let lookupFailed = false;
+        for (let attempt = 1; attempt <= TRIP_RESTORE_ATTEMPTS; attempt++) {
+          lookupFailed = false;
+          if (snapshot?.orderId) {
+            const byId = await fetchOrderById(snapshot.orderId);
+            if (byId.failed) lookupFailed = true;
+            fo = byId.order;
+            // Snapshot eskirgan bo'lishi mumkin: buyurtma allaqachon
+            // yakunlangan/bekor qilingan yoki boshqa haydovchiga o'tgan.
+            if (fo && (fo.driverId !== driverId || !ACTIVE_ORDER_STATUSES.includes(fo.status))) {
+              fo = null;
+            }
           }
+          if (!fo) {
+            const byDriver = await fetchActiveOrderForDriver(driverId);
+            if (byDriver.failed) lookupFailed = true;
+            fo = byDriver.order;
+          }
+          if (fo || !lookupFailed) break;
+          console.warn(
+            `Safarni tiklash: ${attempt}-urinish o'tmadi (tarmoq) — qayta urinamiz`
+          );
+          await new Promise((r) => setTimeout(r, TRIP_RESTORE_RETRY_MS * attempt));
         }
-        if (!fo) {
-          fo = await fetchActiveOrderForDriver(driverId);
-          // Boshqa buyurtma topilgan bo'lsa, snapshotdagi mahalliy
-          // tafsilotlar (masofa, oyoq) unga tegishli emas.
-          if (fo && snapshot && fo.id !== snapshot.orderId) snapshot = null;
+        // Boshqa buyurtma topilgan bo'lsa, snapshotdagi mahalliy
+        // tafsilotlar (masofa, oyoq) unga tegishli emas.
+        if (fo && snapshot && fo.id !== snapshot.orderId) snapshot = null;
+
+        if (!fo && lookupFailed) {
+          console.warn(
+            'Safarni tiklash: Firestore javob bermadi — qurilmadagi safar ' +
+              'yozuviga TEGILMADI, ilova keyingi ochilishida qayta uriniladi'
+          );
+          return;
         }
 
         if (!fo) {
@@ -429,16 +479,37 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           }
         }
 
+        // MUHIM: tiklash cho'zilib ketgan bo'lishi mumkin (sekin tarmoq,
+        // qayta urinishlar). 20 soniyalik zaxira chegara esa shu orada
+        // `restoringTrip`ni false qilib, haydovchiga YANGI buyurtma
+        // qabul qilishga yo'l ochib qo'yadi. Kech qaytgan tiklash o'sha
+        // yangi buyurtmani ekranda bosib ketardi: haydovchi qabul qilgan
+        // buyurtma yo'qolib, o'rniga eskisi paydo bo'lardi.
+        //
+        // Shu sababli qo'llashdan oldin oxirgi marta tekshiramiz: ekranda
+        // allaqachon BOSHQA safar bormi.
+        if (activeOrderSourceId.current && activeOrderSourceId.current !== fo.id) {
+          console.warn(
+            `Safarni tiklash kech qaytdi: ekranda allaqachon ${activeOrderSourceId.current} ` +
+              `buyurtmasi bor — ${fo.id} qo'llanmadi`
+          );
+          return;
+        }
+
         activeOrderSourceId.current = fo.id;
         // Aks holda o'sha buyurtma push/overlay orqali qayta "qabul
         // qilinishi" mumkin edi.
         processedAcceptId.current = fo.id;
         startWatchingOrderCancellation(fo.id);
-        setActiveOrder(firestoreOrderToOrder(fo));
+        const restoredOrder = firestoreOrderToOrder(fo);
+        setActiveOrder(restoredOrder);
         setActiveLeg(snapshot?.activeLeg === 2 ? 2 : 1);
         setIsOnline(true);
         setTripStage(stage);
         startPan.setValue(0);
+        // Mijoz allaqachon mashinada bo'lsa (in_progress), olib ketish
+        // nuqtasi haqida ogohlantirishning ma'nosi yo'q.
+        if (stage !== 'in_progress') warnIfPickupHasNoCoordinates(restoredOrder);
 
         // Snapshot Firestore'dan oldinda chiqdi — demak holatni yozish
         // urinishi yo'qolgan. Uni QAYTA yozamiz, aks holda ikkala tomon
@@ -566,6 +637,10 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         { accuracy: Location.Accuracy.High, timeInterval: 3000, distanceInterval: 10 },
         (update) => {
           const newCoord = { latitude: update.coords.latitude, longitude: update.coords.longitude };
+          // GPS ishlay boshladi — boshlanishdagi "aniqlanmadi" xabari
+          // endi yolg'on. Bo'sh bo'lsa tegilmaydi (behuda qayta chizish
+          // bo'lmasin uchun).
+          setErrorMsg((prev) => (prev ? '' : prev));
           // MUHIM: har GPS signalida uchala holat SO'ZSIZ yangilanardi
           // va MapScreen — ilovaning eng katta komponenti — butunlay
           // qayta chizilardi. Signal esa qimirlamay turganda ham
@@ -775,16 +850,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         setTripStage('ready_to_start');
         startPan.setValue(0);
         setPendingAcceptId(null);
-        // Koordinatasiz buyurtma — xaritada yo'l chizilmaydi. Buni
-        // haydovchiga AYTISH shart: aks holda u xarita ishlamayapti deb
-        // o'ylaydi. (Avval bunday holatda tasodifiy nuqta o'ylab
-        // topilardi va u soxta manzilga haydab ketardi.)
-        if (!order.pickupLocation) {
-          Alert.alert(
-            'Manzil xaritada belgilanmagan',
-            `Bu buyurtmada olib ketish nuqtasining koordinatasi yo'q, shuning uchun xaritada yo'l chizilmaydi.\n\nManzil: ${order.fromAddress}\n\nMijozga qo'ng'iroq qilib aniqlashtiring.`
-          );
-        }
+        warnIfPickupHasNoCoordinates(order);
         setDriverBusyStatus(driverId, true).catch(() => {});
         console.log('Buyurtma qabul qilindi, tasdiqlash ekrani ko\'rsatilmoqda');
       } catch (e) {
@@ -807,6 +873,25 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   }, [isOnline, driver?.branch]);
 
   useEffect(() => {
+    // MUHIM: `isOnline` ilova ochilganda HAR DOIM false'dan boshlanadi,
+    // safar tiklanishi esa bir necha soniya davom etadi. Bu shart
+    // qo'yilmaganda quyidagi "oflayn" shoxi DARHOL ishlab ketardi va
+    // haydovchi hali safarda ekanida:
+    //   * `pushToken: null` yozilardi — yangi buyurtma bildirishnomasi
+    //     kelmay qolardi (token faqat qaytadan onlayn bo'lgandan keyin
+    //     tiklanardi);
+    //   * `isOnline: false` yozilardi — dispetcher panelida haydovchi
+    //     "oflayn" bo'lib ko'rinardi;
+    //   * kuzatuv xizmati to'xtatilardi — safar o'rtasida joylashuv
+    //     yozilmay turadigan bo'shliq paydo bo'lardi.
+    // Uchalasi ham bir necha soniyadan keyin tiklash tugab, `isOnline`
+    // true bo'lgach o'ziga kelardi — lekin bu bo'shliq aynan eng nozik
+    // paytga (ilova qulab qayta ochilishiga) to'g'ri kelardi.
+    //
+    // Tiklash tugamaguncha kutamiz. U har qanday holatda tugaydi:
+    // topilsa `isOnline` true bo'ladi, topilmasa `restoringTrip` false
+    // bo'lib shu yerdagi tozalash o'z navbatida ishlaydi.
+    if (restoringTrip) return;
     if (!isOnline) {
       saveDriverPushToken(driverId, null).catch(console.warn);
       // MUHIM: foreground service ATAYLAB ilova yopilganda ham tirik
@@ -836,7 +921,16 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       setBgLocationDisclosureVisible(false);
       return;
     }
+    // MUHIM: token so'rash tarmoq ishi — u bir necha soniya davom
+    // etishi mumkin. Shu vaqt ichida haydovchi "Ishni tugatish"ni yoki
+    // "Chiqish"ni bosgan bo'lsa, javob KECHIKIB kelib tokenni QAYTA
+    // yozib qo'yardi (`saveDriverPushToken` ayni paytda `isOnline: true`
+    // ham yozadi). Natijada chiqib ketgan haydovchi panelda yana
+    // "onlayn" bo'lib paydo bo'lardi va unga buyurtma bildirishnomalari
+    // kelaverardi. `offline` — effekt tozalanganda yoqiladigan bayroq.
+    let offline = false;
     registerForPushNotifications().then((token) => {
+      if (offline || !isOnlineRef.current) return;
       if (token) saveDriverPushToken(driverId, token).catch(console.warn);
     });
     ensureOverlayPermission();
@@ -857,16 +951,21 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     // Shuning uchun haydovchi hali javob bermagan bo'lsa, avval o'sha
     // oyna ochiladi; kuzatuv javobdan keyin boshlanadi.
     (async () => {
-      if ((await getBackgroundLocationConsent()) === null) {
+      const consent = await getBackgroundLocationConsent();
+      // Bu ham kechikib qaytishi mumkin — o'sha vaqtda haydovchi
+      // oflayn bo'lgan bo'lsa, na oyna ochiladi, na kuzatuv boshlanadi.
+      if (offline || !isOnlineRef.current) return;
+      if (consent === null) {
         setBgLocationDisclosureVisible(true);
         return;
       }
       startDriverLocationTracking(driverId);
     })();
     return () => {
+      offline = true;
       stopDriverLocationTracking();
     };
-  }, [isOnline, driverId]);
+  }, [isOnline, driverId, restoringTrip]);
 
   // Tushuntirish oynasidagi javob. Ikkala holatda ham kuzatuv
   // boshlanadi — farqi shundaki, rad etilsa `startDriverLocationTracking`
@@ -879,7 +978,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     // bo'lishi mumkin — javobni o'qib, keyin "Ishni tugatish"ni bosgan
     // bo'lsa. Avval bu yerda shartsiz `startDriverLocationTracking`
     // chaqirilardi va xizmat oflayn holatda yonib ketardi.
-    if (isOnline) startDriverLocationTracking(driverId);
+    if (isOnlineRef.current) startDriverLocationTracking(driverId);
   }
 
   useEffect(() => {
@@ -993,8 +1092,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     if (!activeOrder || !location || !mapRef.current) { isNavigatingRef.current = false; navUpdateCount.current = 0; return; }
     if (tripStage !== 'to_pickup' && tripStage !== 'in_progress') { isNavigatingRef.current = false; navUpdateCount.current = 0; return; }
 
-    const currentDropoffForNav = activeLeg === 2 && activeOrder.dropoff2Location ? activeOrder.dropoff2Location : activeOrder.dropoffLocation;
-    const target = tripStage === 'to_pickup' ? activeOrder.pickupLocation : currentDropoffForNav;
+    // (Bu yerda avval `target` hisoblanardi, lekin u hech qayerda
+    // ishlatilmasdi — kamera haydovchining O'Z joylashuviga qaraydi.)
     if (!isNavigatingRef.current) {
       // MUHIM: avval butun yo'lni ko'rsatish uchun uzoqdan
       // zumlanardi (fitToCoordinates) — bu manzil uzoq bo'lsa xarita
@@ -1366,7 +1465,33 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     startPan.setValue(0);
     setDriverBusyStatus(driverId, false).catch(() => {});
   }
+  // Koordinatasiz buyurtma — xaritada yo'l chizilmaydi. Buni haydovchiga
+  // AYTISH shart: aks holda u xarita ishlamayapti deb o'ylaydi.
+  //
+  // MUHIM: avval bu ogohlantirish FAQAT push/deep-link orqali qabul
+  // qilishda chiqardi. "Ochiq buyurtmalar" ro'yxatidan olinganda va
+  // safar tiklanganda esa jim qolardi — haydovchi bo'sh xaritaga qarab
+  // turar, sababini bilmasdi.
+  function warnIfPickupHasNoCoordinates(order: Order) {
+    if (order.pickupLocation) return;
+    Alert.alert(
+      'Manzil xaritada belgilanmagan',
+      `Bu buyurtmada olib ketish nuqtasining koordinatasi yo'q, shuning uchun xaritada yo'l chizilmaydi.\n\nManzil: ${order.fromAddress}\n\nMijozga qo'ng'iroq qilib aniqlashtiring.`
+    );
+  }
+
   async function handleTakePoolOrder(order: Order) {
+    // Faol safar ustidagi haydovchi ikkinchi buyurtmani ololmasin —
+    // aks holda joriy safar Firestore'da hech qachon yakunlanmay
+    // "osilib" qoladi (push orqali qabul qilishda bu tekshiruv
+    // allaqachon bor edi, bu yo'lda esa yo'q edi).
+    if (tripStageRef.current) {
+      Alert.alert(
+        'Siz allaqachon safardasiz',
+        'Yangi buyurtma olish uchun avval joriy safarni yakunlang.'
+      );
+      return;
+    }
     if ((driver?.balance || 0) <= 0) {
       Alert.alert(
         'Balans yetarli emas',
@@ -1397,6 +1522,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setActiveLeg(1);
     setTripStage('ready_to_start');
     startPan.setValue(0);
+    warnIfPickupHasNoCoordinates(order);
     setDriverBusyStatus(driverId, true).catch(() => {});
   }
 
@@ -1408,7 +1534,16 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       </View>
     );
   }
-  if (errorMsg || !location) {
+  // MUHIM: avval shart `errorMsg || !location` edi. `errorMsg` esa BIR
+  // MARTA yozilib, hech qachon tozalanmasdi \u2014 ya'ni ilova ochilgan
+  // lahzada GPS javob bermagan bo'lsa (ichkarida, sun'iy yo'ldosh hali
+  // topilmagan), keyin joylashuv kelib qolsa ham ekran shu xato matnida
+  // QOTIB QOLARDI. Haydovchi ilovani butunlay yopib qayta ochmaguncha
+  // ishlay olmasdi.
+  //
+  // Endi joylashuv bor ekan \u2014 xarita ko'rsatiladi (GPS kuzatuvchisi
+  // birinchi nuqta kelganda xato matnini o'zi tozalaydi).
+  if (!location) {
     return (
       <View style={styles.center}>
         <Text style={styles.errorText}>{errorMsg || 'Joylashuvni aniqlab bo\u02bblmadi'}</Text>

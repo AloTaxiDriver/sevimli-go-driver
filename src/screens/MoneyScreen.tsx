@@ -208,27 +208,42 @@ export default function MoneyScreen() {
   );
   // Shu hafta yechilgan komissiya va mijoz bonusi uchun olingan
   // qoplama — haydovchi raqamlar qayerdan kelganini ko'rib tursin.
-  const weekCommission = useMemo(() => {
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return orders
-      .filter((o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo)
-      .reduce((sum, o) => sum + (o.commissionAmount || 0), 0);
-  }, [orders]);
-  const weekBonusCompensation = useMemo(() => {
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return orders
-      .filter((o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo)
-      .reduce((sum, o) => sum + (o.bonusCompensation || 0), 0);
-  }, [orders]);
+  //
+  // MUHIM: "hafta" chegarasi grafik bilan AYNAN bir xil bo'lishi kerak.
+  // Avval bu uchta hisob `Date.now() - 7*24 soat` (ya'ni SURILUVCHI 168
+  // soat) bo'yicha ishlardi, grafik esa KALENDAR kunlari bo'yicha —
+  // 6 kun oldingi yarim tundan bugungacha. Ikkalasi mos kelmasdi:
+  // masalan yakshanba kechqurun ochilsa, komissiya summasiga o'tgan
+  // yakshanbaning kechki safarlari ham kirib ketardi, grafikda esa
+  // ular ko'rinmasdi. Haydovchi "safarlar shu yerda, komissiya esa
+  // ko'proq" degan hisobni ko'rib, xato deb o'ylardi.
+  const weekStartMillis = weekEarnings[0]?.date.getTime() ?? 0;
+  const inWeek = (o: FirestoreOrder) =>
+    o.status === 'completed' && (o.createdAtMillis || 0) >= weekStartMillis;
+  const weekCommission = useMemo(
+    () => orders.filter(inWeek).reduce((sum, o) => sum + (o.commissionAmount || 0), 0),
+    [orders, weekStartMillis]
+  );
+  const weekBonusCompensation = useMemo(
+    () => orders.filter(inWeek).reduce((sum, o) => sum + (o.bonusCompensation || 0), 0),
+    [orders, weekStartMillis]
+  );
   // Komissiyasi buyurtmada saqlanmagan eski safarlar — qarang:
   // hasUnrecordedCommission. Ular yo'qolib borgani sari bu izoh ham
   // o'zi yo'qoladi.
-  const weekUnrecordedCommissionCount = useMemo(() => {
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    return orders.filter(
-      (o) => o.status === 'completed' && (o.createdAtMillis || 0) >= weekAgo && hasUnrecordedCommission(o)
-    ).length;
-  }, [orders]);
+  const weekUnrecordedCommissionCount = useMemo(
+    () => orders.filter((o) => inWeek(o) && hasUnrecordedCommission(o)).length,
+    [orders, weekStartMillis]
+  );
+  // "Jami ishlab topilgan" kartasi BUTUN tarixni qamrab oladi, ya'ni
+  // komissiyasi saqlanmagan eski safarlar unda ancha KO'P. Izoh esa
+  // faqat haftalik bo'limda bor edi — natijada eng katta va eng
+  // ko'zga tashlanadigan raqam aynan eng noaniq bo'lib, buni hech narsa
+  // aytmasdi.
+  const allTimeUnrecordedCommissionCount = useMemo(
+    () => orders.filter((o) => o.status === 'completed' && hasUnrecordedCommission(o)).length,
+    [orders]
+  );
 
   const todayStr = useMemo(() => tashkentDateStr(), []);
   const weekStartStr = useMemo(() => tashkentWeekStartStr(), []);
@@ -329,6 +344,12 @@ export default function MoneyScreen() {
               </View>
               <Text style={styles.cardValueBig}>{totalAllTime.toLocaleString()} so'm</Text>
             </View>
+            {allTimeUnrecordedCommissionCount > 0 && (
+              <Text style={styles.cardNote}>
+                {allTimeUnrecordedCommissionCount} ta eski safarda komissiya alohida yozilmagan — bu
+                summa haqiqiy daromaddan biroz yuqori.
+              </Text>
+            )}
           </GlassPanel>
 
           {/* Har bir safar uchun beriladigan bonus. Bu sozlama ishlab

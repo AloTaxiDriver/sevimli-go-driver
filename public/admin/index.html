@@ -757,6 +757,11 @@ input:focus,select:focus,textarea:focus{outline:none;}
       return null;
     }
   };
+  // MUHIM: natijani QAYTARADI (true/false). Avval xato faqat konsolga
+  // yozilardi va chaqiruvchi tomon buni umuman bilmasdi - dispetcher
+  // ekranda "Yuborildi!" degan yashil tasdiqni ko'rar, aslida
+  // haydovchilarga hech narsa bormagan bo'lardi (masalan Firestore
+  // qoidasi ruxsat bermadi yoki internet uzildi).
   window.sendNotificationToFirestore = async function (data) {
     try {
       let imageUrl = data.image || null;
@@ -768,8 +773,10 @@ input:focus,select:focus,textarea:focus{outline:none;}
         image: imageUrl,
         createdAt: serverTimestamp(),
       });
+      return true;
     } catch (err) {
       console.error("Bildirishnomani Firestore'ga yozishda xato:", err);
+      return false;
     }
   };
   window.cancelOrderFromDashboard = async function (orderId, reason) {
@@ -874,11 +881,12 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   };
 
-  // Mijozlar uchun bonus (cashback) sozlamasi — settings/bonus hujjati
-  // (ADMIN belgilagan umumiy STANDART) yoki, `branchId` berilsa,
-  // settings/bonus_branch_{id} (o'sha filialga xos override, agar
-  // mavjud bo'lsa — aks holda standartga qaytiladi, shunda forma
-  // hozircha AMALDA qo'llanilayotgan qiymatlarni ko'rsatadi).
+  // Mijozlar uchun bonus (cashback) sozlamasi — ADMIN belgilagan umumiy
+  // STANDART (settings/bonus) ustiga, `branchId` berilsa, o'sha filialning
+  // hujjati (settings/bonus_branch_{id}) MAYDONMA-MAYDON qo'yiladi.
+  // (Avval bu izohda "agar mavjud bo'lsa — aks holda standartga
+  // qaytiladi" deyilgan edi; u ALMASHTIRUVCHI eski mantiqni tasvirlardi
+  // va pastdagi haqiqiy kodga zid edi.)
   // MUHIM: bonusBalance'ning o'zi bu yerda emas, faqat Cloud Function
   // (onOrderCompletedApplyBonus) orqali o'zgaradi — bu shunchaki qoidalar.
   // Umumiy standart ustiga filial qiymatlarini qo'yadi.
@@ -2208,7 +2216,24 @@ function editOrderModal(orderId){
   </div>`;
 }
 
-function saveOrderEdit(orderId){
+// Manzil matnidan koordinata topadi (Yandex geokoder). Topilmasa null.
+function geocodeAddressText(text){
+  return new Promise((resolve)=>{
+    if(!text||typeof ymaps==='undefined'){resolve(null);return;}
+    try{
+      ymaps.ready(()=>{
+        ymaps.geocode(text,{results:1}).then((res)=>{
+          const obj=res.geoObjects.get(0);
+          if(!obj){resolve(null);return;}
+          const c=obj.geometry.getCoordinates();
+          resolve({lat:c[0],lng:c[1]});
+        },()=>resolve(null));
+      });
+    }catch(e){resolve(null);}
+  });
+}
+
+async function saveOrderEdit(orderId){
   const patch={
     customerName:document.getElementById('eo-client')?.value?.trim(),
     customerPhone:document.getElementById('eo-phone')?.value?.trim(),
@@ -2222,6 +2247,38 @@ function saveOrderEdit(orderId){
   const o=firestoreOrdersList.find(x=>x.id===orderId);
   const newFinal=recomputeFinalPrice(o,patch.price);
   if(newFinal!==null)patch.finalPrice=newFinal;
+
+  // ---- MANZIL O'ZGARSA, KOORDINATA HAM O'ZGARISHI SHART ----
+  // Avval bu yerda faqat MATN yangilanardi. Koordinatalar
+  // (pickupLat/Lng, dropoffLat/Lng) esa ESKI manzilga ishora qilib
+  // qolaverardi — haydovchi ilovasida bir manzil YOZILIB, xarita
+  // butunlay BOSHQA joyga yo'l ko'rsatardi. Dispetcher manzilni
+  // to'g'irlagan deb o'ylab qo'yaverardi, haydovchi esa noto'g'ri
+  // joyga borardi.
+  //
+  // Endi yangi matn geokodlanadi. Topilmasa — eski koordinata
+  // O'CHIRILADI: xato yo'l ko'rsatgandan ko'ra, "manzil xaritada
+  // belgilanmagan" deb ochiq aytgan yaxshi (haydovchi ilovasi bunday
+  // holatda mijozga qo'ng'iroq qilishni so'raydi).
+  const fromChanged=patch.fromAddress&&patch.fromAddress!==(o?.from||'');
+  const toChanged=patch.toAddress&&patch.toAddress!==(o?.to||'');
+  const failed=[];
+  if(fromChanged){
+    const c=await geocodeAddressText(patch.fromAddress);
+    patch.pickupLat=c?c.lat:null;
+    patch.pickupLng=c?c.lng:null;
+    if(!c)failed.push('"Qayerdan"');
+  }
+  if(toChanged){
+    const c=await geocodeAddressText(patch.toAddress);
+    patch.dropoffLat=c?c.lat:null;
+    patch.dropoffLng=c?c.lng:null;
+    if(!c)failed.push('"Qayerga"');
+  }
+  if(failed.length){
+    alert(failed.join(" va ")+" manzil xaritadan topilmadi. Manzil matni saqlandi, lekin xaritadagi nuqta olib tashlandi. Haydovchiga xaritada yol chizilmaydi.");
+  }
+
   if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,patch);
   closeModal('order-edit-modal');
 }
@@ -7752,7 +7809,10 @@ function removeNotifImage(){
   if(placeholder)placeholder.style.display='block';
 }
 
-function sendNotification(evt){
+async function sendNotification(evt){
+  // MUHIM: tugmani AVVAL saqlab qo'yamiz - `evt.currentTarget` hodisa
+  // ishlovi tugagach null bo'ladi, pastda esa `await` bor.
+  const btn=evt?.currentTarget;
   const title=document.getElementById('notif-title')?.value?.trim();
   const textEl=document.getElementById('notif-text');
   const text=textEl?.textContent?.trim();
@@ -7763,7 +7823,21 @@ function sendNotification(evt){
     if(window.sendNotificationToFirestore){
       // MUHIM: menejer/depecher faqat o'z filial(lar)i haydovchilariga
       // yubora oladi — admin uchun null (cheklovsiz).
-      window.sendNotificationToFirestore({title,text,type:notifType,target:to,image:notifImageData||null,branchIds:getAllowedBranchIds()});
+      const ok=await window.sendNotificationToFirestore({title,text,type:notifType,target:to,image:notifImageData||null,branchIds:getAllowedBranchIds()});
+      // Yozuv o'tmagan bo'lsa - SHUNI aytamiz va tarixga ham
+      // qo'shmaymiz. Avval yuborilmagan xabar ham "yuborildi" deb
+      // yozilar, dispetcher esa haydovchilar javob bermayapti deb
+      // o'ylardi.
+      if(!ok){
+        alert("Bildirishnoma yuborilmadi. Internet aloqasini tekshirib, qayta urinib ko'ring.");
+        if(btn){
+          const orig=btn.innerHTML;
+          btn.textContent='Yuborilmadi';
+          btn.style.background='linear-gradient(145deg,#EF4444,#DC2626)';
+          setTimeout(()=>{btn.innerHTML=orig;btn.style.background='linear-gradient(145deg,#22C55E,#16A34A)';},2000);
+        }
+        return;
+      }
     }
   }
   const drivers=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch);
@@ -7811,7 +7885,6 @@ function sendNotification(evt){
   renderNotifHistory();
   const sendBtn=document.getElementById('notif-send-btn');
   if(sendBtn)sendBtn.innerHTML='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg> Yuborish';
-  const btn=evt?.currentTarget;
   if(!btn)return;
   const origHTML=btn.innerHTML;
   btn.textContent=isEditing?'\u2713 Saqlandi!':'\u2713 Yuborildi!';

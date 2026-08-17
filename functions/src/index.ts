@@ -71,6 +71,37 @@ async function getRadiusConfig(): Promise<{
 // "Domoy" / "Ish" / "Mening hududim" filtri — faol bo'lsa, faqat mos
 // radius ichidagi buyurtma ko'rinadi. Rejim yo'q yoki nuqta hali
 // saqlanmagan bo'lsa — cheklovsiz (fail open).
+// Haydovchi hujjatidagi joylashuv vaqti (millisekundda). Avval AYNAN
+// joylashuv vaqti (`locationUpdatedAt` — uni faqat haydovchi ilovasidagi
+// joylashuv vazifasi yozadi), topilmasa umumiy `updatedAt`.
+function driverLocationMillis(data: FirebaseFirestore.DocumentData): number {
+  const pick = (ts: any): number => {
+    if (!ts) return 0;
+    if (typeof ts.toMillis === "function") return ts.toMillis();
+    if (typeof ts.seconds === "number") return ts.seconds * 1000;
+    return 0;
+  };
+  return pick(data.locationUpdatedAt) || pick(data.updatedAt);
+}
+
+// `isOnline: true` — bu SHUNCHAKI hujjatdagi bayroq, va u ilova
+// o'ldirilganda (Android xotira uchun yopdi, haydovchi ro'yxatdan surib
+// tashladi, telefon o'chdi) tozalanmay qolib ketadi. Jonli bazada
+// 2026-08-17 holatiga ko'ra 33 ta "onlayn" haydovchining 30 tasi bir
+// soatdan ko'p vaqt jim edi (ba'zilari 4-5 kun).
+//
+// Bu dispatch uchun jiddiy: taklif KETMA-KET yuboriladi va har bir
+// haydovchi uchun `timeoutSeconds` kutiladi. O'nta "arvoh" haydovchi
+// navbatning boshida tursa, mijoz bir necha DAQIQA hech qanday javob
+// olmay kutadi — telefonlari umuman jiringlamaydigan haydovchilar
+// uchun. Shuning uchun joylashuvi ancha vaqtdan beri yangilanmaganlar
+// navbatga umuman qo'shilmaydi.
+//
+// Chegara ilovadagidan (90 soniya) ataylab KENGROQ: bu yerda xatoning
+// narxi kattaroq (haqiqiy haydovchi buyurtmadan mahrum bo'ladi), va
+// tunnel/lift kabi qisqa uzilishlar hisobga olinishi kerak.
+const DRIVER_DISPATCH_STALE_MS = 5 * 60 * 1000;
+
 function isDriverEligibleForOrder(
   data: FirebaseFirestore.DocumentData,
   pickupLat: number | undefined,
@@ -115,11 +146,13 @@ function isDriverEligibleForOrder(
 // X%i) o'rniga endi ADMIN QAT'IY BELGILAGAN chegara ishlatiladi —
 // yoki so'mda (masalan "bitta buyurtmaga 2000 so'mdan ko'p emas"),
 // yoki foizda (`perOrderCapType` shuni tanlaydi).
-// `branchId` berilsa, avval o'sha filialga xos sozlama (settings/bonus_branch_{id})
-// izlanadi; topilmasa (filial hali o'z sozlamasini belgilamagan) ADMIN
-// belgilagan umumiy standart (settings/bonus) ishlatiladi. Shu bilan har
-// bir filial o'z cashback foizini mustaqil belgilay oladi, standart esa
-// filiallar uchun "fallback" bo'lib qoladi.
+// `branchId` berilsa, umumiy standart (settings/bonus) USTIGA filialning
+// o'z hujjati (settings/bonus_branch_{id}) MAYDONMA-MAYDON qo'yiladi —
+// ya'ni filial faqat o'zgartirgan maydonlarini yozadi, qolganlari
+// standartdan keladi. (Avval bu yerda "topilmasa standart" deb yozilgan
+// edi — u ALMASHTIRISH mantiqini tasvirlardi va endi to'g'ri emas:
+// birlashtirishga o'tilgan, izohi esa yangilanmay qolgandi.)
+// Shu bilan har bir filial o'z cashback foizini mustaqil belgilay oladi.
 // Filial-asosli sozlamani o'qiydi: ADMIN belgilagan umumiy standart
 // ustiga filialning o'z qiymatlari qo'yiladi.
 //
@@ -219,11 +252,11 @@ function computeTripTotal(orderData: FirebaseFirestore.DocumentData): number {
 // Admin dashboard'ning "Haydovchilar uchun kunlik bonus" va "Haydovchilar
 // uchun haftalik bonus" (alohida kartalar, har birida Faol/Nofaol
 // vklyuchateli) bo'limlarida sozlanadi (settings/driverBonus hujjati).
-// `branchId` berilsa, avval o'sha filialga xos sozlama
-// (settings/driverBonus_branch_{id}) izlanadi; topilmasa ADMIN belgilagan
-// umumiy standart (settings/driverBonus) ishlatiladi — xuddi
-// getBonusSettings'dagi kabi "filial-o'ziga xos, aks holda umumiy standart"
-// qoidasi.
+// `branchId` berilsa, umumiy standart (settings/driverBonus) USTIGA
+// filialning hujjati (settings/driverBonus_branch_{id}) maydonma-maydon
+// qo'yiladi — `readBranchScopedSettings` orqali, getBonusSettings bilan
+// bir xil. (Avval izohda "topilmasa standart" deyilgan edi — bu eski,
+// ALMASHTIRUVCHI mantiqning tavsifi.)
 async function getDriverBonusSettings(branchId?: string | null): Promise<{
   dailyEnabled: boolean;
   dailyTripThreshold: number;
@@ -486,9 +519,19 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     const pickupLat: number | undefined = order.pickupLat;
     const pickupLng: number | undefined = order.pickupLng;
 
+    const dispatchNow = Date.now();
+    let staleSkipped = 0;
+
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!data.pushToken) return;
+      // "Arvoh" onlayn haydovchilar navbatga qo'shilmaydi — yuqoridagi
+      // DRIVER_DISPATCH_STALE_MS izohiga qarang.
+      const locationMillis = driverLocationMillis(data);
+      if (locationMillis === 0 || dispatchNow - locationMillis > DRIVER_DISPATCH_STALE_MS) {
+        staleSkipped++;
+        return;
+      }
       // MUHIM: band (safar davomidagi) haydovchiga yangi buyurtma
       // yuborilmasin — aks holda mijoz ilova tomonda (accept oqimi)
       // buni tekshirmasdan qabul qilsa, joriy faol safar Firestore'da
@@ -514,7 +557,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     nearbyDrivers.sort((a, b) => a.distance - b.distance);
 
     logger.info(
-      `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi (${settings.radiusMeters}m radius)`
+      `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi ` +
+        `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn" o'tkazib yuborildi`
     );
 
     // ── RADIUS ICHIDA HAYDOVCHI YO'Q ──────────────────────────

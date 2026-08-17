@@ -53,6 +53,10 @@ function buildInstruction(maneuver: ManeuverType): string {
   }
 }
 
+// Marshrut so'rovi uchun vaqt chegarasi. Yo'l chizig'i har 15 soniyada
+// yangilanadi, shuning uchun undan uzoq kutishning ma'nosi yo'q.
+const ROUTE_TIMEOUT_MS = 12000;
+
 export async function getRoute(from: Coords, to: Coords): Promise<RouteResult> {
   const empty: RouteResult = { coordinates: [from, to], distanceKm: 0, durationMin: 0, steps: [] };
   try {
@@ -61,8 +65,22 @@ export async function getRoute(from: Coords, to: Coords): Promise<RouteResult> {
       `${from.longitude},${from.latitude};${to.longitude},${to.latitude}` +
       `?overview=full&geometries=geojson&steps=true`;
 
-    const res = await fetch(url);
-    const data = await res.json();
+    // MUHIM: `fetch`ning O'ZIDA vaqt chegarasi YO'Q. Mobil tarmoq
+    // "yarim tirik" bo'lganda (signal bor, lekin ma'lumot o'tmayapti —
+    // lift, yerto'la, tunnel, band bazaviy stansiya) so'rov na javob,
+    // na xato berib OSILIB QOLADI. Chaqiruvchi tomondagi qayta urinish
+    // taymeri esa faqat so'rov TUGAGANDAN keyin rejalashtiriladi —
+    // demak u umuman qayta urinmasdi va xaritada yo'l chizig'i tarmoq
+    // tiklangandan KEYIN ham chizilmasdi (safar oxirigacha).
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ROUTE_TIMEOUT_MS);
+    let data: any;
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      data = await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
     if (data.code !== 'Ok' || !data.routes?.length) return empty;
 
     const route = data.routes[0];

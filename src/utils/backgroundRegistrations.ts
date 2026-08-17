@@ -31,10 +31,45 @@
 // qat'i nazar.
 
 import messaging from '@react-native-firebase/messaging';
+import notifee, { EventType } from '@notifee/react-native';
 import { displayDispatcherNotification, displayFullScreenOrderNotification } from './firebase';
 // Shu import `TaskManager.defineTask(DRIVER_LOCATION_TASK, ...)` ni
 // bajaradi — fon rejimidagi joylashuv vazifasini ro'yxatdan o'tkazadi.
 import './locationTask';
+
+// ============================================================
+// BILDIRISHNOMA FON HODISALARI
+// ============================================================
+// MUHIM: `notifee.onBackgroundEvent` ham AYNAN shu yerda — modul
+// darajasida — ro'yxatdan o'tishi SHART. Avval u `app/_layout.tsx`
+// ichidagi `useEffect`da edi, ya'ni:
+//   * ilova butunlay yopiq bo'lganda umuman ro'yxatdan o'tmasdi
+//     (yuqoridagi izohga qarang: `app/` fayllari faqat ekran render
+//     qilinganda yuklanadi) — Notifee esa handler yo'q bo'lsa
+//     ogohlantirish beradi va fon hodisasini tashlab yuboradi;
+//   * komponent har qayta ulanganda handler QAYTA o'rnatilardi
+//     (Notifee'da handler bitta — yangisi eskisini almashtiradi).
+//
+// Ekran hali qurilmagan bo'lishi mumkin, shuning uchun bu yerdan
+// to'g'ridan-to'g'ri navigatsiya qilib bo'lmaydi. Buyurtma ma'lumoti
+// saqlanadi, ilova ochilganda `app/_layout.tsx` uni o'qib oladi.
+let pendingOrderNavigation: Record<string, any> | null = null;
+
+/** Fon hodisasidan qolgan buyurtmani BIR MARTA qaytaradi. */
+export function consumePendingOrderNavigation(): Record<string, any> | null {
+  const data = pendingOrderNavigation;
+  pendingOrderNavigation = null;
+  return data;
+}
+
+notifee.onBackgroundEvent(async ({ type, detail }) => {
+  const { notification, pressAction } = detail;
+  if (notification?.data?.type !== 'new_order') return;
+  const pressed =
+    type === EventType.PRESS ||
+    (type === EventType.DELIVERED && pressAction?.id === 'incoming-order');
+  if (pressed) pendingOrderNavigation = notification.data as Record<string, any>;
+});
 
 // MUHIM: bu handler komponent darajasidan TASHQARIDA, fayl yuklanganda
 // darhol ro'yxatdan o'tadi. Shuning uchun ilova butunlay yopiq (killed)

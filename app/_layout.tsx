@@ -5,6 +5,7 @@ import { router, Stack } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
+import { consumePendingOrderNavigation } from '../src/utils/backgroundRegistrations';
 import LoginScreen from '../src/screens/LoginScreen';
 import RegisterScreen from '../src/screens/RegisterScreen';
 import { COLORS } from '../src/theme/colors';
@@ -78,10 +79,13 @@ export default function RootLayout() {
       handleNotificationEvent(type, detail);
     });
 
-    // Ilova fonda bo'lganda bildirishnoma bosilib, ilova ochilganda
-    notifee.onBackgroundEvent(async ({ type, detail }) => {
-      handleNotificationEvent(type, detail);
-    });
+    // Ilova fonda turganda bosilgan bildirishnoma — uni
+    // `src/utils/backgroundRegistrations.ts` dagi modul darajasidagi
+    // handler ushlab, shu yerga qoldirib ketadi (u yerdagi izohga
+    // qarang: handler ilova YOPIQ holatda ham ro'yxatdan o'tishi kerak,
+    // shuning uchun bu `useEffect` ichida bo'lishi mumkin emas).
+    const pending = consumePendingOrderNavigation();
+    if (pending) navigateToIncomingOrder(pending);
 
     // Ilova butunlay YOPIQ holatda edi va foydalanuvchi
     // bildirishnomani bosib ilovani ochdi — shu holatni alohida

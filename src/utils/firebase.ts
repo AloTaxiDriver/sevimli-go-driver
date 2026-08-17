@@ -300,9 +300,24 @@ export const ACTIVE_ORDER_STATUSES: FirestoreOrder['status'][] = [
 // qilishi mumkin. Uch alohida so'rov esa faqat equality filterlardan
 // iborat (indekssiz ishlaydi) va har biri ko'pi bilan bitta hujjat
 // qaytaradi.
+/** Buyurtma qidirish natijasi.
+ *
+ * MUHIM: `order: null` ikki BUTUNLAY BOSHQA narsani anglatishi mumkin
+ * edi — "faol safar yo'q" va "so'rov muvaffaqiyatsiz tugadi". Chaqiruvchi
+ * tomon ularni ajrata olmagani uchun tarmoq uzilishi "safar yo'q" deb
+ * o'qilardi, va shu asosda qurilmadagi safar yozuvi O'CHIRIB
+ * tashlanardi — ya'ni bir lahzalik internet uzilishi jonli safarni
+ * butunlay yo'qotardi.
+ *
+ * `failed: true` — "bilmayman, so'ray olmadim". Bunday javobga qarab
+ * hech narsa o'chirilmaydi.
+ */
+export type OrderLookupResult = { order: FirestoreOrder | null; failed: boolean };
+
 export async function fetchActiveOrderForDriver(
   driverId: string
-): Promise<FirestoreOrder | null> {
+): Promise<OrderLookupResult> {
+  let failed = false;
   const snapshots = await Promise.all(
     ACTIVE_ORDER_STATUSES.map((status) =>
       firestore()
@@ -313,6 +328,7 @@ export async function fetchActiveOrderForDriver(
         .get()
         .catch((error) => {
           console.warn(`Faol buyurtmani (${status}) qidirishda xato:`, error);
+          failed = true;
           return null;
         })
     )
@@ -321,22 +337,22 @@ export async function fetchActiveOrderForDriver(
   // tekshiriladi — nazariy jihatdan bir nechta osilib qolgan buyurtma
   // bo'lsa, mijoz allaqachon mashinada bo'lgani ustunlik qiladi.
   for (const snapshot of snapshots) {
-    if (snapshot && !snapshot.empty) return mapDocToOrder(snapshot.docs[0]);
+    if (snapshot && !snapshot.empty) return { order: mapDocToOrder(snapshot.docs[0]), failed: false };
   }
-  return null;
+  return { order: null, failed };
 }
 
 /** Bitta buyurtmani ID bo'yicha o'qiydi — safarni tiklashda, qurilmada
  * saqlangan snapshotdagi buyurtma hali ham haqiqatan faolligini
  * tekshirish uchun. */
-export async function fetchOrderById(orderId: string): Promise<FirestoreOrder | null> {
+export async function fetchOrderById(orderId: string): Promise<OrderLookupResult> {
   try {
     const doc = await firestore().collection('orders').doc(orderId).get();
-    if (!doc.exists()) return null;
-    return mapDocToOrder(doc);
+    if (!doc.exists()) return { order: null, failed: false };
+    return { order: mapDocToOrder(doc), failed: false };
   } catch (error) {
     console.warn('Buyurtmani ID bo\'yicha olishda xato:', error);
-    return null;
+    return { order: null, failed: true };
   }
 }
 
@@ -508,37 +524,77 @@ export type DriverBonusSettings = {
   perOrderBonusAmount: number;
 };
 
-// `branchId` berilsa, avval o'sha filialga xos sozlama
-// (settings/driverBonus_branch_{id}) izlanadi; topilmasa ADMIN belgilagan
-// umumiy standart (settings/driverBonus) ishlatiladi — Cloud Function
-// tomondagi (E:\Sevimli Go\functions\src\index.ts, getDriverBonusSettings)
-// bir xil mantiq.
+// Haydovchi bonusining STANDART qiymatlari. Cloud Function'dagi
+// `fallback` bilan AYNAN bir xil bo'lishi shart
+// (D:\Sevimli Go\functions\src\index.ts, getDriverBonusSettings) —
+// haqiqiy bonusni o'sha funksiya hisoblaydi, bu yerdagisi esa faqat
+// ekranda ko'rsatiladi. Ikkalasi ajralib qolsa, haydovchi ekranda
+// "15 ta safar" ko'rib, aslida boshqa shartga ishlab yurgan bo'ladi.
+const DRIVER_BONUS_DEFAULTS: DriverBonusSettings = {
+  dailyEnabled: true,
+  dailyTripThreshold: 15,
+  bonusAmount: 20000,
+  minTripDistanceKm: 2,
+  weeklyEnabled: false,
+  weeklyTripThreshold: 0,
+  weeklyBonusAmount: 0,
+  perOrderEnabled: false,
+  perOrderBonusAmount: 0,
+};
+
+/** Filial sozlamasini umumiy standart USTIGA qo'yib birlashtiradi.
+ *
+ * MUHIM: avval bu yerda birlashtirish emas, ALMASHTIRISH bor edi —
+ * filial hujjati topilsa, umumiy hujjat UMUMAN o'qilmasdi. Filial
+ * hujjatida esa odatda faqat o'zgartirilgan maydonlar bo'ladi
+ * (dispetcher panelida faqat bittasini tahrirlagan bo'lsa ham hujjat
+ * yaratiladi). Natijada qolgan maydonlar pastdagi `|| 0` tufayli NOLGA
+ * tushardi va haydovchi ekranida "0 ta safar uchun 0 so'm" degan
+ * ma'nosiz maqsad ko'rinardi — Cloud Function esa ayni paytda umumiy
+ * standart bo'yicha (15 ta safar, 20 000 so'm) haqiqiy bonus
+ * hisoblayverardi.
+ *
+ * Cloud Function'dagi `readBranchScopedSettings` bilan bir xil mantiq. */
+async function readBranchScopedSettings(
+  baseDocId: string,
+  branchId?: string | null
+): Promise<FirebaseFirestoreTypes.DocumentData | null> {
+  const globalDoc = await firestore().collection('settings').doc(baseDocId).get();
+  const globalData = globalDoc.data();
+  let branchData: FirebaseFirestoreTypes.DocumentData | undefined;
+  if (branchId) {
+    const branchDoc = await firestore()
+      .collection('settings')
+      .doc(`${baseDocId}_branch_${branchId}`)
+      .get();
+    branchData = branchDoc.data();
+  }
+  if (!globalData && !branchData) return null;
+  return { ...(globalData || {}), ...(branchData || {}) };
+}
+
 export async function getDriverBonusSettings(branchId?: string | null): Promise<DriverBonusSettings | null> {
   try {
-    let data: FirebaseFirestoreTypes.DocumentData | undefined;
-    if (branchId) {
-      const branchDoc = await firestore().collection('settings').doc(`driverBonus_branch_${branchId}`).get();
-      data = branchDoc.data();
-    }
-    if (!data) {
-      const doc = await firestore().collection('settings').doc('driverBonus').get();
-      data = doc.data();
-    }
+    const data = await readBranchScopedSettings('driverBonus', branchId);
     if (!data) return null;
+    const d = DRIVER_BONUS_DEFAULTS;
+    const num = (v: unknown, fallback: number) => (typeof v === 'number' ? v : fallback);
+    const weeklyTripThreshold = num(data.weeklyTripThreshold, d.weeklyTripThreshold);
     return {
-      dailyEnabled: data.dailyEnabled !== false,
-      dailyTripThreshold: data.dailyTripThreshold || 0,
-      bonusAmount: data.bonusAmount || 0,
-      minTripDistanceKm: data.minTripDistanceKm || 0,
+      dailyEnabled: typeof data.dailyEnabled === 'boolean' ? data.dailyEnabled : d.dailyEnabled,
+      dailyTripThreshold: num(data.dailyTripThreshold, d.dailyTripThreshold),
+      bonusAmount: num(data.bonusAmount, d.bonusAmount),
+      minTripDistanceKm: num(data.minTripDistanceKm, d.minTripDistanceKm),
       // Eski hujjatlarda weeklyEnabled maydoni yo'q — bu holda ESKI
       // qoida (weeklyTripThreshold > 0 bo'lsa faol) bo'yicha xulosa
       // chiqaramiz, aks holda allaqachon ishlayotgan haftalik bonus
       // bu deploy'dan keyin "jim" o'chib qolar edi.
-      weeklyEnabled: typeof data.weeklyEnabled === 'boolean' ? data.weeklyEnabled : (data.weeklyTripThreshold || 0) > 0,
-      weeklyTripThreshold: data.weeklyTripThreshold || 0,
-      weeklyBonusAmount: data.weeklyBonusAmount || 0,
+      weeklyEnabled:
+        typeof data.weeklyEnabled === 'boolean' ? data.weeklyEnabled : weeklyTripThreshold > 0,
+      weeklyTripThreshold,
+      weeklyBonusAmount: num(data.weeklyBonusAmount, d.weeklyBonusAmount),
       perOrderEnabled: data.perOrderEnabled === true,
-      perOrderBonusAmount: data.perOrderBonusAmount || 0,
+      perOrderBonusAmount: num(data.perOrderBonusAmount, d.perOrderBonusAmount),
     };
   } catch (error) {
     console.warn('Haydovchi bonus sozlamalarini o\'qishda xato:', error);
@@ -966,11 +1022,21 @@ export async function releaseDriverOnLogout(driverId: string): Promise<void> {
   // pushToken: null + isOnline: false
   await saveDriverPushToken(driverId, null);
   try {
-    const activeOrder = await fetchActiveOrderForDriver(driverId);
+    const { order: activeOrder, failed } = await fetchActiveOrderForDriver(driverId);
     if (activeOrder) {
       console.warn(
         `Haydovchi ${driverId} tugallanmagan safar bilan chiqdi (${activeOrder.id}) — ` +
           '"band" bayrog\'i saqlab qolindi'
+      );
+      return;
+    }
+    // So'rov o'tmagan bo'lsa, safar bor-yo'qligini BILMAYMIZ. Bunday
+    // holatda "band"ni tozalash — safar ustidagi haydovchiga ikkinchi
+    // buyurtma tushishiga yo'l ochish demak. Xavfsiz tomoni: tegmaslik.
+    if (failed) {
+      console.warn(
+        `Haydovchi ${driverId}: chiqishda faol safarni tekshirib bo'lmadi — ` +
+          '"band" bayrog\'iga tegilmadi'
       );
       return;
     }
