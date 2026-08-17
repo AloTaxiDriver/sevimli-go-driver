@@ -7093,19 +7093,53 @@ function updateBonusStatusNote(elId,isBranchOverride){
   }
 }
 
+// MUHIM: bu ikkala ro'yxat Cloud Function'dagi zaxira qiymatlar bilan
+// AYNAN bir xil bo'lishi SHART (functions/src/index.ts —
+// getBonusSettings va getDriverBonusSettings ichidagi `fallback`).
+// Panelda bitta raqam ko'rsatilib, server boshqasini ishlatsa, admin
+// o'zi hech qachon ko'rmagan qoida bo'yicha pul to'lab qoladi.
+const CLIENT_BONUS_DEFAULTS={earnPercent:4,minBalanceToUse:0,perOrderCapType:'percent',perOrderCapValue:50};
+const DRIVER_BONUS_DEFAULTS={
+  dailyEnabled:true,dailyTripThreshold:15,bonusAmount:20000,minTripDistanceKm:2,
+  weeklyEnabled:false,weeklyTripThreshold:0,weeklyBonusAmount:0,
+  perOrderEnabled:false,perOrderBonusAmount:0,
+};
+
+// Maydon HAR DOIM yoziladi. Avval har biri `typeof cfg.X==='number'`
+// sharti ostida edi: yangi filialda (va umumiy standartda) o'sha maydon
+// bo'lmasa, input ESKI filialning raqami bilan qolib ketardi. Admin buni
+// "shu filialning qiymati" deb o'ylab "Saqlash" bossa, begona raqam
+// yangi filialga yozilib ketardi — hech qanday ogohlantirishsiz.
+function setBonusFieldValue(id,value){
+  const el=document.getElementById(id);
+  if(el)el.value=value;
+}
+function bonusNumberOr(cfg,key,defaults){
+  return typeof cfg?.[key]==='number'?cfg[key]:defaults[key];
+}
+
+// Filial tez-tez almashtirilsa, oldingi (sekinroq) o'qish keyinroq
+// qaytib formani ESKI filial qiymatlari bilan to'ldirib qo'yishi mumkin.
+// Har bir forma o'z navbat raqamini yuritadi va faqat ENG OXIRGI o'qish
+// natijasi ekranga yoziladi.
+let clientBonusFormToken=0;
+let driverBonusFormToken=0;
+
 async function loadBonusSettingsForm(){
   if(!window.getClientBonusSettings)return;
+  const token=++clientBonusFormToken;
   const cfg=await window.getClientBonusSettings(window._bonusSettingsBranchId||null);
-  if(!cfg)return;
-  const earnEl=document.getElementById('bs-earn-percent');
-  const minBalEl=document.getElementById('bs-min-balance');
-  const capValEl=document.getElementById('bs-cap-value');
-  const capTypeEl=document.getElementById('bs-cap-type');
-  if(earnEl&&typeof cfg.earnPercent==='number')earnEl.value=cfg.earnPercent;
-  if(minBalEl&&typeof cfg.minBalanceToUse==='number')minBalEl.value=cfg.minBalanceToUse;
-  if(capValEl&&typeof cfg.perOrderCapValue==='number')capValEl.value=cfg.perOrderCapValue;
-  if(capTypeEl&&cfg.perOrderCapType)capTypeEl.value=cfg.perOrderCapType;
-  updateBonusStatusNote('bs-status',cfg.isBranchOverride===true);
+  if(token!==clientBonusFormToken)return;
+  // MUHIM: `cfg` null bo'lsa ham davom etamiz — hech qanday hujjat
+  // topilmasa forma zaxira qiymatlar bilan to'ldiriladi. Avval bu yerda
+  // `return` turardi va forma oldingi filialning raqamlari bilan
+  // qolib ketardi.
+  setBonusFieldValue('bs-earn-percent',bonusNumberOr(cfg,'earnPercent',CLIENT_BONUS_DEFAULTS));
+  setBonusFieldValue('bs-min-balance',bonusNumberOr(cfg,'minBalanceToUse',CLIENT_BONUS_DEFAULTS));
+  setBonusFieldValue('bs-cap-value',bonusNumberOr(cfg,'perOrderCapValue',CLIENT_BONUS_DEFAULTS));
+  // Noma'lum qiymatda 'percent' — Cloud Function ham aynan shunday qiladi.
+  setBonusFieldValue('bs-cap-type',cfg?.perOrderCapType==='amount'?'amount':'percent');
+  updateBonusStatusNote('bs-status',cfg?.isBranchOverride===true);
 }
 
 // Bo'sh maydon jimgina 0 ga aylanib qolmasligi uchun.
@@ -7199,23 +7233,20 @@ async function saveBonusSettingsForm(){
 
 async function loadDriverBonusSettingsForm(){
   if(!window.getDriverBonusSettings)return;
+  const token=++driverBonusFormToken;
   const cfg=await window.getDriverBonusSettings(window._bonusSettingsBranchId||null);
-  if(!cfg)return;
-  updateBonusStatusNote('dbs-status',cfg.isBranchOverride===true);
-  const thEl=document.getElementById('dbs-trip-threshold');
-  const amtEl=document.getElementById('dbs-bonus-amount');
-  const distEl=document.getElementById('dbs-min-distance');
-  const weeklyThEl=document.getElementById('dbs-weekly-trip-threshold');
-  const weeklyAmtEl=document.getElementById('dbs-weekly-bonus-amount');
-  const weeklyDistNote=document.getElementById('dbs-weekly-min-distance-note');
-  const perOrderAmtEl=document.getElementById('dbs-perorder-bonus-amount');
-  const perOrderDistNote=document.getElementById('dbs-perorder-min-distance-note');
-  if(thEl&&typeof cfg.dailyTripThreshold==='number')thEl.value=cfg.dailyTripThreshold;
-  if(amtEl&&typeof cfg.bonusAmount==='number')amtEl.value=cfg.bonusAmount;
-  if(distEl&&typeof cfg.minTripDistanceKm==='number')distEl.value=cfg.minTripDistanceKm;
-  if(weeklyThEl&&typeof cfg.weeklyTripThreshold==='number')weeklyThEl.value=cfg.weeklyTripThreshold;
-  if(weeklyAmtEl&&typeof cfg.weeklyBonusAmount==='number')weeklyAmtEl.value=cfg.weeklyBonusAmount;
-  if(perOrderAmtEl&&typeof cfg.perOrderBonusAmount==='number')perOrderAmtEl.value=cfg.perOrderBonusAmount;
+  if(token!==driverBonusFormToken)return;
+  updateBonusStatusNote('dbs-status',cfg?.isBranchOverride===true);
+  // Har bir maydon SO'ZSIZ yoziladi — qarang: setBonusFieldValue
+  // ustidagi izoh (eski filial raqamlarining sizib o'tishi).
+  const minTripDistanceKm=bonusNumberOr(cfg,'minTripDistanceKm',DRIVER_BONUS_DEFAULTS);
+  const weeklyTripThreshold=bonusNumberOr(cfg,'weeklyTripThreshold',DRIVER_BONUS_DEFAULTS);
+  setBonusFieldValue('dbs-trip-threshold',bonusNumberOr(cfg,'dailyTripThreshold',DRIVER_BONUS_DEFAULTS));
+  setBonusFieldValue('dbs-bonus-amount',bonusNumberOr(cfg,'bonusAmount',DRIVER_BONUS_DEFAULTS));
+  setBonusFieldValue('dbs-min-distance',minTripDistanceKm);
+  setBonusFieldValue('dbs-weekly-trip-threshold',weeklyTripThreshold);
+  setBonusFieldValue('dbs-weekly-bonus-amount',bonusNumberOr(cfg,'weeklyBonusAmount',DRIVER_BONUS_DEFAULTS));
+  setBonusFieldValue('dbs-perorder-bonus-amount',bonusNumberOr(cfg,'perOrderBonusAmount',DRIVER_BONUS_DEFAULTS));
   // MUHIM: minimal masofa — bitta umumiy sozlama (`minTripDistanceKm`).
   // Avval uchala kartada ham TAHRIRLANADIGAN input turardi, lekin
   // uchalasi bir xil kalitga yozardi: haftalik kartada o'zgartirilsa
@@ -7224,15 +7255,17 @@ async function loadDriverBonusSettingsForm(){
   // buyurtmalarga qarshi himoya butun tizim bo'ylab o'chib qolardi.
   // Endi u faqat kunlik kartada tahrirlanadi, qolgan ikkitasida esa
   // joriy qiymat ko'rsatiladi.
-  const distLabel=typeof cfg.minTripDistanceKm==='number'?cfg.minTripDistanceKm+' km':'—';
+  const weeklyDistNote=document.getElementById('dbs-weekly-min-distance-note');
+  const perOrderDistNote=document.getElementById('dbs-perorder-min-distance-note');
+  const distLabel=minTripDistanceKm+' km';
   if(weeklyDistNote)weeklyDistNote.textContent=distLabel;
   if(perOrderDistNote)perOrderDistNote.textContent=distLabel;
   // Eski sozlamalarda dailyEnabled/weeklyEnabled maydoni bo'lmasligi
   // mumkin — kunlik bonus ilgari har doim faol edi (standart true),
   // haftalik esa ESKI qoida (weeklyTripThreshold>0) bo'yicha faol edi.
-  window._dbsDailyEnabled=cfg.dailyEnabled!==false;
-  window._dbsWeeklyEnabled=typeof cfg.weeklyEnabled==='boolean'?cfg.weeklyEnabled:(cfg.weeklyTripThreshold>0);
-  window._dbsPerOrderEnabled=cfg.perOrderEnabled===true;
+  window._dbsDailyEnabled=cfg?.dailyEnabled!==false;
+  window._dbsWeeklyEnabled=typeof cfg?.weeklyEnabled==='boolean'?cfg.weeklyEnabled:(weeklyTripThreshold>0);
+  window._dbsPerOrderEnabled=cfg?.perOrderEnabled===true;
   renderDbsToggle('dbs-daily-toggle',window._dbsDailyEnabled);
   renderDbsToggle('dbs-weekly-toggle',window._dbsWeeklyEnabled);
   renderDbsToggle('dbs-perorder-toggle',window._dbsPerOrderEnabled);
