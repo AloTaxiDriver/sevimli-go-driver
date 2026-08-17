@@ -3,6 +3,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import firestore from '@react-native-firebase/firestore';
 import React, { createContext, ReactNode, useContext, useEffect, useState } from 'react';
 import { stopDriverLocationTracking } from '../utils/locationTask';
+import { SAVED_PHONE_KEY } from '../utils/sessionKeys';
 
 export type Driver = {
   id: string;
@@ -36,7 +37,11 @@ const AuthContext = createContext<AuthContextType | null>(null);
 // Qurilmada saqlanadigan kalit — faqat telefon raqami saqlanadi (PAROL
 // EMAS), ilova qayta ochilganda shu raqam orqali Firestore'dan
 // haydovchi qayta yuklanadi (parolsiz).
-const SAVED_PHONE_KEY = 'oilaTaxiDriver_savedPhone';
+//
+// MUHIM: kalitning o'zi endi `src/utils/sessionKeys.ts` da — uni fon
+// rejimidagi joylashuv vazifasi ham o'qiydi (joylashuvni kimga
+// yozishini tekshirish uchun). Ikki joyda ikkita nusxa bo'lsa, ular
+// bir-biridan sezilmasdan ajralib ketishi mumkin edi.
 
 function mapFirestoreDriver(phone: string, data: Record<string, any>): Driver {
   return {
@@ -130,6 +135,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError("Hisobingiz hali moderatsiyada. Administrator tasdiqlashini kuting.");
         return false;
       }
+
+      // MUHIM: yangi sessiyani ochishdan OLDIN oldingi haydovchidan
+      // qolgan kuzatuvni to'xtatamiz. Ilova onlayn holatda o'ldirilgan
+      // bo'lsa, foreground service tirik qolishi mumkin (u ATAYLAB
+      // shunday) va u ESKI haydovchining ID'si bilan yozishda davom
+      // etardi — shu telefonda boshqa haydovchi ishlay boshlasa,
+      // joylashuv baribir eskisining hujjatiga tushardi.
+      await stopDriverLocationTracking();
 
       setDriver(mapFirestoreDriver(phone, data));
       await AsyncStorage.setItem(SAVED_PHONE_KEY, phone);

@@ -28,9 +28,10 @@ import firestore from '@react-native-firebase/firestore';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { getBackgroundLocationConsent } from './backgroundLocationConsent';
+import { LOCATION_TASK_DRIVER_ID_KEY, SAVED_PHONE_KEY } from './sessionKeys';
 
 export const DRIVER_LOCATION_TASK = 'sevimli-go-driver-location';
-const DRIVER_ID_KEY = 'location_task_driver_id';
+const DRIVER_ID_KEY = LOCATION_TASK_DRIVER_ID_KEY;
 
 type LocationTaskPayload = {
   locations?: Location.LocationObject[];
@@ -48,6 +49,33 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
   try {
     const driverId = await AsyncStorage.getItem(DRIVER_ID_KEY);
     if (!driverId) return;
+
+    // MUHIM: joylashuv AYNAN hozir tizimga kirgan haydovchining
+    // hujjatiga yozilishi kerak. Bu vazifa React'dan tashqarida
+    // ishlaydi va kimni yozishini faqat yuqoridagi kalitdan biladi —
+    // ya'ni u ESKIRIB qolishi mumkin:
+    //
+    //   * ilova onlayn holatda o'ldirilgan bo'lsa, foreground service
+    //     tirik qoladi (killServiceOnDestroy: false) va u eski
+    //     haydovchining ID'si bilan ishlashda davom etadi;
+    //   * shu telefonda BOSHQA haydovchi tizimga kirsa, o'sha xizmat
+    //     hali ham eskisining hujjatiga yozib turardi — ya'ni
+    //     dispetcher panelida allaqachon uyiga ketgan haydovchi
+    //     shahar bo'ylab "yurib" ko'rinardi, yangisi esa umuman
+    //     ko'rinmasdi.
+    //
+    // Shuning uchun ikkita MUSTAQIL kalit solishtiriladi: kuzatuv
+    // kimniki ekani va kim tizimga kirgani (AuthContext yuritadi).
+    // Ular mos kelmasa hech narsa yozilmaydi va kuzatuv to'xtatiladi.
+    const signedInPhone = await AsyncStorage.getItem(SAVED_PHONE_KEY);
+    if (signedInPhone !== driverId) {
+      console.warn(
+        `Joylashuv vazifasi eskirgan haydovchi uchun ishlayapti (${driverId}), ` +
+          `tizimda: ${signedInPhone || "hech kim"} — to'xtatilmoqda`
+      );
+      await stopDriverLocationTracking();
+      return;
+    }
 
     await firestore()
       .collection('drivers')
