@@ -57,6 +57,18 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
           lat: latest.coords.latitude,
           lng: latest.coords.longitude,
           updatedAt: firestore.FieldValue.serverTimestamp(),
+          // MUHIM: `locationUpdatedAt` — AYNAN koordinata qachon
+          // yangilangani. Uni FAQAT shu joy yozadi.
+          //
+          // Dispetcher paneli ham, mijoz ilovasi ham "joylashuv
+          // eskirganmi" degan qarorni shu vaqtga qarab chiqaradi. Avval
+          // ular umumiy `updatedAt`ga qarardi, holbuki uni push tokeni
+          // saqlanganda va "band" holati o'zgarganda ham yozib
+          // ketilardi — ya'ni GPS o'lgan haydovchi ilovani ochib
+          // qo'yishining o'zi uning ESKI koordinatasini "yangi" qilib
+          // ko'rsatardi. Dispetcher unga buyurtma yuborardi, mijoz esa
+          // xaritada aslida boshqa joydagi mashinani ko'rardi.
+          locationUpdatedAt: firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );

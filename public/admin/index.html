@@ -6153,12 +6153,25 @@ function findLocalDriverProfile(driverId){
 // aniqlaymiz — bu haqiqiy joylashuvni tiklamaydi, faqat noto'g'ri
 // ishonchning oldini oladi.
 const DRIVER_LOCATION_STALE_MS=90*1000; // ~9 ta o'tkazib yuborilgan GPS signali
-function driverUpdatedAtMillis(d){
-  const ts=d&&d.updatedAt;
+function timestampToMillis(ts){
   if(!ts)return 0;
   if(typeof ts.toMillis==='function')return ts.toMillis();
   if(typeof ts.seconds==='number')return ts.seconds*1000;
   return 0;
+}
+// MUHIM: avval bu yerda umumiy `updatedAt` o'qilardi. Uni esa haydovchi
+// hujjatiga uch xil narsa yozadi: joylashuv, push tokeni va "band"
+// holati. Oqibatida GPS o'lib qolgan haydovchi ilovani ochib qo'yishi
+// yoki band holati o'zgarishining o'zi uning ESKI koordinatasini
+// "hozirgina yangilangan" qilib ko'rsatardi — dispetcher unga
+// ishonib buyurtma yuborardi.
+//
+// Endi avval AYNAN joylashuv vaqti (`locationUpdatedAt`) qidiriladi.
+// Eski versiyadagi ilovalarda bu maydon hali yo'q, shuning uchun
+// `updatedAt`ga qaytiladi — aks holda ular butunlay "eskirgan" bo'lib
+// ko'rinib qolardi.
+function driverUpdatedAtMillis(d){
+  return timestampToMillis(d&&d.locationUpdatedAt)||timestampToMillis(d&&d.updatedAt);
 }
 function minutesAgoLabel(millisAgo){
   const sec=Math.floor(millisAgo/1000);

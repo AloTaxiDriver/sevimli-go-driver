@@ -904,6 +904,14 @@ export async function saveDriverPushToken(
         {
           pushToken: token,
           isOnline: token !== null,
+          // MUHIM: bu yerga `locationUpdatedAt` YOZILMASLIGI kerak.
+          // `updatedAt` — shunchaki "hujjat qachon tegildi", u hech
+          // qanday qarorga asos bo'lmaydi. Joylashuvning eskirgani esa
+          // AYNAN `locationUpdatedAt` bo'yicha aniqlanadi va uni faqat
+          // src/utils/locationTask.ts yozadi — aks holda ilovani ochib
+          // qo'yishning o'zi eski koordinatani "yangi" qilib
+          // ko'rsatardi (dispetcher paneli va mijoz ilovasi ikkalasi
+          // ham shunga ishonadi).
           updatedAt: firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
@@ -922,6 +930,8 @@ export async function setDriverBusyStatus(
       .collection('drivers')
       .doc(driverId)
       .set(
+        // `locationUpdatedAt` bu yerda ham ATAYLAB yo'q — sababi
+        // saveDriverPushToken ustidagi izohda.
         { busy, updatedAt: firestore.FieldValue.serverTimestamp() },
         { merge: true }
       );
