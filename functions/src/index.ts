@@ -5,6 +5,7 @@ import { FieldValue, getFirestore } from "firebase-admin/firestore";
 import { getMessaging } from "firebase-admin/messaging";
 import * as logger from "firebase-functions/logger";
 import { onDocumentCreated, onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { onSchedule } from "firebase-functions/v2/scheduler";
 import { HttpsError, onCall, onRequest } from "firebase-functions/v2/https";
 import { defineSecret } from "firebase-functions/params";
 
@@ -101,6 +102,9 @@ function driverLocationMillis(data: FirebaseFirestore.DocumentData): number {
 // narxi kattaroq (haqiqiy haydovchi buyurtmadan mahrum bo'ladi), va
 // tunnel/lift kabi qisqa uzilishlar hisobga olinishi kerak.
 const DRIVER_DISPATCH_STALE_MS = 5 * 60 * 1000;
+
+// Haydovchi hali safarda deb hisoblanadigan buyurtma holatlari.
+const ACTIVE_ORDER_STATUSES = ["accepted", "arrived", "in_progress"] as const;
 
 function isDriverEligibleForOrder(
   data: FirebaseFirestore.DocumentData,
@@ -2093,3 +2097,102 @@ export const createStaffAccount = onCall(async (request) => {
 // Firestore hujjatini o'chirish yetarli bo'lgani uchun bu alohida
 // Cloud Function talab qilmaydi — dashboard to'g'ridan-to'g'ri
 // o'chira oladi (Firestore qoidalari faqat 'admin' rolga ruxsat beradi).
+
+// ============================================================
+// "ARVOH ONLAYN" HAYDOVCHILARNI AVTOMATIK TOZALASH
+// ============================================================
+// `isOnline` — shunchaki hujjatdagi bayroq, va uni tozalaydigan kod
+// FAQAT ilovaning ichida bor. Ilova o'ldirilganda (Android xotira
+// uchun yopdi, telefon o'chdi/zaryadi tugadi, haydovchi ro'yxatdan
+// surib tashladi, ilova quladi) hech kim uni tozalamaydi.
+//
+// 2026-08-17 da jonli bazada 64 ta haydovchidan 33 tasi "onlayn"
+// ko'rinardi — ulardan atigi 7 tasi haqiqatan ishlayotgan edi.
+// Qolgan 26 tasi soatlab (ba'zilari bir necha KUN) jim turgan.
+//
+// Zarari:
+//   * dispetcher panelida ishlayotgan haydovchilar soni yolg'on;
+//   * mijoz ilovasida "yaqin atrofda N ta mashina" soni yolg'on;
+//   * dispatch navbati ularni ham hisobga olardi (bu endi
+//     DRIVER_DISPATCH_STALE_MS bilan hal qilingan).
+//
+// Ilova tomonidagi tuzatishlar (chiqishda bo'shatish, ochilishda
+// tozalash) YANGI versiya bilan keladi va eski versiyalarda
+// ishlamaydi. Bu vazifa esa SERVER tomonda ishlaydi — ilova qaysi
+// versiyada bo'lishidan qat'i nazar.
+//
+// MUHIM: `updatedAt` ATAYLAB YOZILMAYDI. Aks holda arvoh haydovchi
+// "hozirgina yangilangan" bo'lib ko'rinib, eski koordinatasi yangiday
+// qabul qilinardi.
+const GHOST_ONLINE_STALE_MS = 30 * 60 * 1000;
+
+export const cleanupGhostOnlineDrivers = onSchedule(
+  {
+    schedule: "every 15 minutes",
+    timeZone: "Asia/Tashkent",
+    timeoutSeconds: 300,
+    memory: "256MiB",
+  },
+  async () => {
+    let snapshot;
+    try {
+      snapshot = await db.collection("drivers").where("isOnline", "==", true).get();
+    } catch (error) {
+      logger.error("Arvoh haydovchilarni qidirishda xato:", error);
+      return;
+    }
+
+    const now = Date.now();
+    let offlined = 0;
+    let busyCleared = 0;
+    let keptBusy = 0;
+
+    for (const doc of snapshot.docs) {
+      const data = doc.data();
+      const locationMillis = driverLocationMillis(data);
+      if (locationMillis !== 0 && now - locationMillis <= GHOST_ONLINE_STALE_MS) continue;
+
+      const patch: Record<string, unknown> = { isOnline: false };
+
+      // "Band" bayrog'i faqat HAQIQATAN tugallanmagan safar
+      // bo'lmaganda tozalanadi. Safar o'rtasida ilovasi o'lgan
+      // haydovchi qaytib kelganda buyurtma hamon uniki bo'lishi
+      // kerak — bayroqni tozalash unga IKKINCHI buyurtma
+      // yuborilishiga yo'l ochib qo'yardi.
+      if (data.busy === true) {
+        let hasActive = false;
+        try {
+          for (const status of ACTIVE_ORDER_STATUSES) {
+            const orders = await db
+              .collection("orders")
+              .where("driverId", "==", doc.id)
+              .where("status", "==", status)
+              .limit(1)
+              .get();
+            if (!orders.empty) { hasActive = true; break; }
+          }
+        } catch (error) {
+          // Tekshirib bo'lmadi — xavfsiz tomoni: tegmaslik.
+          logger.warn(`${doc.id}: faol buyurtmani tekshirib bo'lmadi`, error);
+          hasActive = true;
+        }
+        if (hasActive) keptBusy++;
+        else { patch.busy = false; busyCleared++; }
+      }
+
+      try {
+        await doc.ref.update(patch);
+        offlined++;
+      } catch (error) {
+        logger.warn(`${doc.id}: oflayn qilishda xato`, error);
+      }
+    }
+
+    if (offlined > 0 || keptBusy > 0) {
+      logger.info(
+        `Arvoh tozalash: ${snapshot.size} ta "onlayn"dan ${offlined} tasi oflayn qilindi, ` +
+          `${busyCleared} ta "band" tozalandi, ${keptBusy} tasida safar bor edi`
+      );
+    }
+  }
+);
