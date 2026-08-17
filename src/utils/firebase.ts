@@ -625,9 +625,27 @@ export async function acceptOrder(
   await firestore().runTransaction(async (tx) => {
     const snap = await tx.get(orderRef);
     const data = snap.data();
-    if (!data || data.status !== 'pending' || data.driverId != null) {
+    if (!data) throw new OrderAlreadyTakenError();
+
+    // Buyurtma ALLAQACHON shu haydovchiniki bo'lishi mumkin, va bu
+    // butunlay normal ikkita holatda:
+    //   1) dispetcher buyurtmani to'g'ridan-to'g'ri shu haydovchiga
+    //      biriktirgan (yaratilishida `driverId` yozilgan, holat esa
+    //      hamon "pending");
+    //   2) qabul qilish takrorlanmoqda (bildirishnoma ekrani + push
+    //      bir vaqtda, yoki ilova qayta ochildi).
+    // Avval ikkala holatda ham `OrderAlreadyTakenError` tashlanardi:
+    // birinchisida dispetcher biriktirgan buyurtma HECH QACHON
+    // "accepted"ga o'tmasdi, ilova qulasa esa u butunlay yo'qolardi
+    // (tiklash faqat accepted/arrived/in_progress ni qidiradi).
+    const mine = data.driverId === driverId;
+    if (!mine && data.driverId != null) throw new OrderAlreadyTakenError();
+    if (data.status === 'completed' || data.status === 'cancelled') {
       throw new OrderAlreadyTakenError();
     }
+    // Allaqachon meniki va safar boshlangan — holatni ORQAGA surmaymiz.
+    if (mine && data.status !== 'pending') return;
+
     tx.update(orderRef, {
       status: 'accepted',
       driverId,
@@ -644,10 +662,27 @@ export async function declineDirectOrder(orderId: string): Promise<void> {
 // (masalan native overlay orqali, JS tomon Firestore yozuvidan keyin
 // bilib qoladi) — buyurtmani darhol qaytadan "pending" holatiga va
 // haydovchisiz qilib qaytaradi, shunda u boshqa haydovchilarga ko'rinadi.
-export async function revertOrderAcceptance(orderId: string): Promise<void> {
-  await firestore().collection('orders').doc(orderId).update({
-    status: 'pending',
-    driverId: null,
+export async function revertOrderAcceptance(
+  orderId: string,
+  driverId: string
+): Promise<void> {
+  // MUHIM: EGALIK tekshiriladi. Avval bu shunchaki `update()` edi va
+  // buyurtma KIMNIKI ekaniga umuman qaramasdi. Kech kelgan/xato qabul
+  // qilish urinishi (masalan haydovchi balansi tugagan holatda) shu
+  // orada BOSHQA haydovchi olib bo'lgan safarni "pending"ga qaytarib
+  // yuborardi: birinchi haydovchi mijozni olib ketayotgan bo'lsa ham,
+  // buyurtma qaytadan ochiq ro'yxatga tushib, uchinchi haydovchiga
+  // ham berilishi mumkin edi.
+  const orderRef = firestore().collection('orders').doc(orderId);
+  await firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(orderRef);
+    const data = snap.data();
+    if (!data) return;
+    if (data.driverId !== driverId) return;
+    // Safar allaqachon boshlangan bo'lsa ham qaytarmaymiz — mijoz
+    // mashinada bo'lishi mumkin.
+    if (data.status !== 'accepted' && data.status !== 'pending') return;
+    tx.update(orderRef, { status: 'pending', driverId: null });
   });
 }
 

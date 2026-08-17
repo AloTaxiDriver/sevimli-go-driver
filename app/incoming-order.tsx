@@ -18,6 +18,7 @@ import notifee from '@notifee/react-native';
 import { router, useLocalSearchParams } from 'expo-router';
 import React, { useEffect, useRef, useState } from 'react';
 import {
+    Alert,
     Animated,
     BackHandler,
     StyleSheet,
@@ -28,7 +29,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuth } from '../src/context/AuthContext';
 import { COLORS } from '../src/theme/colors';
-import { acceptOrder } from '../src/utils/firebase';
+import { acceptOrder, OrderAlreadyTakenError } from '../src/utils/firebase';
 
 // Buyurtmani qabul qilish uchun ajratilgan vaqt (soniya). Shu vaqt
 // tugaganda ekran avtomatik yopiladi — xuddi boshqa taxi ilovalari
@@ -105,17 +106,56 @@ export default function IncomingOrderScreen() {
 
   async function handleAccept() {
     if (responding || !params.orderId) return;
+    // MUHIM: haydovchi hali yuklanmagan bo'lsa (ilova bildirishnomadan
+    // sovuq ishga tushgan va AuthContext hali Firestore'dan javob
+    // olmagan) `driverId` yuqorida "unknown_driver" bo'lib qoladi.
+    // Avval shu qiymat Firestore'ga YOZILARDI: buyurtma mavjud
+    // bo'lmagan haydovchiga biriktirilib, hech kimga ko'rinmay
+    // yo'qolardi.
+    if (!driver?.id && !driver?.phone) {
+      Alert.alert(
+        'Bir lahza kuting',
+        "Hisobingiz hali yuklanmoqda. Bir necha soniyadan keyin qayta urinib ko'ring."
+      );
+      return;
+    }
     setResponding(true);
     try {
       await acceptOrder(params.orderId, driverId);
     } catch (error) {
-      console.warn('Buyurtmani qabul qilishda xato:', error);
+      // MUHIM: avval xato jimgina yutilardi va ekran baribir yopilib,
+      // haydovchi buyurtmani olganman deb o'ylardi.
+      setResponding(false);
+      if (error instanceof OrderAlreadyTakenError) {
+        Alert.alert('Kechikdingiz', 'Bu buyurtmani boshqa haydovchi allaqachon oldi.');
+      } else {
+        console.warn('Buyurtmani qabul qilishda xato:', error);
+        Alert.alert(
+          'Qabul qilinmadi',
+          "Internet aloqasini tekshirib, qayta urinib ko'ring."
+        );
+        return;
+      }
+      closeScreen();
+      return;
     }
     closeScreen();
-    // Qabul qilingandan keyin asosiy xarita ekraniga o'tamiz —
-    // u yerda MapScreen ichidagi mantiq (activeOrderSourceId va
-    // Firestore tinglovchisi) buyurtmani davom ettiradi.
-    router.replace('/');
+    // MUHIM: buyurtma raqami PARAMETR sifatida uzatiladi.
+    //
+    // Avval bu shunchaki `router.replace('/')` edi, va yuqoridagi izohda
+    // "MapScreen ichidagi Firestore tinglovchisi buyurtmani davom
+    // ettiradi" deb yozilgandi — BUNDAY TINGLOVCHI YO'Q
+    // (`listenToAcceptedOrderForDriver` yozilgan, lekin hech qayerda
+    // ishlatilmaydi). MapScreen buyurtmani FAQAT `acceptOrderId`
+    // parametri orqali biladi.
+    //
+    // Oqibati: buyurtma Firestore'da "accepted" bo'lib, shu
+    // haydovchiga biriktirilardi, lekin ekranda hech narsa
+    // ko'rinmasdi — na safar kartasi, na "band" bayrog'i. Mijoz
+    // "haydovchi topildi" deb kutib qolar, haydovchi esa buyurtmasi
+    // borligini bilmasdi. Faqat ilovani butunlay qayta ishga tushirish
+    // (safarni tiklash) yordam berardi.
+    router.replace({ pathname: '/(tabs)', params: { acceptOrderId: params.orderId } });
   }
 
   function handleDecline() {

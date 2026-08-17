@@ -30,7 +30,7 @@ import { COLORS } from './theme/colors';
 import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
   ACTIVE_ORDER_STATUSES,
-  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, fetchActiveOrderForDriver, fetchOrderById, finalizeOrderPrice, firestoreOrderToOrder,
+  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, fetchActiveOrderForDriver, fetchOrderById, finalizeOrderPrice, firestoreOrderToOrder, mapDocToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
@@ -205,7 +205,19 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const [cancelModalVisible, setCancelModalVisible] = useState(false);
   // "Safarni yakunlash" bosilganda darhol yopilmasin — avval xulosa
   // (masofa, narx tafsiloti) ko'rsatiladi
+  // Firestore javob bermagani uchun "safar bormi yo'qmi" savoli
+  // JAVOBSIZ qolgan holat. Bunda hech narsa o'chirilmaydi (yozuv
+  // qurilmada qoladi), lekin YANGI buyurtma ham olinmaydi — aks holda
+  // haydovchida bir vaqtda ikkita tugallanmagan safar bo'lib qolardi.
+  const [tripStateUnknown, setTripStateUnknown] = useState(false);
+  // Tiklashni qayta urinish uchun hisoblagich (o'zgarganda tiklash
+  // effekti qaytadan ishga tushadi).
+  const [restoreAttempt, setRestoreAttempt] = useState(0);
   const [showTripSummary, setShowTripSummary] = useState(false);
+  // Safarni yakunlash yozuvi ketayotgan payt — tugma bloklanadi,
+  // aks holda haydovchi bir necha marta bosib, bir nechta yozuv
+  // yuborishi mumkin.
+  const [finishingTrip, setFinishingTrip] = useState(false);
   // "Haydash rejimi" uchun: joriy tezlik (km/h) va yo'nalish (heading,
   // 0-360°) — GPS orqali watchPositionAsync ichida yangilanadi
   const [speedKmh, setSpeedKmh] = useState(0);
@@ -223,7 +235,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // effekti kutib turadi, aks holda tiklanayotgan safar ustiga yangi
   // buyurtma tushib qolishi mumkin.
   const [restoringTrip, setRestoringTrip] = useState(true);
-  const tripRestoreStartedRef = useRef(false);
+  const tripRestoreStartedRef = useRef<number | null>(null);
   const activeLegRef = useRef<1 | 2>(1);
   const lastTripPersistAtRef = useRef(0);
 
@@ -348,8 +360,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // tashlangach, bog'liqlik ham yo'qoldi: endi safar GPS umuman
   // ishlamasa ham tiklanadi (ichkarida, ruxsat berilmagan telefonda).
   useEffect(() => {
-    if (tripRestoreStartedRef.current) return;
-    tripRestoreStartedRef.current = true;
+    // MUHIM: `tripRestoreStartedRef` avval oddiy "bir marta" bayrog'i
+    // edi. Endi u QAYSI urinish bajarilganini saqlaydi — tarmoq
+    // tiklanganda tiklashni qaytadan urinib ko'rish uchun.
+    if (tripRestoreStartedRef.current === restoreAttempt) return;
+    tripRestoreStartedRef.current = restoreAttempt;
 
     (async () => {
       try {
@@ -410,10 +425,18 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         if (!fo && lookupFailed) {
           console.warn(
             'Safarni tiklash: Firestore javob bermadi — qurilmadagi safar ' +
-              'yozuviga TEGILMADI, ilova keyingi ochilishida qayta uriniladi'
+              'yozuviga TEGILMADI, 30 soniyadan keyin qayta uriniladi'
           );
+          // MUHIM: `restoringTrip` pastdagi `finally` da baribir false
+          // bo'ladi (aks holda haydovchi umuman ishlay olmasdi), lekin
+          // `tripStageRef` null bo'lib qolgani uchun "ikkinchi buyurtma"
+          // qo'riqchilari o'tib ketardi: haydovchi yangi buyurtma olsa,
+          // eskisi Firestore'da abadiy "accepted" bo'lib osilib qolardi.
+          // Shuning uchun holat ANIQLANGUNCHA yangi buyurtma olinmaydi.
+          setTripStateUnknown(true);
           return;
         }
+        setTripStateUnknown(false);
 
         if (!fo) {
           // Tiklanadigan safar yo'q. Ammo haydovchi Firestore'da hamon
@@ -555,7 +578,16 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         setRestoringTrip(false);
       }
     })();
-  }, [driverId]);
+  }, [driverId, restoreAttempt]);
+
+  // Holat noma'lum bo'lsa — har 30 soniyada qayta urinamiz. Tarmoq
+  // odatda tez qaytadi, va haydovchi hech narsa qilmasdan ishlay
+  // boshlaydi.
+  useEffect(() => {
+    if (!tripStateUnknown) return;
+    const iv = setInterval(() => setRestoreAttempt((n) => n + 1), 30000);
+    return () => clearInterval(iv);
+  }, [tripStateUnknown]);
 
   // Tiklash uchun ZAXIRA CHEGARA. Yuqoridagi effektning `finally` bloki
   // faqat xato chiqqanda ishlaydi — javob bermay QOTIB QOLGAN chaqiruvda
@@ -610,24 +642,47 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       //
       // Endi avval OS keshidagi oxirgi ma'lum nuqta olinadi (u DARHOL
       // qaytadi), so'ng aniqrog'i bilan almashtiriladi.
+      // MUHIM: keshdagi nuqta DARHOL qo'llaniladi. Avval u shunchaki
+      // o'zgaruvchiga solib qo'yilardi, ekran esa `getCurrentPositionAsync`
+      // TUGAGUNCHA kutardi — o'sha chaqiruvda esa vaqt chegarasi YO'Q.
+      // Yerto'lada yoki "sovuq" GPS bilan u 20-40 soniya osilib turadi
+      // va shu vaqt ichida:
+      //   * haydovchi "Joylashuv aniqlanmoqda" ekranida qotib qoladi
+      //     (xaritani ham ko'rmaydi);
+      //   * buyurtmani qabul qilish effekti `location`ni kutgani uchun
+      //     Firestore'ga YOZILMAYDI — ya'ni haydovchi overlay'dagi
+      //     "Qabul qilish"ni bosgan bo'lsa ham, taklif navbati undan
+      //     o'tib ketib, buyurtma boshqasiga berilishi mumkin.
+      // Ya'ni izohda yozilgan "DARHOL qaytadi" niyati kodda amalga
+      // oshmagan edi. Endi keshdagi nuqta bilan ekran shu zahoti
+      // ochiladi, aniqrog'i esa kelganda o'rnini egallaydi.
       let initial: { latitude: number; longitude: number } | null = null;
       try {
         const known = await Location.getLastKnownPositionAsync();
-        if (known) initial = { latitude: known.coords.latitude, longitude: known.coords.longitude };
+        if (known) {
+          initial = { latitude: known.coords.latitude, longitude: known.coords.longitude };
+          setLocation(initial);
+          setCurrentRegion({ ...initial, latitudeDelta: 0.05, longitudeDelta: 0.05 });
+          setLoading(false);
+        }
       } catch {
         // Keshda nuqta yo'q — muammo emas, pastda aniqrog'ini olamiz.
       }
       try {
         const current = await Location.getCurrentPositionAsync({});
-        initial = { latitude: current.coords.latitude, longitude: current.coords.longitude };
+        const fresh = { latitude: current.coords.latitude, longitude: current.coords.longitude };
+        initial = fresh;
+        setLocation(fresh);
+        // Kamerani faqat BIRINCHI nuqtada joylashtiramiz — keshdagi
+        // nuqta allaqachon qo'llangan bo'lsa, xaritani sakratmaymiz.
+        setCurrentRegion((prev) =>
+          prev ? prev : { ...fresh, latitudeDelta: 0.05, longitudeDelta: 0.05 }
+        );
       } catch (e) {
         console.warn('Joriy joylashuvni aniqlab bo\'lmadi:', e);
       }
 
-      if (initial) {
-        setLocation(initial);
-        setCurrentRegion({ ...initial, latitudeDelta: 0.05, longitudeDelta: 0.05 });
-      } else {
+      if (!initial) {
         setErrorMsg('Joylashuv aniqlanmadi — GPS yoqilganini tekshiring');
         setRestoringTrip(false);
       }
@@ -759,6 +814,16 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     // (quyidagi tripStageRef tekshiruvi hali null ko'rgan bo'lardi).
     if (restoringTrip) return;
     if (processedAcceptId.current === pendingAcceptId) return;
+    // Oldingi safar bor-yo'qligi hali noma'lum — yangi buyurtma
+    // olinmaydi (yuqoridagi `tripStateUnknown` izohiga qarang).
+    if (tripStateUnknown) {
+      Alert.alert(
+        'Aloqa yo\'q',
+        "Oldingi safaringiz holatini tekshirib bo'lmadi. Internet tiklangach avtomatik davom etadi."
+      );
+      setPendingAcceptId(null);
+      return;
+    }
 
     processedAcceptId.current = pendingAcceptId;
     const orderId = pendingAcceptId;
@@ -778,7 +843,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         // faol safar ustida bo'lsa, yangisini balans tekshiruvidagi kabi
         // darhol bekor qilamiz.
         if (tripStageRef.current) {
-          await revertOrderAcceptance(orderId).catch(() => {});
+          await revertOrderAcceptance(orderId, driverId).catch(() => {});
           setPendingAcceptId(null);
           processedAcceptId.current = null;
           console.warn('Haydovchi allaqachon faol safarda — yangi buyurtma bekor qilindi:', orderId);
@@ -793,7 +858,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         // shunda boshqa haydovchilarga ko'rinadi, bu esa hisob-kitobsiz
         // ishlashda davom etmaydi.
         if ((driver?.balance || 0) <= 0) {
-          await revertOrderAcceptance(orderId).catch(() => {});
+          await revertOrderAcceptance(orderId, driverId).catch(() => {});
           setPendingAcceptId(null);
           processedAcceptId.current = null;
           Alert.alert(
@@ -803,41 +868,54 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           return;
         }
 
-        const fo: FirestoreOrder = {
-          id: orderId,
-          status: 'accepted',
-          driverId,
-          customerName: data.customerName || "Noma'lum mijoz",
-          customerPhone: data.customerPhone || '',
-          fromAddress: data.fromAddress || '',
-          toAddress: data.toAddress || '',
-          tariffName: data.tariffName || '',
-          price: typeof data.price === 'number' ? data.price : 0,
-          distanceKm: typeof data.distanceKm === 'number' ? data.distanceKm : 0,
-          perKm: typeof data.perKm === 'number' ? data.perKm : 0,
-          minDistance: typeof data.minDistance === 'number' ? data.minDistance : 0,
-          minDistancePrice: typeof data.minDistancePrice === 'number' ? data.minDistancePrice : (typeof data.price === 'number' ? data.price : 0),
-          tieredPricing: !!data.tieredPricing,
-          priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
-          note: data.note || '',
-          source: data.source || 'dashboard',
-          pickupLat: data.pickupLat ?? null,
-          pickupLng: data.pickupLng ?? null,
-          dropoffLat: data.dropoffLat ?? null,
-          dropoffLng: data.dropoffLng ?? null,
-          entranceNumber: data.entranceNumber || undefined,
-          serviceType: data.serviceType === 'delivery' ? 'delivery' : data.serviceType === 'taxi' ? 'taxi' : undefined,
-          toAddress2: data.toAddress2 || undefined,
-          dropoff2Lat: typeof data.dropoff2Lat === 'number' ? data.dropoff2Lat : null,
-          dropoff2Lng: typeof data.dropoff2Lng === 'number' ? data.dropoff2Lng : null,
-          distanceKm2: typeof data.distanceKm2 === 'number' ? data.distanceKm2 : undefined,
-          recipientName: data.recipientName || undefined,
-          recipientPhone: data.recipientPhone || undefined,
-          packageDescription: data.packageDescription || undefined,
-        };
+        // MUHIM: buyurtma obyekti QO'LDA yig'ilardi va uchta maydon
+        // tushib qolgan edi: `finalPrice`, `bonusUsed`, `extrasTotal`.
+        // Ular aynan MIJOZ NAQD PULDA QANCHA TO'LASHINI belgilaydi.
+        // Oqibati: mijoz ilovada 10 000 bonus ishlatgan bo'lsa,
+        // haydovchi ekranida chegirmasiz narx turardi va u mijozdan
+        // 10 000 KO'P so'rardi; qo'shimcha xizmatli buyurtmada esa
+        // aksincha — KAM olardi. "Ochiq buyurtmalar"dan olingan
+        // buyurtmalarda esa hammasi to'g'ri ko'rinardi (u yo'l
+        // `mapDocToOrder` ishlatadi), shuning uchun farq tasodifiy
+        // bo'lib tuyulardi.
+        //
+        // Endi shu bitta funksiya ishlatiladi — maydon qo'shilsa,
+        // uchala yo'l ham uni birdaniga oladi.
+        const fo: FirestoreOrder = { ...mapDocToOrder(doc), status: 'accepted', driverId };
 
-        // Zaxira: agar native tomon negadir yozmagan bo'lsa, shu yerda ham urinamiz
-        await acceptOrder(orderId, driverId).catch(() => {});
+        // ============================================================
+        // BUYURTMANI QABUL QILISH — YAGONA YOZUV
+        // ============================================================
+        // MUHIM: avval bu qator `.catch(() => {})` bilan edi va izohda
+        // "native overlay allaqachon yozib bo'lgan" deyilardi. Bu
+        // NOTO'G'RI: native tomonda (plugins/overlay-native) Firestore
+        // kodi umuman yo'q — u faqat ilovani deep-link bilan ochadi.
+        // Ya'ni SHU qator yagona yozuv, va uning xatosi yutib
+        // yuborilardi.
+        //
+        // Oqibati eng yomon holatda: taklif navbati shu haydovchidan
+        // o'tib ketgan va buyurtmani BOSHQA haydovchi olgan bo'lsa,
+        // `OrderAlreadyTakenError` jimgina yo'qolar, pastdagi kod esa
+        // safarni baribir boshlab yuborardi. Ikki haydovchi bir mijozga
+        // yo'l olardi; birinchisi "Yakunlash"ni bosganda esa
+        // IKKINCHISINING buyurtmasi narxini qayta yozib, uni
+        // yakunlangan qilib qo'yardi.
+        try {
+          await acceptOrder(orderId, driverId);
+        } catch (error) {
+          setPendingAcceptId(null);
+          processedAcceptId.current = null;
+          if (error instanceof OrderAlreadyTakenError) {
+            Alert.alert('Kechikdingiz', 'Bu buyurtmani boshqa haydovchi allaqachon oldi.');
+          } else {
+            console.warn('Qabul qilishda xato:', error);
+            Alert.alert(
+              'Qabul qilinmadi',
+              "Buyurtmani qabul qilib bo'lmadi. Internet aloqasini tekshirib, qayta urinib ko'ring."
+            );
+          }
+          return;
+        }
 
         notifee.cancelAllNotifications().catch(console.warn);
 
@@ -858,7 +936,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         processedAcceptId.current = null;
       }
     })();
-  }, [pendingAcceptId, location, driverId, restoringTrip]);
+  }, [pendingAcceptId, location, driverId, restoringTrip, tripStateUnknown]);
 
   // Pool buyurtmalar — faqat gamburger menyuda, avtomatik taklif YO'Q.
   // MUHIM (filial izolyatsiyasi): faqat haydovchining O'Z filialiga
@@ -1304,6 +1382,15 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     }
     try {
       const { orderId, tariff } = await startBordurTrip(driverId, location);
+      // MUHIM: masofa hisoblagichi FAQAT `handleStartTrip` va safarni
+      // tiklashda nollanardi — bordyur safarida esa umuman
+      // nollanmasdi. Oqibati: 15 km lik safardan keyin ko'chadan
+      // yo'lovchi olgan haydovchida hisoblagich 15 km dan boshlanar,
+      // mashina hali qimirlamasdan "joriy narx" o'n minglab so'm
+      // ko'rsatardi, va safar oxirida AYNAN shu summa buyurtmaga
+      // yozilardi. `lastTripPointRef` ham eski nuqtada qolgani uchun
+      // birinchi GPS signali yana 1.5 km gacha qo'shib yuborardi.
+      resetTripMeter();
       activeOrderSourceId.current = orderId;
       setActiveOrder({
         id: orderId,
@@ -1381,14 +1468,23 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     if (id) updateOrderStatus(id, 'arrived').catch(console.warn);
     setTripStage('waiting');
   }
+  // Bosib o'tilgan masofa hisoblagichini nolga tushiradi. AVVAL bu
+  // uchta qator faqat `handleStartTrip` ichida yozilgan edi va
+  // bordyur safari (`handleStartBordur`) ularni umuman bajarmasdi —
+  // ya'ni oldingi safarning kilometrlari yangi mijozga hisoblanardi.
+  // Endi bitta joyda, ikkala yo'l ham shuni chaqiradi.
+  function resetTripMeter() {
+    tripDistanceRef.current = 0;
+    lastTripPointRef.current = location;
+    setLiveTripDistanceKm(0);
+  }
+
   function handleStartTrip() {
     const id = activeOrderSourceId.current;
     if (id) updateOrderStatus(id, 'in_progress').catch(console.warn);
     notifyTripStart();
     // Safar boshlanish nuqtasidan hisoblagichni nolga tushiramiz
-    tripDistanceRef.current = 0;
-    lastTripPointRef.current = location;
-    setLiveTripDistanceKm(0);
+    resetTripMeter();
     setActiveLeg(1);
     setTripStage('in_progress');
   }
@@ -1413,7 +1509,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   function closeTripSummary() {
     setShowTripSummary(false);
   }
-  function confirmFinishTrip() {
+  async function confirmFinishTrip() {
+    if (finishingTrip) return;
     const id = activeOrderSourceId.current;
     if (id) {
       // MUHIM (poyga holati): avval bu ikkala yozuv mustaqil, tartibsiz
@@ -1425,16 +1522,39 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       // yakuniy narx yoziladi (kutiladi), FAQAT SHUNDAN KEYIN holat
       // "completed"ga o'tkaziladi — Cloud Function har doim eng so'nggi
       // narxni ko'radi.
-      (async () => {
-        try {
-          // Yakuniy narx — jonli hisoblangan (va yaxlitlangan) summa,
-          // oldindan taxmin qilingan (statik) narx emas
-          await finalizeOrderPrice(id, livePrice, tripDistanceRef.current);
-        } catch (e) {
-          console.warn(e);
-        }
-        updateOrderStatus(id, 'completed').catch(console.warn);
-      })();
+      // MUHIM: avval bu blok "yubordim va unutdim" edi — pastdagi
+      // tozalash (`clearTripSnapshot`, `setTripStage(null)`,
+      // `activeOrderSourceId = null`) yozuvlar TASDIQLANISHINI
+      // KUTMASDAN darhol bajarilardi.
+      //
+      // Aloqasiz joyda (yerto'la, garaj) Firestore yozuvi server javob
+      // bergunicha resolve BO'LMAYDI. Ilova o'sha holatda o'ldirilsa,
+      // narx yozuvi keshdan qayta yuboriladi, lekin uning ketidan
+      // keladigan "completed" yozuvi JS bilan birga yo'qoladi. Natijada
+      // buyurtma abadiy "in_progress" bo'lib qoladi: komissiya
+      // olinmaydi (kompaniya yo'qotadi), safar tarixga tushmaydi,
+      // mijozning ilovasida safar tugamagan bo'lib turadi. Qurilmadagi
+      // yozuv esa allaqachon o'chirilgani uchun keyingi ochilishda
+      // masofa NOLDAN tiklanadi va narx eng past tarifga qulaydi.
+      //
+      // Endi ikkala yozuv ham kutiladi. O'tmasa — safar ekranda
+      // QOLADI va haydovchi qayta urinib ko'ra oladi.
+      setFinishingTrip(true);
+      try {
+        // Yakuniy narx — jonli hisoblangan (va yaxlitlangan) summa,
+        // oldindan taxmin qilingan (statik) narx emas
+        await finalizeOrderPrice(id, livePrice, tripDistanceRef.current);
+        await updateOrderStatus(id, 'completed');
+      } catch (e) {
+        console.warn('Safarni yakunlashda xato:', e);
+        setFinishingTrip(false);
+        Alert.alert(
+          "Yakunlab bo'lmadi",
+          "Internet aloqasi yo'q ko'rinadi. Safar saqlanib qoldi — aloqa tiklangach «Yakunlash» tugmasini qayta bosing."
+        );
+        return;
+      }
+      setFinishingTrip(false);
     }
     notifyTripEnd();
     stopWatchingOrderCancellation();
@@ -1492,6 +1612,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       );
       return;
     }
+    if (tripStateUnknown) {
+      Alert.alert(
+        'Aloqa yo\'q',
+        "Oldingi safaringiz holatini tekshirib bo'lmadi. Internet tiklangach avtomatik davom etadi."
+      );
+      return;
+    }
     if ((driver?.balance || 0) <= 0) {
       Alert.alert(
         'Balans yetarli emas',
@@ -1510,7 +1637,14 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       if (error instanceof OrderAlreadyTakenError) {
         Alert.alert('Kechikdingiz', 'Bu buyurtmani boshqa haydovchi allaqachon oldi.');
       } else {
+        // Avval bu shunchaki `console.warn` edi: haydovchi "Olish"ni
+        // bosardi va MUTLAQO hech narsa bo'lmasdi — na buyurtma, na
+        // xabar.
         console.warn(error);
+        Alert.alert(
+          'Olib bo\'lmadi',
+          "Internet aloqasini tekshirib, qayta urinib ko'ring."
+        );
       }
       return;
     }
@@ -1939,8 +2073,14 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
               <TouchableOpacity style={styles.summaryBtnLight} onPress={closeTripSummary}>
                 <Text style={styles.summaryBtnLightText}>Davom etish</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.summaryBtnPrimary} onPress={confirmFinishTrip}>
-                <Text style={styles.summaryBtnPrimaryText}>Yakunlash</Text>
+              <TouchableOpacity
+                style={styles.summaryBtnPrimary}
+                onPress={confirmFinishTrip}
+                disabled={finishingTrip}
+              >
+                <Text style={styles.summaryBtnPrimaryText}>
+                  {finishingTrip ? 'Saqlanmoqda...' : 'Yakunlash'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
