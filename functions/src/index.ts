@@ -178,31 +178,20 @@ async function getBonusSettings(branchId?: string | null): Promise<{
   }
 }
 
-// Berilgan yo'l narxi va bonus sozlamalari asosida, bitta buyurtmada
-// ishlatilishi mumkin bo'lgan ENG KATTA bonus summasini hisoblaydi —
-// mijoz balansidan tashqari qo'shimcha cheklov sifatida. Server tomonda
-// ham qo'llaniladi (mijoz o'zboshimchalik bilan kattaroq `bonusUsed`
-// yuborib bo'lmasligi uchun) va mijoz ilovasida ham xuddi shu formula.
+// MUHIM: "bitta buyurtma uchun bonus chegarasi" (perOrderCap) shu
+// yerda ATAYLAB YO'Q.
 //
-// MUHIM: natija HECH QACHON safar narxidan oshmaydi. Avval "so'm"
-// turidagi chegara narxga umuman qaralmasdan qaytarilardi: admin
-// "bitta buyurtmaga 20 000 so'mgacha" desa, 8 000 so'mlik safarda ham
-// mijozning 20 000 bonusi to'liq yechilardi. Mijoz ortiqcha 12 000
-// bonusini hech narsa evaziga yo'qotardi, kompaniya esa (A1'dan keyin
-// bonusni kompaniya qoplagani uchun) haydovchiga 8 000 so'mlik safar
-// uchun 20 000 so'm to'lardi. Foiz turi ham himoyalanadi: admin
-// xato bilan 150% yozib qo'ysa, xuddi shu holat takrorlanardi.
-function computePerOrderBonusCap(
-  price: number,
-  settings: { perOrderCapType: "amount" | "percent"; perOrderCapValue: number }
-): number {
-  const safePrice = Math.max(0, price);
-  const rawCap =
-    settings.perOrderCapType === "amount"
-      ? settings.perOrderCapValue
-      : Math.floor((safePrice * settings.perOrderCapValue) / 100);
-  return Math.max(0, Math.min(rawCap, safePrice));
-}
+// U buyurtma BERILAYOTGANDA, mijoz ilovasida qo'llanadi
+// (E:\sevimli-go-customer\src\utils\firebase.ts,
+// computePerOrderBonusCap) — o'sha paytda `bonusUsed` qat'iy
+// belgilanadi va mijozga "shuncha kam to'laysiz" deb aytiladi.
+//
+// Bir muddat u shu yerda ham, safar OXIRIDA qayta qo'llanardi. Bu
+// pulni haydovchidan olardi: metr bo'yicha narx taxmindan past chiqsa,
+// foizli chegara ham kichrayib, qoplama mijozga allaqachon berilgan
+// naqd chegirmadan kam bo'lardi. Chegirmani berib bo'lgandan keyin uni
+// qayta hisoblash — uni qaytarib olishga urinish demakdir.
+// Tafsilot: onOrderCompletedApplyBonus ichidagi izoh.
 
 // ============================================================
 // SAFARNING TO'LIQ QIYMATI — bonus, cashback va komissiya uchun
@@ -772,8 +761,8 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
     const bonusSettings = await getBonusSettings(after.data()?.branchId);
     // Mijoz bonusini kompaniya qoplaydi va bu AYNAN shu tranzaksiyada,
     // mijoz balansidan yechish bilan BIRGA bajariladi — sababi pastda.
-    const driverId: string | undefined = after.data()?.driverId;
-    const driverRef = driverId ? db.collection("drivers").doc(driverId) : null;
+    // Qoplama KIMGA berilishi tranzaksiya ICHIDA aniqlanadi (txDriverId),
+    // chunki bu yerdagi snapshot eskirgan bo'lishi mumkin.
 
     try {
       await db.runTransaction(async (tx) => {
@@ -786,10 +775,20 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         const customerDoc = await tx.get(customerRef);
         const currentBalance =
           typeof customerDoc.data()?.bonusBalance === "number" ? customerDoc.data()!.bonusBalance : 0;
+        // MUHIM: qoplama KIMGA berilishi tranzaksiya ichida QAYTA
+        // o'qilgan buyurtmadan olinadi, hodisa snapshotidan emas.
+        // Snapshot eskirgan bo'lishi mumkin (funksiya qayta urinilsa
+        // yoki kechikib ishga tushsa) — o'shanda pul buyurtma
+        // allaqachon qayta tayinlangan ESKI haydovchiga ketardi.
+        // Funksiyaning o'z izohi ham buyurtmani qayta o'qish shart
+        // deb turibdi; `driverId` esa e'tibordan chetda qolgan edi.
+        const txDriverId: string | undefined =
+          typeof orderData.driverId === "string" ? orderData.driverId : undefined;
+        const txDriverRef = txDriverId ? db.collection("drivers").doc(txDriverId) : null;
         // MUHIM: Firestore tranzaksiyasida BARCHA o'qishlar BARCHA
         // yozishlardan oldin bo'lishi shart — shuning uchun haydovchi
         // hujjati ham shu yerda, yozishlar boshlanishidan avval olinadi.
-        const driverDoc = driverRef ? await tx.get(driverRef) : null;
+        const driverDoc = txDriverRef ? await tx.get(txDriverRef) : null;
 
         // MUHIM: baza — safarning TO'LIQ qiymati (yo'l narxi + qo'shimcha
         // xizmatlar), aynan mijoz ilovasi chegirmani hisoblaganidek.
@@ -800,19 +799,41 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         const bonusUsed = typeof orderData.bonusUsed === "number" ? Math.max(0, orderData.bonusUsed) : 0;
         const earnAmount = Math.floor((tripTotal * bonusSettings.earnPercent) / 100);
 
-        // Bitta buyurtma uchun admin belgilagan chegara SERVER TOMONDA
-        // qayta qo'llanadi — mijoz ilovasi `bonusUsed`ni o'zboshimchalik
-        // bilan kattaroq yuborsa ham, undan ortig'i balansdan yechilmaydi.
+        // ============================================================
+        // CHEGIRMA — BITTA RAQAM, UCHALA TOMONDA BIR XIL
+        // ============================================================
+        // Mijoz naqd pulda AYNAN shuncha kam to'laydi:
+        //     finalPrice = max(0, tripTotal - bonusUsed)
+        // ya'ni haqiqiy chegirma = min(bonusUsed, tripTotal).
+        // Buni haydovchi ilovasi (finalizeOrderPrice) va dashboard
+        // (recomputeFinalPrice) hisoblab, haydovchiga shu summani
+        // undirishni aytadi — safar tugagan zahoti, bu funksiya
+        // ishlashidan OLDIN.
         //
-        // `minBalanceToUse` bu yerda ATAYLAB qayta tekshirilmaydi: u —
-        // buyurtma BERISH paytidagi shart (mijoz ilovasi shunda tumblerni
-        // o'chiradi). Safar oxirida qayta tekshirilsa, chegirma allaqachon
-        // mijozga berilgan bo'la turib balansdan yechilmasdan qolar edi —
-        // ya'ni tizim uchun sof yo'qotish. Balansdan ortiq yechilishidan
-        // esa quyidagi `currentBalance` cheklovi himoya qiladi.
-        const perOrderCap = computePerOrderBonusCap(tripTotal, bonusSettings);
-        const actualSpent = Math.min(bonusUsed, currentBalance, perOrderCap);
-        const newBalance = currentBalance - actualSpent + earnAmount;
+        // MUHIM: shu sabab bu yerda admin chegarasini (perOrderCap)
+        // QAYTA qo'llash MUMKIN EMAS. Avval shunday qilingan edi va u
+        // pulni haydovchidan o'g'irlardi: metr bo'yicha narx taxmindan
+        // past chiqsa, foizli chegara ham kichrayardi, ya'ni qoplama
+        // mijozga berilgan naqd chegirmadan KAM bo'lardi.
+        //
+        //   Misol: chegara 50%, taxmin 30 000 -> bonusUsed 15 000.
+        //   Metr bo'yicha 20 000 chiqdi. Mijoz 5 000 naqd to'laydi.
+        //   Eski hisob: perOrderCap = 10 000 -> qoplama 10 000.
+        //   Haydovchi 20 000 lik safar uchun 15 000 oldi — 5 000 yo'qotdi.
+        //
+        // Admin chegarasi o'z joyida — buyurtma BERILAYOTGANDA, mijoz
+        // ilovasida qo'llanadi (computePerOrderBonusCap). Safar oxirida
+        // uni qayta qo'llash chegirmani allaqachon berib bo'lgandan
+        // keyin uni "qaytarib olish"ga urinish bo'lardi.
+        //
+        // `minBalanceToUse` ham ATAYLAB qayta tekshirilmaydi — xuddi
+        // shu sabab: u buyurtma berish paytidagi shart.
+        const discount = Math.min(bonusUsed, tripTotal);
+        // Balans yetmasa ham haydovchi TO'LIQ qoplama oladi: chegirma
+        // mijozga allaqachon naqd pulda berilgan, uni haydovchi
+        // ko'tarmasligi kerak. Ayirmani kompaniya qoplaydi.
+        const actualSpent = discount;
+        const newBalance = Math.max(0, currentBalance - discount) + earnAmount;
 
         tx.set(customerRef, { bonusBalance: newBalance }, { merge: true });
         // `bonusCompensation` — haydovchiga qoplab berilgan summa. U
@@ -828,7 +849,7 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
             // bo'ladi: onOrderLeftCompletedRevertMoney AYNAN qancha
             // berilgani va KIMGA berilganini shulardan biladi.
             bonusEarned: earnAmount,
-            bonusCompensationDriverId: actualSpent > 0 && driverId ? driverId : null,
+            bonusCompensationDriverId: actualSpent > 0 && txDriverId ? txDriverId : null,
           },
           { merge: true }
         );
@@ -850,19 +871,19 @@ export const onOrderCompletedApplyBonus = onDocumentUpdated(
         // haydovchiga 15 000 berilib, mijozdan 10 000 yechilardi —
         // ayirma har safar kompaniyadan yo'qolardi. Endi bitta manbadan
         // olingani uchun ular teng bo'lmasligi mumkin emas.
-        if (actualSpent > 0 && driverRef && driverDoc) {
+        if (actualSpent > 0 && txDriverRef && driverDoc) {
           const driverBalance =
             typeof driverDoc.data()?.balance === "number" ? driverDoc.data()!.balance : 0;
-          tx.set(driverRef, { balance: driverBalance + actualSpent }, { merge: true });
+          tx.set(txDriverRef, { balance: driverBalance + actualSpent }, { merge: true });
           // Haydovchi balansidagi o'zgarish sababsiz ko'rinmasin.
-          tx.set(driverRef.collection("bonusHistory").doc(`compensation-${orderId}`), {
+          tx.set(txDriverRef.collection("bonusHistory").doc(`compensation-`), {
             period: "bonus_compensation",
             date: tashkentDateStr(),
             amount: actualSpent,
             orderId,
             createdAt: FieldValue.serverTimestamp(),
           });
-        } else if (actualSpent > 0 && !driverRef) {
+        } else if (actualSpent > 0 && !txDriverRef) {
           logger.warn(
             `Buyurtma ${orderId}: mijozdan ${actualSpent} bonus yechildi, lekin ` +
               "buyurtmada driverId yo'q — qoplama berilmadi."
@@ -1293,22 +1314,62 @@ export const onOrderLeftCompletedRevertMoney = onDocumentUpdated(
         // bo'lsa, qaytarishga hojat yo'q.
         if (o.status === "completed") return;
 
+        // ============================================================
+        // ESKI BUYURTMALAR — QAYTARIB BO'LMAYDIGANLARI
+        // ============================================================
+        // Qaytarish uchun kerak bo'lgan maydonlar (`bonusEarned`,
+        // `commissionDriverId`, `driverBonusDriverId` va h.k.) shu
+        // funksiya bilan BIR VAQTDA joriy qilindi. Undan OLDIN
+        // yakunlangan buyurtmalarda ular umuman yo'q.
+        //
+        // Avval bu yerda bayroqlar SO'ZSIZ tozalanardi. Ya'ni eski
+        // buyurtma qayta efirga tashlansa: hech narsa qaytarilmasdi
+        // (ma'lumot yo'q), lekin bayroqlar tushirilardi — va buyurtma
+        // qayta yakunlanganda mijozdan bonus IKKINCHI MARTA yechilar,
+        // haydovchidan komissiya IKKINCHI MARTA olinardi.
+        //
+        // Endi har bir bayroq FAQAT o'zi haqiqatan qaytarilgan bo'lsa
+        // tozalanadi. Qaytarib bo'lmasa bayroq joyida qoladi: bunday
+        // buyurtmada ikkinchi haydovchi komissiyasiz ishlaydi (eski
+        // xatti-harakat), lekin HECH KIMDAN ikki marta pul olinmaydi.
+        // Ikki yomonlikning kichigi.
         const hadBonus = o.bonusApplied === true;
         const hadCommission = o.commissionApplied === true;
         const hadDriverBonus = o.driverBonusChecked === true;
         if (!hadBonus && !hadCommission && !hadDriverBonus) return;
 
+        // Yangi kod yozgan "iz" maydonlari bormi — qaytarish shunga
+        // bog'liq.
+        const canRevertBonus = hadBonus && typeof o.bonusEarned === "number";
+        const canRevertCommission = hadCommission && typeof o.commissionDriverId === "string";
+        const canRevertDriverBonus = hadDriverBonus && typeof o.driverBonusDriverId === "string";
+        if (
+          (hadBonus && !canRevertBonus) ||
+          (hadCommission && !canRevertCommission) ||
+          (hadDriverBonus && !canRevertDriverBonus)
+        ) {
+          logger.warn(
+            `Buyurtma ${orderId}: yangilanishdan OLDIN yakunlangan — ` +
+              `qaytarib bo'lmaydigan qismlar bor (bonus:${hadBonus && !canRevertBonus}, ` +
+              `komissiya:${hadCommission && !canRevertCommission}, ` +
+              `haydovchi bonusi:${hadDriverBonus && !canRevertDriverBonus}). ` +
+              "Ularning bayrog'i ATAYLAB tozalanmaydi — ikki marta yechilishining oldini olish uchun."
+          );
+        }
+
         // ---- 1-qadam: BARCHA o'qishlar (Firestore tranzaksiyasi
         // yozishdan keyin o'qishga ruxsat bermaydi) ----
         const num = (v: unknown): number => (typeof v === "number" ? v : 0);
 
-        const bonusSpent = hadBonus ? Math.max(0, num(o.bonusCompensation)) : 0;
-        const bonusEarned = hadBonus ? Math.max(0, num(o.bonusEarned)) : 0;
-        const commissionAmount = hadCommission ? num(o.commissionAmount) : 0;
-        const perOrderBonus = hadDriverBonus ? Math.max(0, num(o.driverBonusPerOrderAmount)) : 0;
+        // Har bir summa faqat O'SHA qismi qaytarilishi mumkin bo'lsa
+        // hisobga olinadi (yuqoridagi izohga qarang).
+        const bonusSpent = canRevertBonus ? Math.max(0, num(o.bonusCompensation)) : 0;
+        const bonusEarned = canRevertBonus ? Math.max(0, num(o.bonusEarned)) : 0;
+        const commissionAmount = canRevertCommission ? num(o.commissionAmount) : 0;
+        const perOrderBonus = canRevertDriverBonus ? Math.max(0, num(o.driverBonusPerOrderAmount)) : 0;
 
         const customerRef =
-          hadBonus && customerId ? db.collection("customers").doc(customerId) : null;
+          canRevertBonus && customerId ? db.collection("customers").doc(customerId) : null;
         const customerDoc = customerRef ? await tx.get(customerRef) : null;
 
         // Uchala summa ODATDA bitta haydovchiga tegishli, lekin buyurtma
@@ -1334,7 +1395,7 @@ export const onOrderLeftCompletedRevertMoney = onDocumentUpdated(
         // Kunlik/haftalik safar hisobi AYNAN o'sha paytda oshirilgan
         // hujjatdan kamaytiriladi — shuning uchun sanalar buyurtmaning
         // o'zidan olinadi, tashkentDateStr() dan emas.
-        const statsDriverId = typeof o.driverBonusDriverId === "string" ? o.driverBonusDriverId : null;
+        const statsDriverId = canRevertDriverBonus ? (o.driverBonusDriverId as string) : null;
         const statsDriverRef = statsDriverId ? db.collection("drivers").doc(statsDriverId) : null;
         const dailyRef =
           statsDriverRef && o.driverBonusDailyCounted === true && typeof o.driverBonusStatsDate === "string"
@@ -1425,24 +1486,34 @@ export const onOrderLeftCompletedRevertMoney = onDocumentUpdated(
           );
         }
 
-        tx.set(
-          orderRef,
-          {
-            bonusApplied: false,
-            bonusCompensation: 0,
-            bonusEarned: 0,
-            bonusCompensationDriverId: null,
-            commissionApplied: false,
-            commissionAmount: 0,
-            commissionDriverId: null,
-            driverBonusChecked: false,
-            driverBonusPerOrderAmount: 0,
-            driverBonusDailyCounted: false,
-            driverBonusWeeklyCounted: false,
-            moneyRevertedAt: FieldValue.serverTimestamp(),
-          },
-          { merge: true }
-        );
+        // MUHIM: bayroq FAQAT o'sha qism haqiqatan qaytarilgan bo'lsa
+        // tushiriladi. Qaytarilmagan qismning bayrog'i joyida qoladi,
+        // aks holda buyurtma qayta yakunlanganda o'sha pul IKKINCHI
+        // MARTA olinardi (yuqoridagi izohga qarang).
+        const revertPatch: FirebaseFirestore.DocumentData = {
+          moneyRevertedAt: FieldValue.serverTimestamp(),
+        };
+        if (canRevertBonus) {
+          revertPatch.bonusApplied = false;
+          revertPatch.bonusCompensation = 0;
+          revertPatch.bonusEarned = 0;
+          revertPatch.bonusCompensationDriverId = null;
+        }
+        if (canRevertCommission) {
+          revertPatch.commissionApplied = false;
+          revertPatch.commissionAmount = 0;
+          revertPatch.commissionDriverId = null;
+        }
+        if (canRevertDriverBonus) {
+          revertPatch.driverBonusChecked = false;
+          revertPatch.driverBonusPerOrderAmount = 0;
+          revertPatch.driverBonusDailyCounted = false;
+          revertPatch.driverBonusWeeklyCounted = false;
+        }
+        // Mijozga "safar yakunlandi" xabari qayta yuborilishi kerak —
+        // buyurtma yana yakunlanganda.
+        revertPatch.completedPushSent = false;
+        tx.set(orderRef, revertPatch, { merge: true });
 
         logger.info(
           `Buyurtma ${orderId} "completed"dan chiqarildi — pul qaytarildi: ` +

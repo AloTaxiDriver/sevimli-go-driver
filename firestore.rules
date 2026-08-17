@@ -111,7 +111,49 @@ service cloud.firestore {
       // `write` o'chirishni ham qamrab oladi. Ya'ni har kim istalgan
       // haydovchini o'chirib tashlay olardi. Endi `write` uch qismga
       // ajratilgani uchun o'chirish haqiqatan ham taqiqlangan.
-      allow delete: if false;
+      //
+      // MUHIM: lekin XODIMGA ruxsat berilishi SHART. Eski qoidada
+      // `write: if true` o'chirishni ham qamrab olgani uchun dashboard
+      // haydovchini o'chira olardi; `write` ajratilganda bu imkoniyat
+      // bilmasdan yo'qolgan edi. Oqibati: `deleteDriver` xatoni yutib
+      // yuborardi, haydovchi ekrandan yo'qolardi, lekin hujjat joyida
+      // qolib, u tizimga kiraverardi va sahifa yangilanganda qaytib
+      // chiqardi — ishdan bo'shatilgan haydovchini o'chirib bo'lmasdi.
+      allow delete: if isStaff();
+
+      // ============================================================
+      // ICHKI KOLLEKSIYALAR — BONUS HISOBI
+      // ============================================================
+      // MUHIM: `match /drivers/{driverId}` ichki kolleksiyalarni
+      // QAMRAMAYDI. Ular pastdagi `match /{document=**}` ga tushib,
+      // hammaga (jumladan haydovchining O'ZIGA) taqiqlangan edi.
+      //
+      // Oqibati jonli tizimda tekshirildi: bu uchala yo'l ham
+      // PERMISSION_DENIED qaytarardi. Ya'ni haydovchi ilovasidagi
+      // kunlik/haftalik bonus kartalari va paneldagi bonus tabi
+      // hech qachon ma'lumot o'qiy olmagan — ikkalasi ham xatoni
+      // yutib, bo'sh ko'rsatgan. Bonus tizimi yozilgan, hisoblangan
+      // va to'langan, lekin KO'RINMAGAN.
+      //
+      // (`customers/{uid}/bonusHistory` uchun bunday ichki qoida
+      // allaqachon yozilgan — shu yerda esa unutilgan.)
+      //
+      // Yozish faqat Cloud Function'ga tegishli (Admin SDK qoidalarni
+      // chetlab o'tadi), shuning uchun mijoz tomondan yozish
+      // taqiqlangan: haydovchi o'z bonus hisobini o'zi to'ldira
+      // olmasin.
+      match /dailyBonusStats/{statId} {
+        allow read: if true;
+        allow write: if false;
+      }
+      match /weeklyBonusStats/{statId} {
+        allow read: if true;
+        allow write: if false;
+      }
+      match /bonusHistory/{historyId} {
+        allow read: if true;
+        allow write: if false;
+      }
     }
 
     // ============================================================
