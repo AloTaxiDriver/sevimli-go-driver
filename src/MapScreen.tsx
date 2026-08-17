@@ -107,6 +107,11 @@ function stageFromOrderStatus(status: FirestoreOrder['status']): Exclude<TripSta
 // berilmaydi. Bitta safar 12 soat davom etmaydi.
 const TRIP_SNAPSHOT_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
+// Safarni tiklash shu vaqtdan uzoq cho'zilsa, kutish to'xtatiladi.
+// `restoringTrip` buyurtma qabul qilishni bloklaydi, shuning uchun u
+// abadiy true bo'lib qolsa haydovchi umuman ishlay olmaydi.
+const TRIP_RESTORE_TIMEOUT_MS = 20000;
+
 // Xaritada yo'l chizig'i qaysi nuqtagacha chizilishini aniqlaydi.
 //
 // MUHIM: olib ketish nuqtasiga yo'l HAR DOIM chiziladi — u har qanday
@@ -436,6 +441,31 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     })();
   }, [location, driverId]);
 
+  // Tiklash uchun ZAXIRA CHEGARA. Yuqoridagi effektning `finally` bloki
+  // faqat xato chiqqanda ishlaydi — javob bermay QOTIB QOLGAN chaqiruvda
+  // (tarmoq bor-yo'qday, Firestore o'qishi javobsiz) esa u umuman
+  // navbatiga yetmaydi. Effektning o'zi ham `location` kelishini kutadi,
+  // GPS esa hech qachon javob bermasligi mumkin.
+  //
+  // `restoringTrip` buyurtma qabul qilishni to'sadi, ya'ni u true bo'lib
+  // qolsa haydovchi ilovani ochiq ushlab tursa ham ishlay olmaydi va
+  // buning sababini bilmaydi. Shuning uchun kutish har qanday holatda
+  // chegaralanadi.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setRestoringTrip((stillRestoring) => {
+        if (stillRestoring) {
+          console.warn(
+            `Safarni tiklash ${TRIP_RESTORE_TIMEOUT_MS / 1000} soniyada tugamadi ` +
+              '(GPS yoki tarmoq javob bermadi) — kutish to\'xtatildi'
+          );
+        }
+        return false;
+      });
+    }, TRIP_RESTORE_TIMEOUT_MS);
+    return () => clearTimeout(timer);
+  }, []);
+
   useEffect(() => {
     return () => { orderCancelUnsubscribe.current?.(); };
   }, []);
@@ -446,12 +476,45 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       if (status !== 'granted') {
         setErrorMsg('Joylashuvga ruxsat berilmadi');
         setLoading(false);
+        // MUHIM: joylashuvsiz safarni tiklab bo'lmaydi (tiklash effekti
+        // `location` kelishini kutadi), lekin `restoringTrip` true bo'lib
+        // qolsa haydovchi buyurtma ham QABUL QILA OLMAYDI — pastdagi
+        // qabul effekti unga qarab to'xtaydi. Avval aynan shunday bo'lardi:
+        // ruxsat berilmagan telefonda ilova butunlay ishlamas holga kelardi,
+        // hech qanday sabab ko'rsatmasdan.
+        setRestoringTrip(false);
         return;
       }
-      const current = await Location.getCurrentPositionAsync({});
-      const initial = { latitude: current.coords.latitude, longitude: current.coords.longitude };
-      setLocation(initial);
-      setCurrentRegion({ ...initial, latitudeDelta: 0.05, longitudeDelta: 0.05 });
+
+      // MUHIM: `getCurrentPositionAsync` ichkarida yoki GPS "sovuq"
+      // bo'lganda o'nlab soniya kutishi, hatto xato berishi mumkin.
+      // Avval u try'siz chaqirilardi: xato chiqsa butun blok uzilib,
+      // `setLoading(false)` ham bajarilmasdi — ekran "yuklanmoqda"
+      // holatida qotib qolardi va safar tiklash ham boshlanmasdi.
+      //
+      // Endi avval OS keshidagi oxirgi ma'lum nuqta olinadi (u DARHOL
+      // qaytadi), so'ng aniqrog'i bilan almashtiriladi.
+      let initial: { latitude: number; longitude: number } | null = null;
+      try {
+        const known = await Location.getLastKnownPositionAsync();
+        if (known) initial = { latitude: known.coords.latitude, longitude: known.coords.longitude };
+      } catch {
+        // Keshda nuqta yo'q — muammo emas, pastda aniqrog'ini olamiz.
+      }
+      try {
+        const current = await Location.getCurrentPositionAsync({});
+        initial = { latitude: current.coords.latitude, longitude: current.coords.longitude };
+      } catch (e) {
+        console.warn('Joriy joylashuvni aniqlab bo\'lmadi:', e);
+      }
+
+      if (initial) {
+        setLocation(initial);
+        setCurrentRegion({ ...initial, latitudeDelta: 0.05, longitudeDelta: 0.05 });
+      } else {
+        setErrorMsg('Joylashuv aniqlanmadi — GPS yoqilganini tekshiring');
+        setRestoringTrip(false);
+      }
       setLoading(false);
 
       locationSubscription.current = await Location.watchPositionAsync(
