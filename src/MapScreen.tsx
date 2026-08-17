@@ -129,13 +129,20 @@ const TRIP_RESTORE_TIMEOUT_MS = 20000;
 // Safar boshlangandan keyin (in_progress) esa manzil haqiqatan kerak:
 // u yo'q bo'lsa (bordyur safari yoki manzilsiz buyurtma) chiziladigan
 // yakuniy nuqta ham yo'q.
+//
+// `ready_to_start` ham olib ketish nuqtasini ko'rsatadi. Avval u
+// ro'yxatda yo'q edi: buyurtma qabul qilingandan keyin, haydovchi
+// "Yo'lga chiqdim"ni surmaguncha xaritada MIJOZ UMUMAN KO'RINMASDI —
+// na yo'l chizig'i, na belgi. Ya'ni haydovchi qayerga borishini
+// bilmasdan turib surishga majbur edi (yoki buyurtmani bekor
+// qilardi). Holbuki bu bosqichda nuqta allaqachon ma'lum.
 function computeRouteTarget(
   order: Order | null,
   stage: TripStage,
   leg: 1 | 2
 ): Coords | null {
   if (!order) return null;
-  if (stage === 'to_pickup') return order.pickupLocation ?? null;
+  if (stage === 'ready_to_start' || stage === 'to_pickup') return order.pickupLocation ?? null;
   if (stage === 'in_progress' && order.toAddress !== '') {
     return leg === 2 && order.dropoff2Location
       ? order.dropoff2Location
@@ -959,6 +966,36 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     }
   }, [tripStage, activeOrder?.id, activeLeg, location, heading]);
 
+  // Buyurtma qabul qilingan zahoti xaritani shunday joylashtiramizki,
+  // HAYDOVCHI ham, MIJOZ ham bir vaqtda ko'rinsin.
+  //
+  // Yuqoridagi "haydash rejimi" effekti `ready_to_start` bosqichida
+  // ATAYLAB ishlamaydi (haydovchi hali yo'lga chiqmagan), shuning uchun
+  // xarita o'sha paytda umuman qimirlamasdi. Mijoz bir necha kilometr
+  // narida bo'lsa, uning belgisi ekrandan tashqarida qolib ketardi —
+  // ya'ni yo'l chizig'ini qo'shishning o'zi yetarli emas.
+  //
+  // Bir buyurtma uchun BIR MARTA bajariladi: aks holda har GPS
+  // yangilanishida xarita sakrab, haydovchining qo'lda surganini bekor
+  // qilib turardi.
+  const fittedForOrderRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (tripStage !== 'ready_to_start') {
+      fittedForOrderRef.current = null;
+      return;
+    }
+    const pickup = activeOrder?.pickupLocation;
+    if (!pickup || !location || !mapRef.current) return;
+    if (fittedForOrderRef.current === activeOrder?.id) return;
+    fittedForOrderRef.current = activeOrder?.id ?? null;
+    mapRef.current.fitToCoordinates([location, pickup], {
+      // Pastdan ko'proq joy — buyurtma kartasi ekranning quyi qismini
+      // egallaydi, aks holda belgi shu kartaning ostiga tushib qoladi.
+      edgePadding: { top: 140, right: 80, bottom: 340, left: 80 },
+      animated: true,
+    });
+  }, [tripStage, activeOrder?.id, activeOrder?.pickupLocation, location]);
+
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
@@ -1373,7 +1410,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             <Polyline coordinates={routeCoords.length > 1 ? routeCoords : [location, routeTarget]}
               strokeColor={COLORS.primary} strokeWidth={5} />
             <Marker coordinate={routeTarget} pinColor={
-              tripStage === 'to_pickup' ? COLORS.success : (hasSecondStop && activeLeg === 1 ? COLORS.warning : COLORS.danger)
+              // Olib ketish nuqtasi — yashil. `ready_to_start` ham shu
+              // guruhda: o'sha bosqichda ham nishon MIJOZ, manzil emas.
+              tripStage === 'ready_to_start' || tripStage === 'to_pickup'
+                ? COLORS.success
+                : (hasSecondStop && activeLeg === 1 ? COLORS.warning : COLORS.danger)
             } />
           </>
         )}
