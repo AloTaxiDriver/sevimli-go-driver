@@ -29,6 +29,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { getBackgroundLocationConsent } from './backgroundLocationConsent';
 import { LOCATION_TASK_DRIVER_ID_KEY, SAVED_PHONE_KEY } from './sessionKeys';
+import { recordTrackPoint } from './tripTrack';
 
 export const DRIVER_LOCATION_TASK = 'sevimli-go-driver-location';
 const DRIVER_ID_KEY = LOCATION_TASK_DRIVER_ID_KEY;
@@ -100,6 +101,12 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
         },
         { merge: true }
       );
+
+    // Faol safar bo'lsa, shu nuqta yo'l iziga ham qo'shiladi.
+    // Ataylab `await` bilan: fon vazifasi qaytgach Android jarayonni
+    // to'xtatib qo'yishi mumkin, ya'ni "keyin bajariladi" degan
+    // yozuv umuman ketmay qolardi.
+    await recordTrackPoint(driverId, latest.coords.latitude, latest.coords.longitude);
   } catch (e) {
     console.warn('Fon rejimida joylashuvni yozishda xato:', e);
   }

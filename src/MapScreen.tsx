@@ -1274,7 +1274,21 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // darhol xabar beradi va ekranni bo'sh holatga qaytaradi.
   function startWatchingOrderCancellation(orderId: string) {
     stopWatchingOrderCancellation();
-    orderCancelUnsubscribe.current = listenToOrderCancellation(orderId, (reason, cancelledBy) => {
+    orderCancelUnsubscribe.current = listenToOrderCancellation(orderId, driverId, (reason, cancelledBy) => {
+      if (cancelledBy === 'reassigned') {
+        Alert.alert('Buyurtma sizdan olindi', reason);
+        stopWatchingOrderCancellation();
+        clearTripSnapshot();
+        setTripStage(null);
+        setActiveOrder(null);
+        setActiveLeg(1);
+        activeOrderSourceId.current = null;
+        processedAcceptId.current = null;
+        pan.setValue(0);
+        startPan.setValue(0);
+        setDriverBusyStatus(driverId, false).catch(() => {});
+        return;
+      }
       const who = cancelledBy === 'customer' ? 'Mijoz' : 'Dispetcher';
       Alert.alert('Buyurtma bekor qilindi', `${who} tomonidan bekor qilindi.\nSabab: ${reason}`);
       stopWatchingOrderCancellation();
@@ -1444,7 +1458,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setCurrentRegion(n); mapRef.current.animateToRegion(n, 200);
   }
 
-  function handleAcceptOrder() {
+  async function handleAcceptOrder() {
     if ((driver?.balance || 0) <= 0) {
       Alert.alert(
         'Balans yetarli emas',
@@ -1453,7 +1467,31 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       return;
     }
     const id = activeOrderSourceId.current;
-    if (id) acceptOrder(id, driverId).catch(console.warn);
+    // MUHIM: natija KUTILADI. Avval bu qator
+    // `acceptOrder(...).catch(console.warn)` edi — ya'ni yozuv
+    // o'tgan-o'tmagani tekshirilmasdan, pastdagi ikki qator SO'ZSIZ
+    // bajarilardi. Buyurtmani shu orada boshqa haydovchi olib
+    // ulgurgan bo'lsa, tranzaksiya `OrderAlreadyTakenError` tashlaydi
+    // — u esa jurnalga yozilib yo'qolardi va haydovchi ekranida safar
+    // BARIBIR boshlanardi: u o'ziniki bo'lmagan mijozning oldiga yo'l
+    // olardi. `busy: true` esa uni taqsimlash navbatidan chiqarib
+    // qo'yardi, ya'ni boshqa buyurtma ham kelmasdi.
+    if (id) {
+      try {
+        await acceptOrder(id, driverId);
+      } catch (error) {
+        if (error instanceof OrderAlreadyTakenError) {
+          Alert.alert('Kechikdingiz', 'Bu buyurtmani boshqa haydovchi allaqachon oldi.');
+        } else {
+          console.warn('Qabul qilishda xato:', error);
+          Alert.alert(
+            'Qabul qilinmadi',
+            "Internet aloqasini tekshirib, qayta urinib ko'ring."
+          );
+        }
+        return;
+      }
+    }
     setTripStage('to_pickup');
     setDriverBusyStatus(driverId, true).catch(() => {});
   }
@@ -1543,7 +1581,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       try {
         // Yakuniy narx — jonli hisoblangan (va yaxlitlangan) summa,
         // oldindan taxmin qilingan (statik) narx emas
-        await finalizeOrderPrice(id, livePrice, tripDistanceRef.current);
+        await finalizeOrderPrice(id, livePrice, tripDistanceRef.current, location);
         await updateOrderStatus(id, 'completed');
       } catch (e) {
         console.warn('Safarni yakunlashda xato:', e);

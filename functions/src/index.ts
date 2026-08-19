@@ -35,6 +35,16 @@ function getDistanceMeters(
   return R * c;
 }
 
+// Buyurtma taklif qilish uchun haydovchining balansi yetarlimi.
+// Haydovchi ilovasi `(balance || 0) <= 0` bo'lganda qabul qilishni
+// to'sadi (MapScreen.tsx) — shu sabab bu yerdagi chegara AYNAN o'sha,
+// aks holda haydovchi ola olmaydigan taklifni olib, navbat behuda
+// kutar edi.
+function hasEnoughBalanceForOrder(data: FirebaseFirestore.DocumentData): boolean {
+  const balance = typeof data.balance === "number" ? data.balance : 0;
+  return balance > 0;
+}
+
 async function getDispatchSettings(): Promise<{
   radiusMeters: number;
   timeoutSeconds: number;
@@ -558,6 +568,7 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
 
     const dispatchNow = Date.now();
     let staleSkipped = 0;
+    let noBalanceSkipped = 0;
 
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
@@ -574,6 +585,12 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       // buni tekshirmasdan qabul qilsa, joriy faol safar Firestore'da
       // "osilib" (hech qachon yakunlanmay) qoladi.
       if (data.busy) return;
+      // Balansi tugagan haydovchi navbatga QO'SHILMAYDI — yuqoridagi
+      // izohga qarang (hasEnoughBalanceForOrder).
+      if (!hasEnoughBalanceForOrder(data)) {
+        noBalanceSkipped++;
+        return;
+      }
       if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) return;
       // MUHIM (filial izolyatsiyasi, QAT'IY): faqat O'SHA filialga
       // tegishli haydovchilar ko'rib chiqiladi. branchId yuqorida
@@ -595,7 +612,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
 
     logger.info(
       `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi ` +
-        `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn" o'tkazib yuborildi`
+        `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn" va ` +
+        `${noBalanceSkipped} ta balansi tugagan haydovchi o'tkazib yuborildi`
     );
 
     // ── RADIUS ICHIDA HAYDOVCHI YO'Q ──────────────────────────
@@ -653,14 +671,23 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       try {
         const fresh = await db.collection("drivers").doc(driver.id).get();
         const freshData = fresh.data();
-        stillFree = !!freshData && freshData.busy !== true && freshData.isOnline === true;
+        // Balans ham QAYTA tekshiriladi: sikl daqiqalab davom etadi,
+        // shu orada haydovchi boshqa safarni yakunlab komissiya
+        // yechilgan va balansi nolga tushgan bo'lishi mumkin.
+        stillFree =
+          !!freshData &&
+          freshData.busy !== true &&
+          freshData.isOnline === true &&
+          hasEnoughBalanceForOrder(freshData);
       } catch (error) {
         // O'qib bo'lmadi — eski ma'lumot bilan davom etamiz (taklif
         // yubormaslikdan ko'ra yuborgan yaxshi: buyurtma mijozniki).
         logger.warn(`Haydovchi ${driver.id} holatini qayta o'qib bo'lmadi`, error);
       }
       if (!stillFree) {
-        logger.info(`Buyurtma ${orderId}: haydovchi ${driver.id} endi band/oflayn — o'tkazib yuborildi`);
+        logger.info(
+          `Buyurtma ${orderId}: haydovchi ${driver.id} endi band/oflayn/balanssiz — o'tkazib yuborildi`
+        );
         continue;
       }
 

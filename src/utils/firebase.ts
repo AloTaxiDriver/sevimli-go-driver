@@ -5,6 +5,7 @@ import firestore, {
 } from '@react-native-firebase/firestore';
 import messaging from '@react-native-firebase/messaging';
 import { NativeModules } from 'react-native';
+import { startTripTracking, stopTripTracking } from './tripTrack';
 
 const { OverlayModule } = NativeModules;
 
@@ -652,6 +653,12 @@ export async function acceptOrder(
       acceptedAt: firestore.FieldValue.serverTimestamp(),
     });
   });
+
+  // Shu paytdan boshlab joylashuvlar yo'l iziga yozib boriladi.
+  // ATAYLAB qabul qilishdan (safar boshlanishidan emas) boshlanadi:
+  // "haydovchi kelmadi" nizolarida aynan MIJOZNING OLDIGA BORISH
+  // yo'li kerak bo'ladi.
+  await startTripTracking(orderId);
 }
 
 export async function declineDirectOrder(orderId: string): Promise<void> {
@@ -684,13 +691,50 @@ export async function revertOrderAcceptance(
     if (data.status !== 'accepted' && data.status !== 'pending') return;
     tx.update(orderRef, { status: 'pending', driverId: null });
   });
+  // Buyurtma boshqa haydovchiga qaytdi — bu qurilmada iz yozilmaydi.
+  await stopTripTracking();
 }
+
+// Qaysi holat qaysi vaqt maydonini yozadi. Bu maydonlar buyurtma
+// tarixida "mijozni kutish" va "safar davomiyligi"ni hisoblash uchun
+// ishlatiladi — ular oldin HECH QAYERDA saqlanmasdi.
+const STATUS_TIMESTAMP_FIELD: Partial<Record<FirestoreOrder['status'], string>> = {
+  arrived: 'arrivedAt',
+  in_progress: 'startedAt',
+  completed: 'completedAt',
+};
 
 export async function updateOrderStatus(
   orderId: string,
   status: FirestoreOrder['status']
 ): Promise<void> {
-  await firestore().collection('orders').doc(orderId).update({ status });
+  const orderRef = firestore().collection('orders').doc(orderId);
+  const field = STATUS_TIMESTAMP_FIELD[status];
+
+  if (status === 'completed') {
+    // Safar tugadi — yo'l izini yozishni to'xtatamiz.
+    await stopTripTracking();
+  }
+
+  if (!field) {
+    await orderRef.update({ status });
+    return;
+  }
+
+  // MUHIM: vaqt FAQAT BIR MARTA yoziladi. Ilova holatni qayta
+  // yuborishi mumkin (internet tiklangach, yoki ilova qayta ochilib
+  // bosqichni Firestore bilan moslashtirganda). Har safar ustiga
+  // yozilsa, "yetib keldim" vaqti safar oxiriga surilib, kutish
+  // vaqti NOLGA aylanib qolardi.
+  await firestore().runTransaction(async (tx) => {
+    const snap = await tx.get(orderRef);
+    const data = snap.data();
+    const patch: Record<string, unknown> = { status };
+    if (!data || data[field] == null) {
+      patch[field] = firestore.FieldValue.serverTimestamp();
+    }
+    tx.update(orderRef, patch);
+  });
 }
 
 export async function cancelOrder(
@@ -703,10 +747,14 @@ export async function cancelOrder(
     cancelledBy: 'driver',
     cancelledAt: firestore.FieldValue.serverTimestamp(),
   });
+  await stopTripTracking();
 }
 
 export function listenToOrderCancellation(
   orderId: string,
+  // Shu qurilmadagi haydovchi. Dispetcher buyurtmani BOSHQASIGA
+  // o'tkazganini bilish uchun kerak.
+  myDriverId: string,
   onCancelled: (reason: string, cancelledBy: string) => void
 ): () => void {
   return firestore()
@@ -721,8 +769,34 @@ export function listenToOrderCancellation(
         // haydovchi hech qachon xabar olmasdi. Haydovchining o'zi bekor
         // qilgan holatini (cancelledBy==='driver') o'ziga qayta
         // xabar qilmaslik uchun shu birgina holat istisno qilinadi.
-        if (data && data.status === 'cancelled' && data.cancelledBy !== 'driver') {
+        if (!data) return;
+        if (data.status === 'cancelled' && data.cancelledBy !== 'driver') {
           onCancelled(data.cancelReason || 'Bekor qilindi', data.cancelledBy || 'dispatcher');
+          return;
+        }
+        // BUYURTMA BOSHQA HAYDOVCHIGA O'TKAZILDI
+        // ============================================================
+        // Dispetcher paneldan buyurtmani boshqa haydovchiga biriktira
+        // oladi. Bu holat hech kimga xabar qilinmasdi: eski
+        // haydovchining ekranida safar OCHIQ QOLARDI va u mijozning
+        // oldiga borib yuraverardi, `busy: true` ham tozalanmasdi.
+        //
+        // `completed` ATAYLAB istisno: safar yakunlangach dispetcher
+        // hisobotni tahrirlashi mumkin, bu "tortib olish" emas.
+        //
+        // `fromCache` TEKSHIRUVI SHART: internet uzilganda Firestore
+        // avval qurilmadagi nusxani beradi. Qayta biriktirish esa
+        // FAQAT serverda sodir bo'ladi — usiz haydovchi tunnelga
+        // kirgani zahoti soxta xabar olib, safarni yo'qotib qo'yardi.
+        if (
+          !doc.metadata.fromCache &&
+          data.status !== 'completed' &&
+          data.driverId !== myDriverId
+        ) {
+          onCancelled(
+            'Dispetcher buyurtmani boshqa haydovchiga o\u2019tkazdi',
+            'reassigned'
+          );
         }
       },
       (error) => {
@@ -734,7 +808,11 @@ export function listenToOrderCancellation(
 export async function finalizeOrderPrice(
   orderId: string,
   meteredPrice: number,
-  actualDistanceKm: number
+  actualDistanceKm: number,
+  // Safar tugagan joy. Manzil belgilanmagan safarlarda (bordyur)
+  // buyurtmada `dropoffLat/Lng` UMUMAN bo'lmaydi — panel xaritasida
+  // faqat olish nuqtasi ko'rinardi.
+  finishCoords?: { latitude: number; longitude: number } | null
 ): Promise<void> {
   const roundedPrice = Math.round(meteredPrice);
   const orderRef = firestore().collection('orders').doc(orderId);
@@ -751,11 +829,22 @@ export async function finalizeOrderPrice(
   const extrasTotal = typeof data?.extrasTotal === 'number' ? data.extrasTotal : 0;
   const finalPrice = Math.max(0, roundedPrice + extrasTotal - bonusUsed);
 
-  await orderRef.update({
+  const patch: Record<string, unknown> = {
     price: roundedPrice,
     finalPrice,
     actualDistanceKm: Math.round(actualDistanceKm * 10) / 10,
-  });
+  };
+  // Koordinata O'YLAB TOPILMAYDI: GPS o'sha lahzada javob bermagan
+  // bo'lsa maydon umuman yozilmaydi.
+  if (
+    finishCoords &&
+    typeof finishCoords.latitude === 'number' &&
+    typeof finishCoords.longitude === 'number'
+  ) {
+    patch.finishLat = finishCoords.latitude;
+    patch.finishLng = finishCoords.longitude;
+  }
+  await orderRef.update(patch);
 }
 
 // ============================================================
@@ -1054,6 +1143,10 @@ export async function setDriverBusyStatus(
  * IKKINCHI buyurtmani yuborishga yo'l ochib qo'yardi.
  */
 export async function releaseDriverOnLogout(driverId: string): Promise<void> {
+  // Tizimdan chiqilgach yo'l izi yozilmasin — aks holda kalit
+  // qurilmada qolib, keyingi haydovchining joylashuvi BEGONA
+  // buyurtmaning iziga qo'shilib ketardi.
+  await stopTripTracking();
   // pushToken: null + isOnline: false
   await saveDriverPushToken(driverId, null);
   try {

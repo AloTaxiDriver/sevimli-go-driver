@@ -89,14 +89,24 @@ service cloud.firestore {
     // Haydovchi ilovasi (Firebase Auth'siz) buyurtmada FAQAT shu
     // maydonlarni o'zgartiradi — kod bo'ylab tekshirilgan:
     //   acceptOrder           -> status, driverId, acceptedAt
-    //   updateOrderStatus     -> status
-    //   finalizeOrderPrice    -> price, finalPrice, actualDistanceKm
+    //   updateOrderStatus     -> status, arrivedAt, startedAt, completedAt
+    //   finalizeOrderPrice    -> price, finalPrice, actualDistanceKm,
+    //                            finishLat, finishLng
     //   cancelOrder           -> status, cancelReason, cancelledBy, cancelledAt
     //   revertOrderAcceptance -> status, driverId
     function driverOrderFields() {
       return [
         'status', 'driverId', 'acceptedAt',
+        // Safar bosqichlarining vaqti. Ilova ularni FAQAT bo'sh
+        // bo'lganda yozadi (updateOrderStatus tranzaksiyasi), lekin
+        // qoida buni tekshira olmaydi — Auth yo'q, ya'ni bu yerda
+        // "kim yozdi"ni bilishning iloji ham yo'q. Xavf past:
+        // maydonlar pulga TA'SIR QILMAYDI, faqat hisobot uchun.
+        'arrivedAt', 'startedAt', 'completedAt',
         'price', 'finalPrice', 'actualDistanceKm',
+        // Safar tugagan joy — manzilsiz safarlarda xaritadagi
+        // yagona "B" nuqtasi shu bo'ladi.
+        'finishLat', 'finishLng',
         'cancelReason', 'cancelledBy', 'cancelledAt'
       ];
     }
@@ -386,6 +396,21 @@ service cloud.firestore {
         allow create: if customerReader();
       }
     }
+    // ============================================================
+    // SAFAR YO'L IZI — haydovchi yurgan yo'lning nuqtalari
+    // ============================================================
+    // Haydovchi ilovasi Auth'siz yozadi (butun ilova shunday
+    // ishlaydi), shuning uchun yozish ochiq — LEKIN faqat shu to'rt
+    // maydon bilan, ya'ni bu hujjatga boshqa hech narsa yashirib
+    // bo'lmaydi. O'qish esa faqat xodimga: yo'l izi haydovchining
+    // kun bo'yi qayerda bo'lganini ko'rsatadi.
+    match /orderTracks/{orderId} {
+      allow read: if isStaff() || customerReader();
+      allow create, update: if
+        request.resource.data.keys().hasOnly(['orderId', 'driverId', 'points', 'updatedAt']);
+      allow delete: if isStaff();
+    }
+
     match /adminRoles/{uid} {
       allow read: if request.auth != null;
       allow write: if request.auth != null &&

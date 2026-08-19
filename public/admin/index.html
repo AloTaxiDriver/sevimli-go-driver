@@ -750,6 +750,15 @@ input:focus,select:focus,textarea:focus{outline:none;}
   window.updateOrderInFirestore = async function (orderId, patch) {
     if (!orderId) return;
     try {
+      // Dispetcher safarni panel orqali yakunlasa, yakunlangan VAQTI
+      // ham yozilishi kerak — buyurtma tarixi safar davomiyligini
+      // shundan hisoblaydi. Allaqachon yozilgan bo'lsa TEGILMAYDI.
+      if (patch && patch.status === "completed") {
+        const snap = await getDoc(doc(db, "orders", orderId));
+        if (!snap.exists() || snap.data().completedAt == null) {
+          patch = { ...patch, completedAt: serverTimestamp() };
+        }
+      }
       await updateDoc(doc(db, "orders", orderId), patch);
     } catch (err) {
       console.error("Buyurtmani yangilashda xato:", err);
@@ -914,6 +923,30 @@ input:focus,select:focus,textarea:focus{outline:none;}
       }
     );
   };
+  // Buyurtma tafsilotidagi xaritaga haydovchi yurgan yo'lni chizish
+  // uchun nuqtalarni oladi. Ilova safar davomida `orderTracks/{id}`
+  // hujjatiga to'plab boradi (qarang: src/utils/tripTrack.ts).
+  //
+  // Yo'q bo'lsa bo'sh ro'yxat qaytadi — bu XATO EMAS: yozuv joriy
+  // qilinishidan oldingi barcha buyurtmalarda iz umuman yo'q.
+  window.fetchOrderTrack = async function (orderId) {
+    try {
+      const snap = await getDoc(doc(db, "orderTracks", orderId));
+      if (!snap.exists()) return [];
+      const points = snap.data().points;
+      if (!Array.isArray(points)) return [];
+      // Nuqtalar `arrayUnion` bilan qo'shiladi — u tartibni
+      // KAFOLATLAMAYDI, shuning uchun vaqt bo'yicha saralanadi.
+      // Aks holda xaritada yo'l oldinga-orqaga sakrab chizilardi.
+      return points
+        .filter((p) => typeof p.lat === "number" && typeof p.lng === "number")
+        .sort((a, b) => (a.t || 0) - (b.t || 0));
+    } catch (err) {
+      console.error("Yo'l izini o'qishda xato:", err);
+      return [];
+    }
+  };
+
   window.getRadiusConfig = async function () {
     try {
       const snap = await getDocs(collection(db, "settings"));
@@ -1171,6 +1204,7 @@ input:focus,select:focus,textarea:focus{outline:none;}
 
 <div class="body">
   <div id="order-edit-modal"></div>
+  <div id="order-detail-modal"></div>
   <div id="cancel-order-modal"></div>
   <div id="complete-order-modal"></div>
 
@@ -1720,7 +1754,7 @@ function afterRender(page){
   if(page==='orders'){afterRenderOrders();loadNewsTicker();}
   if(page==='drivers')afterRenderDrivers();
   if(page==='clients')afterRenderClients();
-  if(page==='orderhistory'){renderOrdersTable();}
+  if(page==='orderhistory'){renderOrderHistoryTable();}
   if(page==='calllog'){renderCallLogList();}
   if(page==='balance'){renderBalanceTable();}
   if(page==='map'){afterRenderMap();}
@@ -2147,6 +2181,16 @@ function renderOrders(){
 // from va h.k.). MUHIM: maydon nomlari mobil ilovadagi
 // src/utils/firebase.ts'dagi FirestoreOrder turi bilan BIR XIL
 // bo'lishi shart, aks holda ma'lumot noto'g'ri o'qiladi.
+// Firestore vaqt maydonini millisekundga aylantiradi. U uch xil
+// ko'rinishda kelishi mumkin: Timestamp obyekti, {seconds} bilan
+// oddiy obyekt, yoki tayyor raqam.
+function _ts(v){
+  if(!v)return 0;
+  if(typeof v==='number')return v;
+  if(typeof v.toMillis==='function')return v.toMillis();
+  if(typeof v.seconds==='number')return v.seconds*1000;
+  return 0;
+}
 function normalizeFirestoreOrder(o){
   return {
     id:o.id,
@@ -2164,7 +2208,32 @@ function normalizeFirestoreOrder(o){
     cancelReason:o.cancelReason||'',
     cancelledBy:o.cancelledBy||'',
     distance:typeof o.distanceKm==='number'?o.distanceKm:0,
-    createdAtMillis:o.createdAt&&o.createdAt.toMillis?o.createdAt.toMillis():(o.createdAt&&o.createdAt.seconds?o.createdAt.seconds*1000:0),
+    createdAtMillis:_ts(o.createdAt),
+    // MUHIM: quyidagilar Firestore'da ALLAQACHON bor edi, lekin bu
+    // yerda tashlab yuborilardi — ya'ni panelning hech bir joyiga
+    // yetib bormasdi. Buyurtma tarixi endi shularga tayanadi.
+    actualDistance:typeof o.actualDistanceKm==='number'?o.actualDistanceKm:0,
+    acceptedAtMillis:_ts(o.acceptedAt),
+    arrivedAtMillis:_ts(o.arrivedAt),
+    startedAtMillis:_ts(o.startedAt),
+    completedAtMillis:_ts(o.completedAt),
+    cancelledAtMillis:_ts(o.cancelledAt),
+    pickupLat:typeof o.pickupLat==='number'?o.pickupLat:null,
+    pickupLng:typeof o.pickupLng==='number'?o.pickupLng:null,
+    dropoffLat:typeof o.dropoffLat==='number'?o.dropoffLat:null,
+    dropoffLng:typeof o.dropoffLng==='number'?o.dropoffLng:null,
+    dropoff2Lat:typeof o.dropoff2Lat==='number'?o.dropoff2Lat:null,
+    dropoff2Lng:typeof o.dropoff2Lng==='number'?o.dropoff2Lng:null,
+    // Safar HAQIQATDA tugagan joy (ilova yakunlashda yozadi).
+    finishLat:typeof o.finishLat==='number'?o.finishLat:null,
+    finishLng:typeof o.finishLng==='number'?o.finishLng:null,
+    commissionAmount:typeof o.commissionAmount==='number'?o.commissionAmount:null,
+    commissionApplied:!!o.commissionApplied,
+    bonusCompensation:typeof o.bonusCompensation==='number'?o.bonusCompensation:0,
+    source:o.source||'dashboard',
+    entrance:o.entranceNumber||'',
+    recipientName:o.recipientName||'',
+    recipientPhone:o.recipientPhone||'',
     // Buyurtma yaratilgandagi tarif stavkalari — masofa noma'lum holda
     // yakunlanganda narxni qayta hisoblash uchun kerak (pastga qarang,
     // completeOrderFromDashboard).
@@ -2473,9 +2542,45 @@ async function saveOrderEdit(orderId){
     alert(failed.join(" va ")+" manzil xaritadan topilmadi. Manzil matni saqlandi, lekin xaritadagi nuqta olib tashlandi. Haydovchiga xaritada yol chizilmaydi.");
   }
 
-  if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,patch);
-  closeModal('order-edit-modal');
+  const applyEdit=()=>{
+    if(window.updateOrderInFirestore)window.updateOrderInFirestore(orderId,patch);
+    closeModal('order-edit-modal');
+  };
+
+  // ---- YO'LDAGI HAYDOVCHINI ALMASHTIRISH ----
+  // Dispetcher haydovchini almashtira olishi KERAK (mashina buzildi,
+  // haydovchi javob bermayapti). Lekin avval bu jimgina bo'lardi:
+  // eski haydovchi mijozning oldiga borib yuraverardi, chunki uning
+  // ilovasi faqat "bekor qilindi" holatini tinglaydi.
+  //
+  // Ilova tomoni endi buni sezadi va safarni yopadi, shu sabab bu
+  // yerda ogohlantirish YETARLI — lekin dispetcher nima
+  // bo'layotganini bilib turishi kerak, chunki eski haydovchi
+  // allaqachon yo'lning yarmiga yetgan bo'lishi mumkin.
+  const EN_ROUTE=['accepted','arrived','in_progress'];
+  const prevDriver=o?.driver||null;
+  const nextDriver=patch.driverId||null;
+  if(prevDriver&&prevDriver!==nextDriver&&EN_ROUTE.includes(o?.status)){
+    const prevName=driverNameFor(prevDriver)||prevDriver;
+    const nextName=nextDriver?(driverNameFor(nextDriver)||nextDriver):null;
+    showConfirmModal(
+      'Haydovchi allaqachon yo’lda',
+      `${esc(prevName)} bu buyurtmani qabul qilgan va hozir yo’lda. `+
+      (nextName
+        ? `Buyurtma ${esc(nextName)}ga o’tkaziladi. `
+        : 'Buyurtma haydovchisiz qoladi. ')+
+      `${esc(prevName)}ning ilovasida safar yopiladi va unga xabar chiqadi.`,
+      applyEdit,
+      'Ha, almashtirish',
+      true
+    );
+    return;
+  }
+
+  applyEdit();
 }
+
+
 
 function showConfirmModal(title,message,onConfirm,confirmLabel,danger){
   const modalId='confirm-modal';
@@ -2707,8 +2812,8 @@ function confirmCancelOrder(orderId){
   closeModal('cancel-order-modal');
 }
 
-function filterOrders(q){orderSearch=q;renderOrdersTable();}
-function filterOrderStatus(v){orderFilter=v;renderOrdersTable();}
+function filterOrders(q){orderSearch=q;renderOrdersTable();renderOrderHistoryTable();}
+function filterOrderStatus(v){orderFilter=v;renderOrdersTable();renderOrderHistoryTable();}
 
 function toggleBonus(){
   useBonus=!useBonus;
@@ -6983,19 +7088,312 @@ function renderNotifications(){
     +'<div id="notif-history-list" style="max-height:calc(100vh - 300px);overflow-y:auto"><div style="padding:40px;text-align:center;color:rgba(0,0,0,0.3);font-size:13px">Hozircha bildirishnoma yuborilmagan</div></div>'
     +'</div></div></div>';
 }
-function renderOrderHistory(){
-  return `<div class="card" style="overflow:hidden">
-    <div class="sec-head">
-      <span class="sec-title">Buyurtma tarixi</span>
-      <div style="display:flex;gap:8px;align-items:center">
-        <div class="searchbar" style="width:200px">${ic('search',14,'rgba(26,26,26,0.4)')}<input placeholder="Qidirish..." oninput="filterOrders(this.value)"></div>
-        <select class="form-input" style="padding:8px 10px;font-size:12px" onchange="filterOrderStatus(this.value)">
-          <option value="all">Barchasi</option><option value="pending">Kutilmoqda</option>
-          <option value="active">Faol</option><option value="done">Bajarildi</option><option value="cancelled">Bekor</option>
-        </select>
+// ============================================================
+// BUYURTMA TARIXI — YORDAMCHI FORMATLOVCHILAR
+// ============================================================
+function fmtDateTime(ms){
+  if(!ms)return '\u2014';
+  const d=new Date(ms);
+  const p=n=>String(n).padStart(2,'0');
+  return `${p(d.getDate())}.${p(d.getMonth()+1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fmtTimeOnly(ms){
+  if(!ms)return '\u2014';
+  const d=new Date(ms);
+  const p=n=>String(n).padStart(2,'0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+// Ikki vaqt orasidagi farqni odam o'qiydigan ko'rinishda beradi.
+// Ikkalasi ham bo'lmasa yoki tartib teskari bo'lsa \u2014 chiziqcha
+// qaytariladi, NOL emas: "0 daq" o'lchangan nol degan ma'noni beradi,
+// holbuki bu yerda o'lchov umuman yo'q.
+function fmtDuration(fromMs,toMs){
+  if(!fromMs||!toMs||toMs<fromMs)return '\u2014';
+  const sec=Math.round((toMs-fromMs)/1000);
+  if(sec<60)return `${sec} son`;
+  const min=Math.floor(sec/60);
+  if(min<60)return `${min} daq`;
+  return `${Math.floor(min/60)} soat ${min%60} daq`;
+}
+function fmtKm(v){
+  return (typeof v==='number'&&v>0)?`${v.toFixed(1)} km`:'\u2014';
+}
+function fmtSum(v){
+  return (typeof v==='number')?`${v.toLocaleString()} so\u2019m`:'\u2014';
+}
+
+// "Buyurtma tarixi" o'zining jadvaliga ega — `renderOrdersTable`
+// (jonli "Buyurtmalar" oynasi) tahrirlash/bekor qilish tugmalariga
+// mo'ljallangan, tarix esa O'QISH uchun: qachon, qayerdan-qayerga,
+// necha km, kim olgan, qancha turgan.
+//
+// Ikkala jadval ham o'z elementi yo'q bo'lsa jimgina qaytadi, shuning
+// uchun filtr funksiyalari ikkalasini ham chaqiraveradi — qaysi sahifa
+// ochiq bo'lsa, o'shanisi chiziladi.
+function renderOrderHistoryTable(){
+  const tbl=document.getElementById('order-history-table');
+  if(!tbl)return;
+  const q=orderSearch.toLowerCase();
+  const filtered=firestoreOrdersList.filter(o=>{
+    const m=!q||o.client?.toLowerCase().includes(q)||o.from?.toLowerCase().includes(q)
+      ||o.to?.toLowerCase().includes(q)||o.id?.toLowerCase().includes(q)||o.phone?.includes(q)
+      ||(driverNameFor(o.driver)||'').toLowerCase().includes(q);
+    return m&&(orderFilter==='all'||o.status===orderFilter);
+  });
+
+  const summary=document.getElementById('order-history-summary');
+  if(summary){
+    const done=filtered.filter(o=>o.status==='completed');
+    const km=done.reduce((s,o)=>s+(o.actualDistance||o.distance||0),0);
+    const sum=done.reduce((s,o)=>s+((typeof o.finalPrice==='number'?o.finalPrice:o.price)||0),0);
+    summary.innerHTML=[
+      ['Ko’rsatilmoqda',filtered.length],
+      ['Bajarilgan',done.length],
+      ['Jami masofa',km.toFixed(1)+' km'],
+      ['Jami summa',sum.toLocaleString()+' so’m'],
+    ].map(([l,v])=>`<div style="background:#F4F4F4;border-radius:11px;padding:10px 14px;min-width:120px">
+      <div style="font-size:10.5px;color:rgba(0,0,0,0.45);font-weight:600">${l}</div>
+      <div style="font-size:16px;font-weight:800;margin-top:2px">${v}</div></div>`).join('');
+  }
+
+  if(filtered.length===0){
+    tbl.innerHTML=`<tr><td colspan="8" style="text-align:center;padding:40px;color:rgba(26,26,26,0.4)">Buyurtma topilmadi</td></tr>`;
+    return;
+  }
+
+  tbl.innerHTML=`<thead><tr>
+    <th>Sana / vaqt</th><th>ID</th><th>Mijoz</th><th>Marshrut</th>
+    <th>Haydovchi</th><th style="text-align:right">Masofa</th>
+    <th style="text-align:right">Summa</th><th>Holat</th>
+  </tr></thead><tbody>${filtered.map(o=>{
+    const driverName=driverNameFor(o.driver);
+    const paid=(typeof o.finalPrice==='number')?o.finalPrice:o.price;
+    // Haqiqiy (GPS) masofa bo'lsa SHU ko'rsatiladi va yashil belgi
+    // qo'yiladi; bo'lmasa buyurtma yaratilgandagi taxmin, kulrang.
+    const gps=typeof o.actualDistance==='number'&&o.actualDistance>0;
+    const km=gps?o.actualDistance:o.distance;
+    return `<tr style="cursor:pointer" onclick="openOrderDetail('${o.id}')" title="Batafsil ko’rish uchun bosing">
+      <td style="white-space:nowrap;font-size:11.5px">${fmtDateTime(o.createdAtMillis)}</td>
+      <td style="color:#16A34A;font-family:monospace;font-size:11px;font-weight:700">${esc(o.id.slice(0,8))}</td>
+      <td style="font-weight:600;font-size:12.5px">${esc(o.client)}
+        <div style="font-size:11px;color:rgba(26,26,26,0.4);font-weight:400">${esc(o.phone)}</div></td>
+      <td style="font-size:11.5px;max-width:260px">
+        <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:#16A34A">●</span> ${esc(o.from||'—')}</div>
+        <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis"><span style="color:#DC2626">●</span> ${esc(o.to||'—')}${o.to2?' → '+esc(o.to2):''}</div></td>
+      <td style="font-size:12px">${driverName?esc(driverName):'<span style="color:rgba(0,0,0,0.3)">—</span>'}</td>
+      <td style="text-align:right;white-space:nowrap;font-size:12px;${gps?'color:#16A34A;font-weight:700':'color:rgba(0,0,0,0.45)'}"
+          title="${gps?'GPS bo’yicha o’lchangan':'Buyurtma yaratilgandagi taxmin'}">${fmtKm(km)}</td>
+      <td style="text-align:right;font-weight:700;white-space:nowrap;font-size:12.5px">${(paid||0).toLocaleString()}</td>
+      <td>${sdot(o.status)}</td>
+    </tr>`;
+  }).join('')}</tbody>`;
+}
+
+// ============================================================
+// BUYURTMA TAFSILOTI — bitta buyurtma haqida BOR bo'lgan hamma narsa
+// ============================================================
+// Avval "Buyurtma tarixi" sahifasi "Buyurtmalar" jadvalining AYNAN
+// nusxasi edi: ID, mijoz, marshrut, haydovchi, narx, holat. Ya'ni
+// Firestore'da saqlanadigan ma'lumotning yarmi (haqiqiy o'lchangan
+// masofa, qabul qilingan vaqt, komissiya, bonus, koordinatalar)
+// dispetcherga UMUMAN ko'rinmasdi — nizoli safarni tekshirishning
+// iloji yo'q edi.
+function infoRow(label,value,accent){
+  return `<div style="display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid rgba(0,0,0,0.05)">
+    <span style="font-size:12px;color:rgba(0,0,0,0.45)">${label}</span>
+    <span style="font-size:12.5px;font-weight:600;text-align:right;${accent?`color:${accent}`:''}">${value}</span>
+  </div>`;
+}
+function detailSection(title,rows){
+  return `<div style="background:#FAFAFA;border:1px solid rgba(0,0,0,0.06);border-radius:12px;padding:12px 14px">
+    <div style="font-size:10.5px;font-weight:800;color:rgba(0,0,0,0.4);text-transform:uppercase;letter-spacing:0.07em;margin-bottom:4px">${title}</div>
+    ${rows.join('')}
+  </div>`;
+}
+
+function openOrderDetail(orderId){
+  const o=firestoreOrdersList.find(x=>x.id===orderId);
+  if(!o)return;
+  const drv=(firestoreDriversList||[]).find(d=>d.id===o.driver);
+  const driverName=driverNameFor(o.driver);
+
+  // Mijoz haqiqatda to'lagan summa — bonus va qo'shimcha xizmatlar
+  // hisobga olingan `finalPrice`. U yo'q bo'lsa oddiy `price`.
+  const paid=(typeof o.finalPrice==='number')?o.finalPrice:o.price;
+  // Haydovchi qo'lida qolgan pul: mijoz to'lagani + kompaniya qoplagan
+  // bonus − komissiya. Komissiya hali yechilmagan bo'lsa ko'rsatilmaydi.
+  const net=(o.commissionApplied&&typeof o.commissionAmount==='number')
+    ? paid+(o.bonusCompensation||0)-o.commissionAmount
+    : null;
+
+  const routeRows=[
+    infoRow('Qayerdan',esc(o.from||'—')),
+    infoRow('Qayerga',esc(o.to||'—')),
+  ];
+  if(o.to2)routeRows.push(infoRow('Ikkinchi manzil',esc(o.to2)));
+  if(o.entrance)routeRows.push(infoRow('Podezd',esc(o.entrance)));
+  if(!o.to&&typeof o.finishLat==='number'){
+    routeRows.push(infoRow('Safar tugagan joy','Xaritada belgilangan'));
+  }
+  routeRows.push(infoRow('Haqiqiy masofa (GPS)',fmtKm(o.actualDistance),o.actualDistance?'#16A34A':''));
+  routeRows.push(infoRow('Taxminiy masofa',fmtKm(o.distance)));
+
+  const timeRows=[
+    infoRow('Yaratildi',fmtDateTime(o.createdAtMillis)),
+    infoRow('Haydovchi qabul qildi',fmtDateTime(o.acceptedAtMillis)),
+    infoRow('Yetib keldi',fmtDateTime(o.arrivedAtMillis)),
+    infoRow('Safar boshlandi',fmtDateTime(o.startedAtMillis)),
+    infoRow('Yakunlandi',fmtDateTime(o.completedAtMillis)),
+    infoRow('Mijozni kutish',fmtDuration(o.arrivedAtMillis,o.startedAtMillis)),
+    infoRow('Safar davomiyligi',fmtDuration(o.startedAtMillis,o.completedAtMillis)),
+    infoRow('Boshdan-oxir',fmtDuration(o.createdAtMillis,o.completedAtMillis)),
+  ];
+  if(o.status==='cancelled'){
+    timeRows.push(infoRow('Bekor qilindi',fmtDateTime(o.cancelledAtMillis),'#DC2626'));
+    timeRows.push(infoRow('Kim bekor qildi',esc(o.cancelledBy==='driver'?'Haydovchi':o.cancelledBy==='dispatcher'?'Dispetcher':'—')));
+    if(o.cancelReason)timeRows.push(infoRow('Sababi',esc(o.cancelReason)));
+  }
+
+  const driverRows=drv?[
+    infoRow('Ism',esc(driverName||'—')),
+    infoRow('Telefon',esc(drv.phone||o.driver||'—')),
+    infoRow('Mashina',esc([drv.car,drv.carColor].filter(Boolean).join(', ')||'—')),
+    infoRow('Davlat raqami',esc(drv.plate||'—')),
+  ]:[infoRow('Haydovchi',driverName?esc(driverName):'<span style="color:rgba(0,0,0,0.3)">Tayinlanmagan</span>')];
+
+  const moneyRows=[
+    infoRow('Safar narxi',fmtSum(o.price)),
+  ];
+  if(o.extrasTotal)moneyRows.push(infoRow('Qo’shimcha xizmatlar',fmtSum(o.extrasTotal)));
+  if(o.bonusUsed)moneyRows.push(infoRow('Bonus chegirmasi','− '+fmtSum(o.bonusUsed),'#16A34A'));
+  moneyRows.push(infoRow('Mijoz to’laydi',fmtSum(paid),'#1A1A1A'));
+  if(o.commissionApplied)moneyRows.push(infoRow('Komissiya','− '+fmtSum(o.commissionAmount||0),'#DC2626'));
+  if(o.bonusCompensation)moneyRows.push(infoRow('Kompaniya qoplagani','+ '+fmtSum(o.bonusCompensation),'#16A34A'));
+  if(net!=null)moneyRows.push(infoRow('Haydovchida qoladi',fmtSum(net),'#16A34A'));
+
+  document.getElementById('order-detail-modal').innerHTML=`<div class="modal-overlay" onclick="closeModal('order-detail-modal')">
+    <div class="modal-box" style="max-width:820px" onclick="event.stopPropagation()">
+      <div class="modal-head">
+        <span style="font-weight:700;font-size:16px">Buyurtma — <span style="font-family:monospace;color:#16A34A">${esc(o.id.slice(0,8))}</span></span>
+        <div style="display:flex;gap:8px;align-items:center">${sdot(o.status)}
+          <button class="btn btn-light" style="padding:5px 10px" onclick="closeModal('order-detail-modal')">${ic('x',14)}</button></div>
+      </div>
+      <div class="modal-body" style="max-height:74vh;overflow-y:auto">
+        <div id="order-detail-map" style="height:250px;border-radius:12px;overflow:hidden;background:#EFEFEF;margin-bottom:12px;display:flex;align-items:center;justify-content:center;color:rgba(0,0,0,0.35);font-size:12px">Xarita yuklanmoqda…</div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          ${detailSection('Marshrut',routeRows)}
+          ${detailSection('Vaqt',timeRows)}
+          ${detailSection('Mijoz',[
+            infoRow('Ism',esc(o.client||'—')),
+            infoRow('Telefon',esc(o.phone||'—')),
+            infoRow('Tarif',esc(o.tariff||'—')),
+            infoRow('Manba',esc(o.source==='customer_app'?'Mijoz ilovasi':'Dispetcher')),
+            ...(o.recipientName?[infoRow('Qabul qiluvchi',esc(o.recipientName))]:[]),
+            ...(o.recipientPhone?[infoRow('Qabul qiluvchi tel.',esc(o.recipientPhone))]:[]),
+            ...(o.note?[infoRow('Izoh',esc(o.note))]:[]),
+          ])}
+          ${detailSection('Haydovchi',driverRows)}
+          <div style="grid-column:1/-1">${detailSection('Hisob-kitob',moneyRows)}</div>
+        </div>
       </div>
     </div>
-    <div style="overflow-x:auto"><table class="tbl" id="orders-table"></table></div>
+  </div>`;
+
+  drawOrderDetailMap(o);
+}
+
+// Buyurtma xaritasi: olish nuqtasi, tushirish nuqtasi va (agar
+// yozilgan bo'lsa) haydovchi haqiqatda yurgan yo'l.
+//
+// MUHIM: koordinata YO'Q bo'lsa nuqta O'YLAB TOPILMAYDI — xarita
+// o'rniga sabab yoziladi. Aks holda dispetcher xaritadagi soxta
+// nuqtaga ishonib, nizoni noto'g'ri hal qilardi.
+function drawOrderDetailMap(o){
+  const el=document.getElementById('order-detail-map');
+  if(!el)return;
+  const hasPickup=(typeof o.pickupLat==='number'&&typeof o.pickupLng==='number');
+  const hasDropoff=(typeof o.dropoffLat==='number'&&typeof o.dropoffLng==='number');
+  // Manzil belgilanmagan safarlarda (bordyur) tushirish koordinatasi
+  // umuman bo'lmaydi \u2014 lekin safar tugagan joy yozilgan bo'lishi
+  // mumkin. U ATAYLAB boshqa yozuv bilan ko'rsatiladi.
+  const hasFinish=(typeof o.finishLat==='number'&&typeof o.finishLng==='number');
+  if(!hasPickup&&!hasDropoff&&!hasFinish){
+    el.textContent='Bu buyurtmada koordinata saqlanmagan — xarita ko’rsatib bo’lmaydi';
+    return;
+  }
+  if(typeof ymaps==='undefined'){
+    el.textContent='Xarita xizmati yuklanmadi';
+    return;
+  }
+  ymaps.ready(()=>{
+    // Modal shu orada yopilgan bo'lishi mumkin.
+    if(!document.getElementById('order-detail-map'))return;
+    el.textContent='';
+    const center=hasPickup?[o.pickupLat,o.pickupLng]
+      :hasDropoff?[o.dropoffLat,o.dropoffLng]:[o.finishLat,o.finishLng];
+    const map=new ymaps.Map('order-detail-map',{center,zoom:13,controls:['zoomControl']});
+    map.behaviors.disable('scrollZoom');
+    const objs=[];
+    if(hasPickup){
+      objs.push(new ymaps.Placemark([o.pickupLat,o.pickupLng],
+        {balloonContent:'Olish: '+esc(o.from||'')},
+        {preset:'islands#greenCircleDotIcon'}));
+    }
+    if(hasDropoff){
+      objs.push(new ymaps.Placemark([o.dropoffLat,o.dropoffLng],
+        {balloonContent:'Tushirish: '+esc(o.to||'')},
+        {preset:'islands#redCircleDotIcon'}));
+    }
+    // Tanlangan manzil bo'lmasa-yu, safar qayerda tugagani ma'lum
+    // bo'lsa \u2014 o'sha nuqta ko'rsatiladi.
+    if(!hasDropoff&&hasFinish){
+      objs.push(new ymaps.Placemark([o.finishLat,o.finishLng],
+        {balloonContent:'Safar shu yerda tugagan (manzil belgilanmagan edi)'},
+        {preset:'islands#redCircleDotIcon'}));
+    }
+    if(typeof o.dropoff2Lat==='number'&&typeof o.dropoff2Lng==='number'){
+      objs.push(new ymaps.Placemark([o.dropoff2Lat,o.dropoff2Lng],
+        {balloonContent:'Ikkinchi manzil: '+esc(o.to2||'')},
+        {preset:'islands#orangeCircleDotIcon'}));
+    }
+    objs.forEach(ob=>map.geoObjects.add(ob));
+    map.setBounds(map.geoObjects.getBounds(),{checkZoomRange:true,zoomMargin:40});
+
+    // Yo'l izi — ilova safar davomida yozib borsa. Yozilmagan
+    // (eski) buyurtmalarda hech narsa chizilmaydi.
+    if(!window.fetchOrderTrack)return;
+    window.fetchOrderTrack(o.id).then(points=>{
+      if(!points||points.length<2)return;
+      if(!document.getElementById('order-detail-map'))return;
+      const line=new ymaps.Polyline(
+        points.map(p=>[p.lat,p.lng]),
+        {balloonContent:'Haydovchi yurgan yo’l'},
+        {strokeColor:'#16A34A',strokeWidth:4,strokeOpacity:0.85}
+      );
+      map.geoObjects.add(line);
+      map.setBounds(map.geoObjects.getBounds(),{checkZoomRange:true,zoomMargin:40});
+    }).catch(()=>{});
+  });
+}
+
+function renderOrderHistory(){
+  return `<div style="display:flex;flex-direction:column;gap:14px">
+    <div id="order-history-summary" style="display:flex;gap:10px;flex-wrap:wrap"></div>
+    <div class="card" style="overflow:hidden">
+      <div class="sec-head">
+        <span class="sec-title">Buyurtma tarixi</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <div class="searchbar" style="width:230px">${ic('search',14,'rgba(26,26,26,0.4)')}<input placeholder="Mijoz, manzil, haydovchi\u2026" oninput="filterOrders(this.value)"></div>
+          <select class="form-input" style="padding:8px 10px;font-size:12px" onchange="filterOrderStatus(this.value)">
+            <option value="all">Barchasi</option><option value="pending">Kutilmoqda</option>
+            <option value="accepted">Qabul qilindi</option><option value="in_progress">Yo\u2019lda</option>
+            <option value="completed">Bajarildi</option><option value="cancelled">Bekor</option>
+          </select>
+        </div>
+      </div>
+      <div style="padding:0 22px 10px;font-size:11.5px;color:rgba(0,0,0,0.4)">Batafsil ko\u2019rish uchun qatorni bosing \u2014 marshrut xaritada, vaqtlar va hisob-kitob bilan.</div>
+      <div style="overflow-x:auto"><table class="tbl" id="order-history-table"></table></div>
+    </div>
   </div>`;
 }
 
@@ -9139,6 +9537,7 @@ function startGlobalOrdersListener(){
     firestoreOrdersListRaw=orders.map(normalizeFirestoreOrder).sort((a,b)=>(b.createdAtMillis||0)-(a.createdAtMillis||0));
     recomputeOrdersView();
     if(window.currentPage==='orders'){renderMiniStats();renderOrdersTable();}
+    if(window.currentPage==='orderhistory')renderOrderHistoryTable();
   });
 }
 // ============================================================

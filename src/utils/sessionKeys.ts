@@ -20,3 +20,14 @@ export const SAVED_PHONE_KEY = 'oilaTaxiDriver_savedPhone';
  * kalitdan biladi (vazifa React komponentlaridan tashqarida ishlagani
  * uchun unga propslar orqali hech narsa uzatib bo'lmaydi). */
 export const LOCATION_TASK_DRIVER_ID_KEY = 'location_task_driver_id';
+
+
+/** Hozir qaysi buyurtmaning yo'l izi yozilayotgani. Fon rejimidagi
+ * joylashuv vazifasi shu kalitga qarab nuqtani `orderTracks`ga
+ * qo'shadi. Safar tugagach/bekor qilingach o'chiriladi. */
+export const TRIP_TRACK_ORDER_KEY = 'trip_track_order_id';
+
+/** Shu safarda nechta nuqta yozilgani — hujjat cheksiz o'sib
+ * ketmasligi uchun sanab boriladi (qarang: tripTrack.ts,
+ * MAX_TRACK_POINTS). */
+export const TRIP_TRACK_COUNT_KEY = 'trip_track_point_count';
