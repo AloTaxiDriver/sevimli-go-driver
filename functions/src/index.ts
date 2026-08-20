@@ -48,16 +48,26 @@ function hasEnoughBalanceForOrder(data: FirebaseFirestore.DocumentData): boolean
 async function getDispatchSettings(): Promise<{
   radiusMeters: number;
   timeoutSeconds: number;
+  maxTotalSeconds: number;
 }> {
+  // Standartlar ATAYLAB shu qiymatlarda: 2000 m qishloq/tuman uchun
+  // ham yetarli doira, 10 soniya haydovchi telefonni olishga
+  // ulguradigan eng qisqa vaqt, 60 soniya esa mijoz kutishga
+  // rozi bo'ladigan chegara (ya'ni ko'pi bilan 6 ta haydovchi).
+  const FALLBACK = { radiusMeters: 2000, timeoutSeconds: 10, maxTotalSeconds: 60 };
   try {
     const doc = await db.collection("settings").doc("dispatch").get();
     const data = doc.data();
     return {
-      radiusMeters: typeof data?.radiusMeters === "number" ? data.radiusMeters : 1500,
-      timeoutSeconds: typeof data?.timeoutSeconds === "number" ? data.timeoutSeconds : 20,
+      radiusMeters:
+        typeof data?.radiusMeters === "number" ? data.radiusMeters : FALLBACK.radiusMeters,
+      timeoutSeconds:
+        typeof data?.timeoutSeconds === "number" ? data.timeoutSeconds : FALLBACK.timeoutSeconds,
+      maxTotalSeconds:
+        typeof data?.maxTotalSeconds === "number" ? data.maxTotalSeconds : FALLBACK.maxTotalSeconds,
     };
   } catch {
-    return { radiusMeters: 1500, timeoutSeconds: 20 };
+    return FALLBACK;
   }
 }
 
@@ -548,7 +558,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     const settings = await getDispatchSettings();
     const radiusCfg = await getRadiusConfig();
     logger.info(
-      `Dispatch sozlamalari — radius: ${settings.radiusMeters}m, timeout: ${settings.timeoutSeconds}s`
+      `Dispatch sozlamalari — radius: ${settings.radiusMeters}m, ` +
+        `har haydovchiga: ${settings.timeoutSeconds}s, jami: ${settings.maxTotalSeconds}s`
     );
 
     let driversSnapshot;
@@ -638,7 +649,16 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     // xulosa yozuvi ham chiqmaydi, ya'ni jurnalda hammasi joyidaday
     // ko'rinadi. Endi sikl o'zi to'xtaydi va NECHTASI qolib
     // ketganini AYTADI.
-    const dispatchDeadline = Date.now() + DISPATCH_LOOP_BUDGET_MS;
+    // MUHIM: umumiy chegara endi SOZLAMADAN keladi. Avval u qat'iy
+    // 7 daqiqa edi — funksiyaning o'z chegarasidan (540s) oshib
+    // ketmasligi uchun qo'yilgan texnik to'siq, mijozning sabri
+    // uchun emas. Amalda buyurtma 20 taga yaqin haydovchiga navbat
+    // bilan taklif qilinib, mijoz daqiqalab kutib qolishi mumkin
+    // edi. Endi u 60 soniya (sozlanadi), ya'ni 10 soniyadan 6 ta
+    // haydovchi. Vaqt tugagach buyurtma "Ochiq buyurtmalar"da
+    // qoladi va uni istalgan haydovchi qo'lda olishi mumkin.
+    const dispatchDeadline =
+      Date.now() + Math.min(settings.maxTotalSeconds * 1000, DISPATCH_LOOP_BUDGET_MS);
     let notOffered = 0;
 
     for (let i = 0; i < nearbyDrivers.length; i++) {
