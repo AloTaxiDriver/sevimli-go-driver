@@ -6090,6 +6090,18 @@ function saveTariff(tariffId){
     branchIds:newBranchIds,
   };
 
+  // MUHIM: bu maydon KILOMETRDA. Unga narx yozilsa (masalan 5000),
+  // tarif jimgina buziladi: safar 5000 km dan oshmaguncha ustama
+  // narx qo'shilmaydi, ya'ni HAR BIR safar minimal narxda tugaydi.
+  // Aynan shunday holat bo'lgan va uni topish uchun buyurtmalarni
+  // qo'lda taqqoslashga to'g'ri kelgan. Chegara ataylab keng (50 km)
+  // — shahar/tuman tariflari uchun bundan kattasi bo'lmaydi.
+  if(finalData.minDistance>50){
+    switchTariffTab('pricing');
+    alert('\u201cMinimal masofa\u201d KILOMETRDA o\u2019lchanadi (odatda 0\u20135), siz '+finalData.minDistance+' km kiritdingiz.\n\nBunda safar '+finalData.minDistance+' km dan oshmaguncha narx o\u2019zgarmaydi \u2014 ya\u2019ni har bir safar minimal narxda tugaydi.\n\nMinimal NARXNI yuqoridagi \u201cMinimal masofa narxi\u201d maydoniga yozing.');
+    return;
+  }
+
   let finalTariffId=tariffId;
   if(tariffId){
     tariffs=tariffs.map(t=>t.id===tariffId?{...t,...finalData}:t);

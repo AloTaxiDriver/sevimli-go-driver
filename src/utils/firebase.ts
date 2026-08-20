@@ -5,6 +5,7 @@ import firestore, {
 } from '@react-native-firebase/firestore';
 import messaging from '@react-native-firebase/messaging';
 import { NativeModules } from 'react-native';
+import { stopTripMeter } from './tripMeter';
 import { startTripTracking, stopTripTracking } from './tripTrack';
 
 const { OverlayModule } = NativeModules;
@@ -691,8 +692,10 @@ export async function revertOrderAcceptance(
     if (data.status !== 'accepted' && data.status !== 'pending') return;
     tx.update(orderRef, { status: 'pending', driverId: null });
   });
-  // Buyurtma boshqa haydovchiga qaytdi — bu qurilmada iz yozilmaydi.
+  // Buyurtma boshqa haydovchiga qaytdi — bu qurilmada iz ham,
+  // masofa ham yozilmaydi.
   await stopTripTracking();
+  await stopTripMeter();
 }
 
 // Qaysi holat qaysi vaqt maydonini yozadi. Bu maydonlar buyurtma
@@ -712,8 +715,14 @@ export async function updateOrderStatus(
   const field = STATUS_TIMESTAMP_FIELD[status];
 
   if (status === 'completed') {
-    // Safar tugadi — yo'l izini yozishni to'xtatamiz.
+    // Safar tugadi — yo'l izini va taksometrni to'xtatamiz.
+    //
+    // MUHIM TARTIB: `confirmFinishTrip` avval `finalizeOrderPrice`ni
+    // KUTADI, faqat keyin holatni "completed" qiladi. Ya'ni narx bu
+    // yerga kelguncha allaqachon yozilgan bo'ladi va hisoblagichni
+    // o'chirish unga ta'sir qilmaydi.
     await stopTripTracking();
+    await stopTripMeter();
   }
 
   if (!field) {
@@ -748,6 +757,7 @@ export async function cancelOrder(
     cancelledAt: firestore.FieldValue.serverTimestamp(),
   });
   await stopTripTracking();
+  await stopTripMeter();
 }
 
 export function listenToOrderCancellation(
@@ -1143,10 +1153,11 @@ export async function setDriverBusyStatus(
  * IKKINCHI buyurtmani yuborishga yo'l ochib qo'yardi.
  */
 export async function releaseDriverOnLogout(driverId: string): Promise<void> {
-  // Tizimdan chiqilgach yo'l izi yozilmasin — aks holda kalit
-  // qurilmada qolib, keyingi haydovchining joylashuvi BEGONA
-  // buyurtmaning iziga qo'shilib ketardi.
+  // Tizimdan chiqilgach yo'l izi ham, masofa ham yozilmasin — aks
+  // holda kalit qurilmada qolib, keyingi haydovchining joylashuvi
+  // BEGONA buyurtmaning iziga va masofasiga qo'shilib ketardi.
   await stopTripTracking();
+  await stopTripMeter();
   // pushToken: null + isOnline: false
   await saveDriverPushToken(driverId, null);
   try {

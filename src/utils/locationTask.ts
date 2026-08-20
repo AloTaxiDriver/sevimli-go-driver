@@ -29,6 +29,7 @@ import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import { getBackgroundLocationConsent } from './backgroundLocationConsent';
 import { LOCATION_TASK_DRIVER_ID_KEY, SAVED_PHONE_KEY } from './sessionKeys';
+import { addTripPoint } from './tripMeter';
 import { recordTrackPoint } from './tripTrack';
 
 export const DRIVER_LOCATION_TASK = 'sevimli-go-driver-location';
@@ -107,6 +108,21 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
     // to'xtatib qo'yishi mumkin, ya'ni "keyin bajariladi" degan
     // yozuv umuman ketmay qolardi.
     await recordTrackPoint(driverId, latest.coords.latitude, latest.coords.longitude);
+
+    // MUHIM: safar narxi shu qatorga bog'liq. Avval masofa FAQAT
+    // MapScreen ichidagi `watchPositionAsync` orqali hisoblanardi — u
+    // esa ilova ekranda turgandagina ishonchli ishlaydi. Haydovchi
+    // navigatorga o'tsa yoki ekranni o'chirsa, o'sha vaqtdagi butun
+    // yo'l hisobga olinmasdi va safar minimal narxda tugardi.
+    //
+    // Bu yerdagi nuqta va MapScreen'dagi nuqta bitta hisoblagichga
+    // tushadi; har qabul qilingan nuqta langarni o'ziga ko'chirgani
+    // uchun ikki marta hisoblash bo'lmaydi.
+    await addTripPoint(
+      latest.coords.latitude,
+      latest.coords.longitude,
+      latest.coords.accuracy
+    );
   } catch (e) {
     console.warn('Fon rejimida joylashuvni yozishda xato:', e);
   }

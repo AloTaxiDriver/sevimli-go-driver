@@ -42,6 +42,7 @@ import {
 import { startDriverLocationTracking, stopDriverLocationTracking } from './utils/locationTask';
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
 import { getRoute } from './utils/routing';
+import { addTripPoint, resumeTripMeter, startTripMeter } from './utils/tripMeter';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const TRACK_PADDING = 20;
@@ -226,10 +227,14 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // jonli hisoblash uchun. tripStageRef watchPositionAsync ichidagi
   // "qotib qolgan" closure muammosini oldini olish uchun kerak (u
   // effekt faqat bir marta, bo'sh deps bilan ishga tushadi).
+  //
+  // MUHIM: masofaning O'ZI endi bu yerda hisoblanmaydi — u
+  // `utils/tripMeter` da, chunki fon rejimidagi joylashuv vazifasi ham
+  // aynan shu hisoblagichga nuqta beradi (ekran o'chganda yo'l
+  // yo'qolmasligi uchun). Bu yerdagilar — faqat ko'rsatish uchun nusxa.
   const [liveTripDistanceKm, setLiveTripDistanceKm] = useState(0);
   const tripStageRef = useRef<TripStage>(null);
   const tripDistanceRef = useRef(0);
-  const lastTripPointRef = useRef<Coords | null>(null);
   // Safar holati tiklanguncha (yoki tiklanadigan safar yo'qligi
   // aniqlanguncha) true — shu vaqt ichida yangi buyurtmani qabul qilish
   // effekti kutib turadi, aks holda tiklanayotgan safar ustiga yangi
@@ -561,9 +566,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             typeof snapshot?.tripDistanceKm === 'number' && snapshot.tripDistanceKm > 0
               ? snapshot.tripDistanceKm
               : 0;
-          tripDistanceRef.current = restoredKm;
-          setLiveTripDistanceKm(restoredKm);
-          lastTripPointRef.current = null;
+          // Hisoblagichning o'z yozuvi snapshot'dan ishonchliroq:
+          // snapshot har 10 soniyada bir yozilardi, hisoblagich esa har
+          // bir qabul qilingan nuqtada (fon vazifasidan kelgani ham).
+          // Ikkalasining kattarog'i olinadi.
+          const meterKm = await resumeTripMeter(fo.id, restoredKm);
+          tripDistanceRef.current = meterKm;
+          setLiveTripDistanceKm(meterKm);
         }
 
         // Firestore'dagi "band" bayrog'ini har ehtimolga qarshi
@@ -727,17 +736,33 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
               : nextHeading
           );
 
-          // MUHIM: faqat "in_progress" bosqichida (mijoz mashinada,
-          // safar boshlangan) masofani yig'amiz. GPS "sakrashi"dan
-          // (bir joyda tursa ham xato koordinata kelishi) himoyalanish
-          // uchun 0.02–1.5 km oralig'idagi harakatlarnigina hisobga
-          // olamiz — bundan tashqarisi shovqin deb hisoblanadi.
+          // Faqat "in_progress" bosqichida (mijoz mashinada, safar
+          // boshlangan) masofani yig'amiz.
+          //
+          // MUHIM: shovqin filtri AVVAL shu yerda edi va u yo'lning
+          // katta qismini yeb qo'yardi:
+          //
+          //     if (deltaKm > 0.02 && deltaKm < 1.5) { ...qo'shamiz... }
+          //     lastTripPointRef.current = newCoord;   // <-- HAR DOIM
+          //
+          // 20 metrdan kichik bo'lak hisobga olinmas, lekin langar
+          // BARIBIR ko'chirilardi. GPS har 3 soniyada keladi: shahar
+          // tezligida (15–20 km/soat) bu 12–17 metr, ya'ni deyarli
+          // HAR BIR bo'lak chegaradan pastda qolar va jimgina
+          // yo'qolardi. Haydovchi 3 km yursa ham narx minimal tarifda
+          // qotib turardi.
+          //
+          // Endi hisob `utils/tripMeter` da: chegaradan kichik bo'lakda
+          // langar QOLDIRILADI va harakat to'planib boradi.
           if (tripStageRef.current === 'in_progress') {
-            if (lastTripPointRef.current) {
-              const deltaKm = getDistanceKm(lastTripPointRef.current, newCoord);
-              if (deltaKm > 0.02 && deltaKm < 1.5) {
-                tripDistanceRef.current += deltaKm;
-                setLiveTripDistanceKm(tripDistanceRef.current);
+            addTripPoint(newCoord.latitude, newCoord.longitude, update.coords.accuracy)
+              .then((km) => {
+                // `null` — faol safar yo'q (masalan safar aynan shu
+                // lahzada tiklanayapti). O'shanda ekrandagi masofaga
+                // TEGILMAYDI, aks holda u bir zumga nolga tushardi.
+                if (km == null || km === tripDistanceRef.current) return;
+                tripDistanceRef.current = km;
+                setLiveTripDistanceKm(km);
                 // Bosib o'tilgan masofani vaqti-vaqti bilan qurilmaga
                 // yozib boramiz (har 10 soniyada, ortiqcha yozuvni
                 // oldini olish uchun) — ilova to'satdan yopilsa, safar
@@ -747,9 +772,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
                   lastTripPersistAtRef.current = now;
                   writeTripSnapshot.current();
                 }
-              }
-            }
-            lastTripPointRef.current = newCoord;
+              })
+              .catch(() => {});
           }
         }
       );
@@ -1404,7 +1428,9 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       // ko'rsatardi, va safar oxirida AYNAN shu summa buyurtmaga
       // yozilardi. `lastTripPointRef` ham eski nuqtada qolgani uchun
       // birinchi GPS signali yana 1.5 km gacha qo'shib yuborardi.
-      resetTripMeter();
+      // ID ataylab parametr orqali: `activeOrderSourceId` bu yerda
+      // hali yozilmagan (keyingi qatorda yoziladi).
+      resetTripMeter(orderId);
       activeOrderSourceId.current = orderId;
       setActiveOrder({
         id: orderId,
@@ -1511,10 +1537,12 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // bordyur safari (`handleStartBordur`) ularni umuman bajarmasdi —
   // ya'ni oldingi safarning kilometrlari yangi mijozga hisoblanardi.
   // Endi bitta joyda, ikkala yo'l ham shuni chaqiradi.
-  function resetTripMeter() {
+  function resetTripMeter(orderId: string | null) {
     tripDistanceRef.current = 0;
-    lastTripPointRef.current = location;
     setLiveTripDistanceKm(0);
+    // Buyurtma ID'si SHART: hisoblagich fon vazifasi bilan umumiy va u
+    // nuqtani qaysi safarga yozayotganini bilishi kerak.
+    if (orderId) startTripMeter(orderId).catch(() => {});
   }
 
   function handleStartTrip() {
@@ -1522,7 +1550,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     if (id) updateOrderStatus(id, 'in_progress').catch(console.warn);
     notifyTripStart();
     // Safar boshlanish nuqtasidan hisoblagichni nolga tushiramiz
-    resetTripMeter();
+    resetTripMeter(id);
     setActiveLeg(1);
     setTripStage('in_progress');
   }

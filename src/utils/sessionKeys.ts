@@ -31,3 +31,10 @@ export const TRIP_TRACK_ORDER_KEY = 'trip_track_order_id';
  * ketmasligi uchun sanab boriladi (qarang: tripTrack.ts,
  * MAX_TRACK_POINTS). */
 export const TRIP_TRACK_COUNT_KEY = 'trip_track_point_count';
+
+/** Safar taksometrining holati (qaysi buyurtma, hozirgacha necha km,
+ * oxirgi langar nuqtasi). Uni IKKI joy yozadi — ekrandagi GPS
+ * kuzatuvchisi va fon rejimidagi joylashuv vazifasi — shuning uchun u
+ * React holatida emas, aynan shu kalitda yashaydi (qarang:
+ * src/utils/tripMeter.ts). */
+export const TRIP_METER_KEY = 'trip_meter_state';
