@@ -580,6 +580,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     const dispatchNow = Date.now();
     let staleSkipped = 0;
     let noBalanceSkipped = 0;
+    // "Domoy/Ish/Mening hududim" rejimi tufayli chetda qolganlar.
+    let modeSkipped = 0;
 
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
@@ -602,7 +604,19 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
         noBalanceSkipped++;
         return;
       }
-      if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) return;
+      if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) {
+        // MUHIM: bu chetda qoldirish AVVAL JIMGINA sodir bo'lardi.
+        // Haydovchi olish nuqtasining yonginasida tursa ham, uning
+        // "qozig'i" uzoqda bo'lsa buyurtma bermasdik — jurnalda esa
+        // shunchaki "0 ta yaqin haydovchi" deb ko'rinardi va sababni
+        // topib bo'lmasdi.
+        modeSkipped++;
+        logger.info(
+          `Buyurtma ${orderId}: haydovchi ${doc.id} "${data.activeMode}" rejimida — ` +
+            `tanlagan hududidan tashqarida, o'tkazib yuborildi`
+        );
+        return;
+      }
       // MUHIM (filial izolyatsiyasi, QAT'IY): faqat O'SHA filialga
       // tegishli haydovchilar ko'rib chiqiladi. branchId yuqorida
       // allaqachon tekshirilgan (null bo'lsa funksiya qaytib ketgan),
@@ -623,8 +637,9 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
 
     logger.info(
       `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi ` +
-        `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn" va ` +
-        `${noBalanceSkipped} ta balansi tugagan haydovchi o'tkazib yuborildi`
+        `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn", ` +
+        `${noBalanceSkipped} ta balansi tugagan, ${modeSkipped} ta "o'z hududi" rejimidagi ` +
+        `haydovchi o'tkazib yuborildi`
     );
 
     // ── RADIUS ICHIDA HAYDOVCHI YO'Q ──────────────────────────

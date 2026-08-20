@@ -3232,6 +3232,12 @@ function normalizeFirestoreDriver(d){
     // haydovchini O'TKAZIB YUBORADI (funksiyadagi
     // DRIVER_DISPATCH_STALE_MS bilan bir xil chegara).
     gpsStale:isOnline&&(Date.now()-(_ts(d.locationUpdatedAt)||_ts(d.updatedAt))>5*60*1000),
+    // Haydovchi "Domoy / Ish / Mening hududim" tugmasini bosgan
+    // bo'lsa, u FAQAT o'sha nuqta atrofidagi buyurtmalarni oladi —
+    // hozir qayerda turganidan qat'i nazar. Dispetcher buni
+    // ko'rmasa, "nega unga buyurtma bormayapti?" degan savolga
+    // javob topa olmaydi.
+    activeMode:d.activeMode||'',
     rating:typeof d.rating==='number'?d.rating:5,
     trips:typeof d.trips==='number'?d.trips:0,
   };
@@ -3284,6 +3290,8 @@ function renderDriversGrid(search='',filter='all'){
   const el=document.getElementById('drivers-grid');
   if(!el)return;
   el.innerHTML=drivers.map(d=>`<div class="driver-card" style="${d.approved===false?'border:1.5px solid #F59E0B':(d.gpsStale?'border:1.5px solid #DC2626':'')}">
+    ${d.activeMode?`<div style="background:#FFF7ED;border:1px solid rgba(180,118,31,0.25);color:#9C6614;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px" title="Haydovchi faqat o\u2019zi tanlagan nuqta atrofidagi buyurtmalarni oladi. Nuqta tugma bosilgan joyda qotib qoladi \u2014 keyin qayerga borsa ham o\u2019zgarmaydi.">
+      \u25c9 ${d.activeMode==='home'?'Domoy':d.activeMode==='work'?'Ish':'Mening hududim'} rejimi \u2014 faqat o\u2019sha hudud buyurtmalari</div>`:''}
     ${d.gpsStale?`<div style="background:#FEF2F2;border:1px solid rgba(220,38,38,0.25);color:#B91C1C;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px" title="Taqsimlash bunday haydovchini o\u2019tkazib yuboradi \u2014 unga avtomatik buyurtma bormaydi">
       \u26a0 GPS yo\u2019q \u2014 avtomatik buyurtma bormaydi</div>`:''}
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
