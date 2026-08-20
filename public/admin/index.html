@@ -7605,6 +7605,11 @@ function renderSettings(){
           <div class="form-field"><label class="form-label">Qidiruv radiusi (metr)</label><input class="form-input" id="set-dispatch-radius" type="number" min="200" step="100" value="2000"></div>
           <div class="form-field"><label class="form-label">Har bir haydovchiga (soniya)</label><input class="form-input" id="set-dispatch-timeout" type="number" min="5" step="5" value="10"></div>
           <div class="form-field"><label class="form-label">Jami eng ko\u2019pi (soniya)</label><input class="form-input" id="set-dispatch-total" type="number" min="10" step="10" value="60"></div>
+          <div class="form-field"><label class="form-label">Haydovchining \u201co\u2019z hududi\u201d tanlovi</label>
+            <select class="form-input" id="set-dispatch-area">
+              <option value="off">Hisobga OLINMASIN \u2014 buyurtma hammaga boradi</option>
+              <option value="on">Hisobga olinsin \u2014 faqat o\u2019z hududidagi buyurtma</option>
+            </select></div>
         </div>
         <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:10px">Masalan 2000 m / 10 s / 60 s \u2014 buyurtma 2 km ichidagi haydovchilarga eng yaqinidan boshlab navbat bilan taklif qilinadi, har biriga 10 soniya, jami 60 soniyagacha (6 ta haydovchi). Shundan keyin buyurtma "Ochiq buyurtmalar"da qoladi.</div>
         <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:12px;width:100%" onclick="saveDispatchSettings2()">Taqsimlashni saqlash</button>
@@ -7838,7 +7843,8 @@ async function saveDispatchSettings2(){
     return;
   }
   try{
-    await window.saveDispatchSettings({radiusMeters:radius,timeoutSeconds:timeout,maxTotalSeconds:total});
+    const area=document.getElementById('set-dispatch-area')?.value==='on';
+    await window.saveDispatchSettings({radiusMeters:radius,timeoutSeconds:timeout,maxTotalSeconds:total,respectDriverArea:area});
     alert('Saqlandi. Yangi buyurtmalar shu sozlama bilan taqsimlanadi.');
   }catch(err){
     console.error('Taqsimlash sozlamasini saqlashda xato:',err);
@@ -7858,6 +7864,8 @@ async function loadDispatchSettings(){
   if(r&&typeof cfg.radiusMeters==='number')r.value=cfg.radiusMeters;
   if(t&&typeof cfg.timeoutSeconds==='number')t.value=cfg.timeoutSeconds;
   if(g&&typeof cfg.maxTotalSeconds==='number')g.value=cfg.maxTotalSeconds;
+  const a=document.getElementById('set-dispatch-area');
+  if(a)a.value=(cfg.respectDriverArea===true)?'on':'off';
 }
 
 async function loadRadiusSettings(){

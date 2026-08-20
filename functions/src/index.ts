@@ -49,12 +49,23 @@ async function getDispatchSettings(): Promise<{
   radiusMeters: number;
   timeoutSeconds: number;
   maxTotalSeconds: number;
+  respectDriverArea: boolean;
 }> {
   // Standartlar ATAYLAB shu qiymatlarda: 2000 m qishloq/tuman uchun
   // ham yetarli doira, 10 soniya haydovchi telefonni olishga
   // ulguradigan eng qisqa vaqt, 60 soniya esa mijoz kutishga
   // rozi bo'ladigan chegara (ya'ni ko'pi bilan 6 ta haydovchi).
-  const FALLBACK = { radiusMeters: 2000, timeoutSeconds: 10, maxTotalSeconds: 60 };
+  // `respectDriverArea` ATAYLAB `false`: haydovchi "Domoy / Ish /
+  // Mening hududim" tugmasini bir marta bosgach, buyurtmalar o'sha
+  // qotib qolgan nuqta atrofi bilan cheklanardi va u buni ko'pincha
+  // bilmasdi ham — 310 metrdagi haydovchi buyurtmasiz qolgan holat
+  // shundan chiqqan. Kerak bo'lsa paneldan qayta yoqiladi.
+  const FALLBACK = {
+    radiusMeters: 2000,
+    timeoutSeconds: 10,
+    maxTotalSeconds: 60,
+    respectDriverArea: false,
+  };
   try {
     const doc = await db.collection("settings").doc("dispatch").get();
     const data = doc.data();
@@ -65,6 +76,10 @@ async function getDispatchSettings(): Promise<{
         typeof data?.timeoutSeconds === "number" ? data.timeoutSeconds : FALLBACK.timeoutSeconds,
       maxTotalSeconds:
         typeof data?.maxTotalSeconds === "number" ? data.maxTotalSeconds : FALLBACK.maxTotalSeconds,
+      respectDriverArea:
+        typeof data?.respectDriverArea === "boolean"
+          ? data.respectDriverArea
+          : FALLBACK.respectDriverArea,
     };
   } catch {
     return FALLBACK;
@@ -604,7 +619,10 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
         noBalanceSkipped++;
         return;
       }
-      if (!isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)) {
+      if (
+        settings.respectDriverArea &&
+        !isDriverEligibleForOrder(data, pickupLat, pickupLng, radiusCfg)
+      ) {
         // MUHIM: bu chetda qoldirish AVVAL JIMGINA sodir bo'lardi.
         // Haydovchi olish nuqtasining yonginasida tursa ham, uning
         // "qozig'i" uzoqda bo'lsa buyurtma bermasdik — jurnalda esa
@@ -639,7 +657,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi ` +
         `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn", ` +
         `${noBalanceSkipped} ta balansi tugagan, ${modeSkipped} ta "o'z hududi" rejimidagi ` +
-        `haydovchi o'tkazib yuborildi`
+        `haydovchi o'tkazib yuborildi` +
+        (settings.respectDriverArea ? "" : ' ("o\'z hududi" filtri O\'CHIRILGAN)')
     );
 
     // ── RADIUS ICHIDA HAYDOVCHI YO'Q ──────────────────────────
