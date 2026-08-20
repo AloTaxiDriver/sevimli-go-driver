@@ -433,6 +433,14 @@ input:focus,select:focus,textarea:focus{outline:none;}
         window.refreshBranchScopedViews();
       }
 
+      // Rol tasdiqlandi — endi Firestore'ni o'qishga haqlimiz.
+      // Tinglovchilar AYNAN shu yerdan boshlanadi (pastdagi izohga
+      // qarang: ilgari ular sahifa yuklanishi bilan ishga tushib,
+      // ruxsat yo'qligi sababli o'lib qolardi).
+      if (typeof window.startDashboardListeners === 'function') {
+        window.startDashboardListeners();
+      }
+
       // Rol bilan URL yo'li mos kelmasa (masalan manager /admin'ga
       // kirmoqchi bo'lsa), mos yo'lga qayta yo'naltiramiz — bu
       // Firestore qoidalaridan tashqari qo'shimcha, ko'rinadigan himoya.
@@ -888,7 +896,31 @@ input:focus,select:focus,textarea:focus{outline:none;}
   // mijozlar, ishchilar, xizmatlar, manzillar va h.k.) endi Firestore
   // orqali barcha kompyuterlarda bir xil ko'rinishi uchun
   // ============================================================
+  // Qaysi kalitlar Firestore'dan birinchi javobini OLGAN.
+  // Bo'sh hujjat ham javob hisoblanadi — muhimi, biz Firestore'da
+  // nima borligini (yoki yo'qligini) BILAMIZ.
+  window._dashboardHydrated = new Set();
+
   window.syncDashboardDataToFirestore = async function (key, value) {
+    // ENG MUHIM HIMOYA: Firestore'dan hali javob kelmagan kalitga
+    // YOZMAYMIZ. Aks holda brauzerdagi demo (SEED) ma'lumot
+    // kompaniyaning haqiqiy tariflari/filiallarini bosib ketardi —
+    // va bu o'zgarish boshqa hamma kompyuterga ham tarqalardi.
+    if (!window._dashboardHydrated.has(key)) {
+      console.warn(
+        `"${key}" hali Firestore'dan yuklanmadi \u2014 yozish to'xtatildi ` +
+        `(mavjud ma'lumot ustiga demo ma'lumot yozilmasligi uchun).`
+      );
+      if (!window._syncBlockedWarned) {
+        window._syncBlockedWarned = true;
+        alert(
+          "Ma'lumotlar hali yuklanmadi \u2014 saqlanmadi.\n\n" +
+          "Bir necha soniya kutib, qayta urinib ko'ring. " +
+          "Takrorlansa sahifani yangilang (Ctrl+Shift+R)."
+        );
+      }
+      return;
+    }
     try {
       await setDoc(doc(db, "dashboardData", key), { value: JSON.stringify(value), updatedAt: serverTimestamp() });
     } catch (err) {
@@ -913,13 +945,21 @@ input:focus,select:focus,textarea:focus{outline:none;}
     return onSnapshot(
       doc(db, "dashboardData", key),
       (docSnap) => {
+        // Hujjat BO'LMASA ham hidratsiya sodir bo'ldi: demak
+        // Firestore'da bu kalit bo'yicha hech narsa yo'q va
+        // brauzerdagi ma'lumotni yozish xavfsiz.
+        window._dashboardHydrated.add(key);
         if (docSnap.exists()) {
           const data = docSnap.data();
           callback(data.value ? JSON.parse(data.value) : null);
         }
       },
       (err) => {
-        console.error("Dashboard ma'lumotini tinglashda xato:", err);
+        // Bu yerga tushish odatda "tizimga kirilmagan" degani.
+        // Firestore xatodan keyin tinglovchini BUTUNLAY to'xtatadi,
+        // shuning uchun kalit hidratsiya qilinmagan bo'lib qoladi va
+        // yuqoridagi himoya unga yozishga yo'l bermaydi.
+        console.error(`"${key}" ni tinglashda xato:`, err);
       }
     );
   };
@@ -1413,7 +1453,12 @@ const SEED={
   settings:{companyName:'Sevimli Go',phone:'+998712000001',address:'Toshkent'}
 };
 
-function dbGet(k){try{const v=localStorage.getItem(KEYS[k]);if(v)return JSON.parse(v);localStorage.setItem(KEYS[k],JSON.stringify(SEED[k]));return SEED[k];}catch{return SEED[k]||[];}}
+// MUHIM: SEED (demo ma'lumot) endi localStorage'ga YOZILMAYDI.
+// Avval u yozilardi va shundan keyin uni haqiqiy ma'lumotdan ajratib
+// bo'lmasdi — birinchi saqlashda demo ma'lumot Firestore'ga ketardi.
+// Endi u faqat ekranda ko'rsatiladi (yangi kompaniya nimadan
+// boshlashini ko'rsin), lekin hech qayerga saqlanmaydi.
+function dbGet(k){try{const v=localStorage.getItem(KEYS[k]);if(v)return JSON.parse(v);return SEED[k];}catch{return SEED[k]||[];}}
 function dbSet(k,v){try{localStorage.setItem(KEYS[k],JSON.stringify(v));if(window.syncDashboardDataToFirestore)window.syncDashboardDataToFirestore(k,v);}catch{}}
 function dbAdd(k,item){const d=dbGet(k);d.unshift({...item,id:uid(),created:now()});dbSet(k,d);return d;}
 function dbUpdate(k,id,patch){const d=dbGet(k).map(x=>x.id===id?{...x,...patch}:x);dbSet(k,d);return d;}
@@ -1769,7 +1814,7 @@ function afterRender(page){
   if(page==='statistics'){animateStatistics();}
   if(page==='notifications'){
     renderNotifHistory();
-    const dc=document.getElementById('notif-drivers-count');if(dc)dc.textContent=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch).length;
+    const dc=document.getElementById('notif-drivers-count');if(dc)dc.textContent=filterByAllowedBranchesStrict(firestoreDriversList,d=>d.branch).length;
     const sc=document.getElementById('notif-sent-count');if(sc)sc.textContent=notifHistory.length;
   }
 }
@@ -1992,7 +2037,15 @@ function renderOrders(){
   const branches=getSelectableBranches();
   const addresses=filterByAllowedBranchesStrict(dbGet('addresses'),a=>a.branch);
   const groups=filterByAllowedBranchesStrict(dbGet('groups'),g=>g.branch);
-  const drivers=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch);
+  // MUHIM: haydovchilar Firestore'dan olinadi. Avval bu
+  // `dbGet('drivers')` edi — ya'ni localStorage'dan. Haqiqiy
+  // haydovchilar esa hech qachon u yerga tushmaydi (`drivers`
+  // kaliti DASHBOARD_SYNC_KEYS ro'yxatida yo'q, ular alohida
+  // `listenToDriversLive` orqali keladi). Natijada ro'yxatda faqat
+  // demo haydovchilar bo'lardi, ular filial filtridan o'tmay
+  // ro'yxat BO'SH qolardi — dispetcher hech kimni tanlay olmasdi,
+  // `driverId` null bo'lib, buyurtma "Ochiq buyurtmalar"ga tushardi.
+  const drivers=filterByAllowedBranchesStrict(firestoreDriversList,d=>d.branch);
   const freeDrivers=drivers.filter(d=>d.status==='free');
   const tarifOpts=tariffs.map(t=>`<option value="${t.id}">${t.name}</option>`).join('');
   const branchOpts=branches.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('');
@@ -8668,7 +8721,7 @@ async function sendNotification(evt){
       }
     }
   }
-  const drivers=filterByAllowedBranchesStrict(dbGet('drivers'),d=>d.branch);
+  const drivers=filterByAllowedBranchesStrict(firestoreDriversList,d=>d.branch);
   const labels={
     all_drivers:'Barcha haydovchilar ('+drivers.length+')',
     free_drivers:"Bo\u2019sh haydovchilar ("+drivers.filter(d=>d.status==='free').length+')',
@@ -9568,10 +9621,27 @@ function startDashboardDataSync(){
     });
   });
 }
-startDashboardDataSync();
-startGlobalOrdersListener();
-startGlobalDriversListener();
-startPbxCallListener();
+// MUHIM: bu tinglovchilar AVVAL shu yerda, sahifa yuklanishi bilan
+// ishga tushardi — ya'ni foydalanuvchi hali tizimga kirmagan paytda.
+// `dashboardData` ni o'qish faqat xodimga ruxsat etilgani uchun ular
+// darhol "permission-denied" olardi, Firestore esa bunday xatoda
+// tinglovchini butunlay to'xtatadi va uni hech kim qayta ulamasdi.
+//
+// Oqibati og'ir edi: haqiqiy tariflar/filiallar brauzerga umuman
+// yetib kelmasdi, ekranda demo ma'lumot ko'rinardi, va dispetcher
+// biror narsani saqlashi bilan o'sha demo ma'lumot Firestore'ga
+// yozilib, kompaniyaning HAMMA ma'lumotini bosib ketardi.
+//
+// Endi ular `onAuthStateChanged` ichida, rol tasdiqlangandan keyin
+// ishga tushadi (`window.startDashboardListeners`).
+window.startDashboardListeners = function () {
+  if (window._dashboardListenersStarted) return;
+  window._dashboardListenersStarted = true;
+  startDashboardDataSync();
+  startGlobalOrdersListener();
+  startGlobalDriversListener();
+  startPbxCallListener();
+};
 </script>
 </body>
 </html>
