@@ -3208,6 +3208,14 @@ function normalizeFirestoreDriver(d){
     car:d.car||[d.carBrand,d.carModel].filter(Boolean).join(' ')||'\u2014',
     plate:d.plate||[d.plateRegion,d.plateBody].filter(Boolean).join('')||'\u2014',
     status:!isOnline?'offline':(busy?'busy':'free'),
+    // Joylashuvi qachon oxirgi marta yangilangani. Cloud Function
+    // (onNewOrderNotifyDrivers) AYNAN shu mantiqni ishlatadi:
+    // `locationUpdatedAt` ustun, bo'lmasa `updatedAt`.
+    locationMillis:_ts(d.locationUpdatedAt)||_ts(d.updatedAt),
+    // Onlayn, lekin GPS 5 daqiqadan beri jim — taqsimlash bunday
+    // haydovchini O'TKAZIB YUBORADI (funksiyadagi
+    // DRIVER_DISPATCH_STALE_MS bilan bir xil chegara).
+    gpsStale:isOnline&&(Date.now()-(_ts(d.locationUpdatedAt)||_ts(d.updatedAt))>5*60*1000),
     rating:typeof d.rating==='number'?d.rating:5,
     trips:typeof d.trips==='number'?d.trips:0,
   };
@@ -3259,7 +3267,9 @@ function renderDriversGrid(search='',filter='all'){
   else if(filter!=='all')drivers=drivers.filter(d=>d.status===filter);
   const el=document.getElementById('drivers-grid');
   if(!el)return;
-  el.innerHTML=drivers.map(d=>`<div class="driver-card" style="${d.approved===false?'border:1.5px solid #F59E0B':''}">
+  el.innerHTML=drivers.map(d=>`<div class="driver-card" style="${d.approved===false?'border:1.5px solid #F59E0B':(d.gpsStale?'border:1.5px solid #DC2626':'')}">
+    ${d.gpsStale?`<div style="background:#FEF2F2;border:1px solid rgba(220,38,38,0.25);color:#B91C1C;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px" title="Taqsimlash bunday haydovchini o\u2019tkazib yuboradi \u2014 unga avtomatik buyurtma bormaydi">
+      \u26a0 GPS yo\u2019q \u2014 avtomatik buyurtma bormaydi</div>`:''}
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
       ${d.photo?`<img src="${esc(d.photo)}" style="width:44px;height:44px;border-radius:13px;object-fit:cover;flex-shrink:0">`:`<div style="width:44px;height:44px;border-radius:13px;background:linear-gradient(145deg,#22C55E,#16A34A);display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px;flex-shrink:0">${initials(d.name)}</div>`}
       <div style="flex:1"><div style="font-weight:600;font-size:14px">${esc(d.name)}</div><div style="font-size:11px;color:rgba(26,26,26,0.45)">${esc(d.phone)}</div></div>
@@ -9660,7 +9670,11 @@ function refreshOrderDriverSelect(){
 function driverSelectOptions(free){
   const head='<option value="">\u2014 Avtomatik \u2014</option>';
   if(!free.length)return head+'<option value="" disabled>Hozir onlayn haydovchi yo\u2019q</option>';
-  return head+free.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} \u00b7 ${esc(d.car)}</option>`).join('');
+  // GPS'i jim haydovchi ham TANLASA BO'LADI: shaxsan tayinlangan
+  // buyurtma push orqali boradi va joylashuvga umuman bog'liq emas.
+  // Faqat AVTOMATIK taqsimlash uni o'tkazib yuboradi — shuning
+  // uchun ogohlantirib qo'yamiz, lekin to'smaymiz.
+  return head+free.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} \u00b7 ${esc(d.car)}${d.gpsStale?' \u26a0 GPS yo\u2019q':''}</option>`).join('');
 }
 
 function startGlobalOrdersListener(){
