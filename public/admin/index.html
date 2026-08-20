@@ -664,7 +664,12 @@ input:focus,select:focus,textarea:focus{outline:none;}
   window.saveDriverToFirestore = async function (phone, driverData) {
     if (!phone) return;
     try {
-      await setDoc(doc(db, "drivers", phone), driverData, { merge: true });
+      // BO'SH PAROLNI HECH QACHON YOZMAYMIZ: `merge: true` bo'lsa ham
+      // ochiq berilgan bo'sh satr ustiga yozadi va haydovchining
+      // haqiqiy parolini o'chirib yuboradi.
+      const payload = { ...driverData };
+      if (!payload.password) delete payload.password;
+      await setDoc(doc(db, "drivers", phone), payload, { merge: true });
     } catch (err) {
       console.error("Haydovchini Firestore'ga yozishda xato:", err);
     }
@@ -1459,7 +1464,17 @@ const SEED={
 // Endi u faqat ekranda ko'rsatiladi (yangi kompaniya nimadan
 // boshlashini ko'rsin), lekin hech qayerga saqlanmaydi.
 function dbGet(k){try{const v=localStorage.getItem(KEYS[k]);if(v)return JSON.parse(v);return SEED[k];}catch{return SEED[k]||[];}}
-function dbSet(k,v){try{localStorage.setItem(KEYS[k],JSON.stringify(v));if(window.syncDashboardDataToFirestore)window.syncDashboardDataToFirestore(k,v);}catch{}}
+// Firestore'ga `dashboardData/{kalit}` orqali sinxronlanadigan
+// kalitlar. `drivers` va `orders` bu yerda ATAYLAB YO'Q — ular o'z
+// alohida jonli tinglovchisiga ega va to'g'ridan-to'g'ri o'z
+// kolleksiyasiga yoziladi.
+const DASHBOARD_SYNC_KEYS=['branches','tariffs','workers','clients','services','addresses','groups','sms','settings','carBrands','carColors','balance','driverTxns'];
+function dbSet(k,v){try{localStorage.setItem(KEYS[k],JSON.stringify(v));
+  // MUHIM: sinxronlanmaydigan kalit uchun umuman chaqirilmaydi —
+  // aks holda u hech qachon "hidratsiya" bo'lmagani uchun himoya
+  // uni to'sib, haydovchini saqlaganda YOLG'ON "saqlanmadi"
+  // ogohlantirishi chiqarardi.
+  if(DASHBOARD_SYNC_KEYS.includes(k)&&window.syncDashboardDataToFirestore)window.syncDashboardDataToFirestore(k,v);}catch{}}
 function dbAdd(k,item){const d=dbGet(k);d.unshift({...item,id:uid(),created:now()});dbSet(k,d);return d;}
 function dbUpdate(k,id,patch){const d=dbGet(k).map(x=>x.id===id?{...x,...patch}:x);dbSet(k,d);return d;}
 function dbDelete(k,id){const d=dbGet(k).filter(x=>x.id!==id);dbSet(k,d);return d;}
@@ -3841,6 +3856,14 @@ async function saveDriver(id){
         firstName:finalData.firstName,
         lastName:finalData.lastName,
         phone:finalData.phone,
+        // MUHIM: tarif AVVAL YOZILMASDI — dispetcher biriktirgan tarif
+        // faqat brauzerdagi localStorage'ga tushib, Firestore'ga
+        // yetib bormasdi va sahifa yangilanishi bilan yo'qolardi.
+        tariffs:finalData.tariffs||[],
+        tariff:finalData.tariff||'',
+        status:finalData.status||'free',
+        selfEmployed:!!finalData.selfEmployed,
+        branded:!!finalData.branded,
         password:finalData.password,
         branch:finalData.branch,
         carBrand:finalData.carBrand,
@@ -3861,6 +3884,11 @@ async function saveDriver(id){
         firstName:newDriverData.firstName,
         lastName:newDriverData.lastName,
         phone:newDriverData.phone,
+        tariffs:newDriverData.tariffs||[],
+        tariff:newDriverData.tariff||'',
+        status:newDriverData.status||'free',
+        selfEmployed:!!newDriverData.selfEmployed,
+        branded:!!newDriverData.branded,
         password:newDriverData.password,
         branch:newDriverData.branch,
         carBrand:newDriverData.carBrand,
@@ -9610,7 +9638,7 @@ function startGlobalOrdersListener(){
 // Haydovchi BALANSI esa Firestore'da (drivers/{telefon}) to'g'ri
 // yangilanardi — ya'ni balans bilan uni tushuntiruvchi daftar
 // doimiy ravishda bir-biriga mos kelmasdi.
-const DASHBOARD_SYNC_KEYS=['branches','tariffs','workers','clients','services','addresses','groups','sms','settings','carBrands','carColors','balance','driverTxns'];
+
 function startDashboardDataSync(){
   if(!window.listenToDashboardDataLive){setTimeout(startDashboardDataSync,300);return;}
   DASHBOARD_SYNC_KEYS.forEach(key=>{
