@@ -992,6 +992,22 @@ input:focus,select:focus,textarea:focus{outline:none;}
     }
   };
 
+  // Buyurtma taqsimlash sozlamasi — Cloud Function
+  // (onNewOrderNotifyDrivers) AYNAN shu hujjatni o'qiydi.
+  window.getDispatchSettings = async function () {
+    try {
+      const snap = await getDoc(doc(db, "settings", "dispatch"));
+      return snap.exists() ? snap.data() : null;
+    } catch (err) {
+      console.error("Taqsimlash sozlamasini olishda xato:", err);
+      return null;
+    }
+  };
+
+  window.saveDispatchSettings = async function (cfg) {
+    await setDoc(doc(db, "settings", "dispatch"), cfg, { merge: true });
+  };
+
   window.getRadiusConfig = async function () {
     try {
       const snap = await getDocs(collection(db, "settings"));
@@ -1824,7 +1840,7 @@ function afterRender(page){
   if(page==='workers'){renderWorkersGrid('');}
   if(page==='groups'){renderGroupCards('');}
   if(page==='addresses'){renderAddressCards('');}
-  if(page==='settings'){populateSetCarBrandSelect();renderCarColorsList();loadRadiusSettings();}
+  if(page==='settings'){populateSetCarBrandSelect();renderCarColorsList();loadRadiusSettings();loadDispatchSettings();}
   if(page==='bonussettings'){loadBonusSettingsForm();loadDriverBonusSettingsForm();}
   if(page==='statistics'){animateStatistics();}
   if(page==='notifications'){
@@ -7575,6 +7591,17 @@ function renderSettings(){
       </div>
 
       <div class="card" style="padding:20px">
+        <div style="font-weight:700;font-size:15px;margin-bottom:4px">Buyurtma taqsimlash</div>
+        <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:14px">Yangi buyurtma yaqin haydovchilarga NAVBAT BILAN taklif qilinadi. Radius \u2014 qidiruv doirasi; kutish vaqti \u2014 bitta haydovchiga beriladigan vaqt. Hech kim javob bermasa, buyurtma "Ochiq buyurtmalar"da qoladi.</div>
+        <div style="display:flex;flex-direction:column;gap:11px">
+          <div class="form-field"><label class="form-label">Qidiruv radiusi (metr)</label><input class="form-input" id="set-dispatch-radius" type="number" min="200" step="100" value="3000"></div>
+          <div class="form-field"><label class="form-label">Javob kutish (soniya)</label><input class="form-input" id="set-dispatch-timeout" type="number" min="5" step="5" value="30"></div>
+        </div>
+        <div style="font-size:11px;color:rgba(0,0,0,0.4);margin-top:10px">Radiusni kengaytirish uzoqroq haydovchini ham navbatga qo\u2019shadi; kutish vaqtini oshirish haydovchiga telefonni olishga ulguradigan vaqt beradi, lekin mijozning umumiy kutishini uzaytiradi.</div>
+        <button class="btn btn-coral" style="justify-content:center;padding:10px;margin-top:12px;width:100%" onclick="saveDispatchSettings2()">Taqsimlashni saqlash</button>
+      </div>
+
+      <div class="card" style="padding:20px">
         <div style="font-weight:700;font-size:15px;margin-bottom:4px">Radius sozlamalari</div>
         <div style="font-size:11.5px;color:rgba(0,0,0,0.45);margin-bottom:14px">"Domoy / Ish / Mening hududim" tugmalari uchun \u2014 haydovchi shu radius ichidagi buyurtmalarnigina ko\u2019radi</div>
         <div style="display:flex;flex-direction:column;gap:11px">
@@ -7783,6 +7810,38 @@ function savePbxSettings(){
   dbSet('settings',s);
   alert('PBX ulanishi saqlandi!');
   startPbxCallListener();
+}
+
+// MUHIM: nomi `saveDispatchSettings2` \u2014 chunki
+// `window.saveDispatchSettings` modul blokidagi Firestore
+// yozuvchisi, bu esa formadan o'qiydigan ustki qavat. Ikkalasiga
+// bir xil nom berilsa, biri ikkinchisini bosib ketardi.
+async function saveDispatchSettings2(){
+  const radius=parseInt(document.getElementById('set-dispatch-radius')?.value);
+  const timeout=parseInt(document.getElementById('set-dispatch-timeout')?.value);
+  if(!(radius>=200)||!(timeout>=5)){
+    alert('Radius kamida 200 metr, kutish vaqti kamida 5 soniya bo\u2019lishi kerak.');
+    return;
+  }
+  try{
+    await window.saveDispatchSettings({radiusMeters:radius,timeoutSeconds:timeout});
+    alert('Saqlandi. Yangi buyurtmalar shu sozlama bilan taqsimlanadi.');
+  }catch(err){
+    console.error('Taqsimlash sozlamasini saqlashda xato:',err);
+    alert('Saqlanmadi. Bu sozlamani faqat administrator o\u2019zgartira oladi.');
+  }
+}
+
+async function loadDispatchSettings(){
+  if(!window.getDispatchSettings)return;
+  const cfg=await window.getDispatchSettings();
+  // Hujjat yo'q bo'lsa maydonlar TEGILMAYDI \u2014 ular tavsiya
+  // etilgan qiymat bilan turadi va admin shuni saqlashi kifoya.
+  if(!cfg)return;
+  const r=document.getElementById('set-dispatch-radius');
+  const t=document.getElementById('set-dispatch-timeout');
+  if(r&&typeof cfg.radiusMeters==='number')r.value=cfg.radiusMeters;
+  if(t&&typeof cfg.timeoutSeconds==='number')t.value=cfg.timeoutSeconds;
 }
 
 async function loadRadiusSettings(){
