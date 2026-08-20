@@ -2066,7 +2066,7 @@ function renderOrders(){
   const branchOpts=branches.map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('');
   const groupOpts=groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('');
   const addrOpts=addresses.map(a=>`<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
-  const driverOpts=freeDrivers.map(d=>`<option value="${d.id}">${esc(d.name)} \u00b7 ${esc(d.car)}</option>`).join('');
+  const driverOpts=driverSelectOptions(freeDrivers);
   const svcsHTML=getExtraSvcs().map(s=>{
     const sel=selectedExtras.find(e=>e.id===s.id);
     return `<div class="svc-item${sel?' selected':''}" onclick="toggleExtra('${s.id}','${esc(s.name)}',${s.price})">
@@ -2155,7 +2155,7 @@ function renderOrders(){
         <div class="form-field" style="flex:0.9;min-width:0"><label class="form-label">Ta\u2019rif</label>
           <select class="form-input" id="f-tariff" onchange="calcTotal()"><option value="">Ta\u2019rif</option>${tarifOpts}</select></div>
         <div class="form-field" style="flex:1.2;min-width:0"><label class="form-label">Haydovchi</label>
-          <select class="form-input" id="f-driver"><option value="">— Avtomatik —</option>${driverOpts}</select></div>
+          <select class="form-input" id="f-driver">${driverOpts}</select></div>
       </div>
 
       <!-- Form Row 2 -->
@@ -3058,6 +3058,20 @@ async function submitOrder(){
   // oqimiga to'g'ri kelmaydi, shuning uchun avtomatik tanlash olib
   // tashlandi.
   const driver=document.getElementById('f-driver')?.value||'';
+  // Ro'yxat bo'sh bo'lsa, bu deyarli har doim "tanlamoqchi edim,
+  // lekin hech kim yo'q" degani. Avval bunday holatda buyurtma
+  // jimgina haydovchisiz yaratilib "Ochiq buyurtmalar"ga tushardi
+  // va dispetcher buni bilmay qolardi.
+  if(!driver){
+    const sel=document.getElementById('f-driver');
+    const hasAny=sel?[...sel.options].some(o=>o.value&&!o.disabled):false;
+    if(!hasAny&&!confirm(
+      'Hozir onlayn haydovchi yo\u2019q.\n\n'+
+      'Buyurtma haydovchisiz yaratiladi va "Ochiq buyurtmalar"da turadi \u2014 '+
+      'onlayn bo\u2019lgan istalgan haydovchi uni o\u2019zi olishi mumkin.\n\n'+
+      'Davom etamizmi?'
+    ))return;
+  }
   const branchId=document.getElementById('f-branch')?.value||null;
   if(branchId&&!guardBranchWrite(branchId))return;
   const note=document.getElementById('f-note')?.value||'';
@@ -9608,7 +9622,45 @@ function startGlobalDriversListener(){
     firestoreDriversListRaw=drivers.map(normalizeFirestoreDriver);
     recomputeDriversView();
     if(window.currentPage==='drivers'){updateDriverStats();renderDriversGrid(driverSearchQuery,driverFilter);}
+    // MUHIM: buyurtma formasidagi haydovchi tanlovini ham yangilaymiz.
+    // Tinglovchi LOGIN'DAN KEYIN ishga tushadi, ya'ni dispetcher
+    // "Buyurtmalar" sahifasini ochganda ro'yxat hali BO'SH bo'lishi
+    // mumkin — forma esa bir marta chiziladi va qayta chizilmaydi.
+    // Natijada tanlash uchun hech kim yo'q edi, buyurtma esa
+    // haydovchisiz (`driverId: null`) yaratilib, "Ochiq buyurtmalar"ga
+    // tushib ketardi.
+    //
+    // Butun sahifa qayta chizilmaydi — dispetcher formaga allaqachon
+    // nimadir yozgan bo'lishi mumkin. Faqat shu tanlovning
+    // variantlari almashtiriladi.
+    if(window.currentPage==='orders')refreshOrderDriverSelect();
   });
+}
+
+// Buyurtma formasidagi "Haydovchi" tanlovini joriy (jonli) ro'yxat
+// bilan yangilaydi. Tanlangan haydovchi ro'yxatda qolsa, tanlov
+// saqlanadi.
+function refreshOrderDriverSelect(){
+  const sel=document.getElementById('f-driver');
+  if(!sel)return;
+  const keep=sel.value;
+  const free=filterByAllowedBranchesStrict(firestoreDriversList,d=>d.branch)
+    .filter(d=>d.status==='free');
+  sel.innerHTML=driverSelectOptions(free);
+  if(keep&&free.some(d=>d.id===keep))sel.value=keep;
+}
+
+// Tanlov variantlari — sahifa chizilganda ham, keyin yangilanganda
+// ham AYNI shu funksiya ishlatiladi (ikki nusxa bo'lib bir-biridan
+// uzoqlashib ketmasin).
+//
+// Ro'yxat bo'sh bo'lsa sababi AYTILADI: avval u shunchaki bo'sh
+// qolardi va dispetcher nega hech kimni tanlay olmayotganini
+// bilmasdi.
+function driverSelectOptions(free){
+  const head='<option value="">\u2014 Avtomatik \u2014</option>';
+  if(!free.length)return head+'<option value="" disabled>Hozir onlayn haydovchi yo\u2019q</option>';
+  return head+free.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} \u00b7 ${esc(d.car)}</option>`).join('');
 }
 
 function startGlobalOrdersListener(){
