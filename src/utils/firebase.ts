@@ -136,6 +136,9 @@ export type FirestoreOrder = {
   freeWaitMin?: number;
   waitPerMin?: number;
   waitingMode?: 'manual' | 'automatic';
+  /** Buyurtma qaysi tarif bo'yicha yaratilgan. Kutish narxi
+   * buyurtmada bo'lmasa, u shu tarifdan o'qiladi. */
+  tariffId?: string;
   createdAtMillis?: number;
   cancelReason?: string;
   cancelledBy?: 'driver' | 'dispatcher';
@@ -204,10 +207,13 @@ export function mapDocToOrder(
         : 0,
     tieredPricing: !!data.tieredPricing,
     priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
-    freeWaitMin: typeof data.freeWaitMin === 'number' ? data.freeWaitMin : 0,
-    // 0 = kutish bepul. Eski buyurtmalarda bu maydon umuman yo'q va
-    // ular AVVALGIDEK, hech qanday kutish haqisiz yakunlanishi kerak.
-    waitPerMin: typeof data.waitPerMin === 'number' ? data.waitPerMin : 0,
+    // MUHIM: maydon YO'Q bo'lsa `undefined` qoladi, 0 EMAS. Ikkisi
+    // boshqa narsa: 0 — "dispetcher kutishni bepul qilib qo'ygan",
+    // undefined — "buyurtmada umuman yozilmagan" (mijoz ilovasidan
+    // kelgan yoki eski). Ikkinchisida narx tarifdan o'qiladi.
+    freeWaitMin: typeof data.freeWaitMin === 'number' ? data.freeWaitMin : undefined,
+    waitPerMin: typeof data.waitPerMin === 'number' ? data.waitPerMin : undefined,
+    tariffId: typeof data.tariffId === 'string' ? data.tariffId : undefined,
     waitingMode: data.waitingMode === 'automatic' ? 'automatic' : 'manual',
     createdAtMillis: data.createdAt?.toMillis
       ? data.createdAt.toMillis()
@@ -951,9 +957,10 @@ export function firestoreOrderToOrder(fo: FirestoreOrder) {
     minDistancePrice: fo.minDistancePrice || fo.price,
     tieredPricing: !!fo.tieredPricing,
     priceTiers: fo.priceTiers,
-    freeWaitMin: fo.freeWaitMin || 0,
-    waitPerMin: fo.waitPerMin || 0,
+    freeWaitMin: fo.freeWaitMin,
+    waitPerMin: fo.waitPerMin,
     waitingMode: fo.waitingMode || 'manual',
+    tariffId: fo.tariffId,
     serviceType: fo.serviceType,
     toAddress2: fo.toAddress2,
     dropoff2Location,
@@ -1290,6 +1297,28 @@ export type FirestoreTariff = {
   freeWaitMin: number;
   waitPerMin: number;
 };
+
+/** Tarifning kutish narxlari. Buyurtmada bu maydonlar bo'lmaganda
+ * ishlatiladi (mijoz ilovasidan kelgan va eski buyurtmalar).
+ *
+ * Xato bo'lsa `null` qaytadi va kutish AVVALGIDEK bepul qoladi —
+ * mijozdan tasodifan pul olinib qolmasligi uchun. */
+export async function fetchTariffWaitRates(
+  tariffId: string
+): Promise<{ freeWaitMin: number; waitPerMin: number } | null> {
+  try {
+    const doc = await firestore().collection('tariffs').doc(tariffId).get();
+    const data = doc.data();
+    if (!doc.exists() || !data) return null;
+    return {
+      freeWaitMin: typeof data.minWaitMin === 'number' ? data.minWaitMin : 0,
+      waitPerMin: typeof data.waitMinPrice === 'number' ? data.waitMinPrice : 0,
+    };
+  } catch (error) {
+    console.warn('Tarif kutish narxini olishda xato:', error);
+    return null;
+  }
+}
 
 export async function fetchBordurTariff(): Promise<FirestoreTariff | null> {
   try {

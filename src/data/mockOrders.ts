@@ -36,6 +36,8 @@ export type Order = {
   // Mijozni olib ketish nuqtasida kutish esa HAR DOIM avtomatik —
   // haydovchi "Yetib keldim" deganda boshlanadi.
   waitingMode?: 'manual' | 'automatic';
+  /** Kutish narxi buyurtmada bo'lmasa, shu tarifdan o'qiladi. */
+  tariffId?: string;
   // Mijoz bonus/qo'shimcha xizmat ishlatgan bo'lsa — `price` maydoni
   // (yuqorida) allaqachon shularni hisobga olgan yakuniy summa. Safar
   // davomida MapScreen'da GPS bo'yicha jonli hisoblanadigan narxni ham

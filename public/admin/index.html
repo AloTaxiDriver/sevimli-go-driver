@@ -3105,7 +3105,7 @@ async function submitOrder(){
   if(driver){
     const drv=firestoreDriversList.find(x=>x.id===driver);
     if(drv&&(drv.balance||0)<=0&&!confirm(
-      esc(drv.name)+' balansi: '+(drv.balance||0).toLocaleString()+' so\u2019m.\n\n'+
+      (drv.name||'')+' balansi: '+(drv.balance||0).toLocaleString()+' so\u2019m.\n\n'+
       'Bunday haydovchi buyurtmani ilovada QABUL QILA OLMAYDI \u2014 '+
       'buyurtma unda osilib qoladi.\n\n'+
       'Avval hisobini to\u2019ldiring. Baribir davom etamizmi?'
@@ -3405,7 +3405,7 @@ function blockDriver(id){
         blocked:true,
         blockedReason:reason.trim(),
         blockedAt:new Date().toISOString(),
-        blockedBy:window.currentAdminStaffName||window.currentAdminRole||'admin',
+        blockedBy:window.currentAdminName||window.currentAdminEmail||window.currentAdminRole||'admin',
         // Bloklangan haydovchi panelda ham oflayn ko'rinishi kerak.
         isOnline:false,
         status:'offline',

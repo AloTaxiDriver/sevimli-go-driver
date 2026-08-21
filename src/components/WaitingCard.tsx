@@ -51,8 +51,13 @@ const SCREEN_WIDTH = Dimensions.get('window').width;
 const START_KNOB_SIZE = 54;
 
 function formatTime(totalSeconds: number) {
-  const m = Math.floor(totalSeconds / 60);
-  const s = totalSeconds % 60;
+  // MUHIM: `Math.floor` SONIYAGA ham kerak. Avval taymer har soniyada
+  // bittadan o'sadigan BUTUN son edi; endi u vaqt belgilaridan
+  // hisoblanadi va kasrli keladi \u2014 floor'siz ekranda
+  // "2:14.699999999999996" deb turardi.
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  const m = Math.floor(safe / 60);
+  const s = safe % 60;
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 

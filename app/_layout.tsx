@@ -4,8 +4,11 @@ import crashlytics from '@react-native-firebase/crashlytics';
 import { router, Stack } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, View } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { consumePendingOrderNavigation } from '../src/utils/backgroundRegistrations';
+import { activeTripStorageKey } from '../src/utils/sessionKeys';
+import BlockedScreen from '../src/screens/BlockedScreen';
 import LoginScreen from '../src/screens/LoginScreen';
 import RegisterScreen from '../src/screens/RegisterScreen';
 import { COLORS } from '../src/theme/colors';
@@ -118,8 +121,46 @@ export default function RootLayout() {
 // ketardi. Endi logout() shunchaki `driver`ni null qiladi — shu yetarli,
 // chunki quyidagi shart darhol qayta hisoblanib, Login ekraniga o'tadi.
 function AppNavigator() {
-  const { isLoggedIn, bootstrapping } = useAuth();
+  const { isLoggedIn, bootstrapping, driver, logout } = useAuth();
   const [showRegister, setShowRegister] = useState(false);
+
+  // BLOKLANGAN HAYDOVCHI. Ekran ATAYLAB shu yerda, tab'lardan
+  // YUQORIDA: avval u MapScreen ichida Modal edi va faqat xarita
+  // tabini qoplardi — haydovchi "Tarix" tabiga o'tishi bilan
+  // xabar yo'qolardi.
+  //
+  // Tugallanmagan safar bo'lsa ko'rsatilmaydi: mijoz mashinada
+  // bo'lishi mumkin va haydovchi safarni yakunlab olishi kerak
+  // (MapScreen unga qizil lenta ko'rsatadi). Qurilmadagi yozuv safar
+  // tugashi bilan o'chadi, shuning uchun uni qayta-qayta tekshiramiz.
+  const [tripInProgress, setTripInProgress] = useState(false);
+  const blocked = !!driver?.blocked;
+  const driverId = driver?.id;
+  useEffect(() => {
+    if (!blocked || !driverId) {
+      setTripInProgress(false);
+      return;
+    }
+    let alive = true;
+    async function check() {
+      try {
+        const raw = await AsyncStorage.getItem(activeTripStorageKey(driverId as string));
+        if (alive) setTripInProgress(!!raw);
+      } catch {
+        // O'qib bo'lmadi — safar BOR deb hisoblaymiz. Xato
+        // tomoni ataylab shu: safar ustidagi haydovchini ekrandan
+        // uzib qo'yishdan ko'ra, blok ekranini bir necha soniya
+        // kechiktirgan yaxshiroq.
+        if (alive) setTripInProgress(true);
+      }
+    }
+    check();
+    const iv = setInterval(check, 3000);
+    return () => {
+      alive = false;
+      clearInterval(iv);
+    };
+  }, [blocked, driverId]);
 
   if (bootstrapping) {
     return (
@@ -127,6 +168,10 @@ function AppNavigator() {
         <ActivityIndicator size="large" color={COLORS.primary} />
       </View>
     );
+  }
+
+  if (isLoggedIn && blocked && !tripInProgress) {
+    return <BlockedScreen reason={driver?.blockedReason} onLogout={logout} />;
   }
 
   if (!isLoggedIn) {

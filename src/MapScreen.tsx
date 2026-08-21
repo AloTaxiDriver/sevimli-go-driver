@@ -30,7 +30,7 @@ import { COLORS } from './theme/colors';
 import { estimateDurationMin, getDistanceKm } from './utils/distance';
 import {
   ACTIVE_ORDER_STATUSES,
-  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, fetchActiveOrderForDriver, fetchOrderById, finalizeOrderPrice, firestoreOrderToOrder, mapDocToOrder,
+  DispatcherNotification, FirestoreOrder, OrderAlreadyTakenError, acceptOrder, cancelOrder, computeTieredDistanceSurcharge, ensureOverlayPermission, fetchActiveOrderForDriver, fetchOrderById, fetchTariffWaitRates, finalizeOrderPrice, firestoreOrderToOrder, mapDocToOrder,
   listenToDriverNotifications, listenToForegroundMessages, listenToOrderCancellation, listenToPoolOrders, registerForPushNotifications,
   revertOrderAcceptance, saveDriverPushToken, setDriverBusyStatus, startBordurTrip,
   updateOrderStatus
@@ -42,6 +42,7 @@ import {
 import { startDriverLocationTracking, stopDriverLocationTracking } from './utils/locationTask';
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
 import { getRoute } from './utils/routing';
+import { activeTripStorageKey } from './utils/sessionKeys';
 import { addTripPoint, resumeTripMeter, startTripMeter } from './utils/tripMeter';
 import { billableWaitMinutes, computeWaitCharge } from './utils/waitCharge';
 
@@ -101,10 +102,6 @@ type ActiveTripSnapshot = {
    * o'sha o'zgarishni bosib ketmasligi uchun kerak. */
   savedAt?: number;
 };
-
-function activeTripStorageKey(driverId: string) {
-  return `active_trip_${driverId}`;
-}
 
 // Safar bosqichlari qat'iy TARTIBDA boradi. Tiklashda ikki manba
 // (Firestore va quridagi snapshot) qaysi biri OLDINDA ekanini shu
@@ -178,7 +175,7 @@ function computeRouteTarget(
 
 export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string }) {
   const insets = useSafeAreaInsets();
-  const { driver, logout } = useAuth();
+  const { driver } = useAuth();
   const driverId = driver?.id || driver?.phone || 'unknown_driver';
 
   const [location, setLocation] = useState<Coords | null>(null);
@@ -271,6 +268,11 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // Taymer yonib turganda ekrandagi raqam har soniyada yangilanishi
   // uchun. Taymer o'chiq bo'lsa umuman ishlamaydi.
   const [waitTick, setWaitTick] = useState(() => Date.now());
+  // Buyurtmada kutish narxi yo'q bo'lsa (mijoz ilovasidan kelgan yoki
+  // eski buyurtma) — tarifdan o'qiladi.
+  const [tariffWait, setTariffWait] = useState<{ freeWaitMin: number; waitPerMin: number } | null>(
+    null
+  );
   const [restoringTrip, setRestoringTrip] = useState(true);
   const tripRestoreStartedRef = useRef<number | null>(null);
   const activeLegRef = useRef<1 | 2>(1);
@@ -912,7 +914,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setIsOnline(false);
     setPoolVisible(false);
     setPendingAcceptId(null);
-    stopDriverLocationTracking();
+    // MUHIM: safar ustida bo'lsa kuzatuv TO'XTATILMAYDI. Aks holda
+    // haydovchi safarni yakunlaguncha joylashuv yuborilmay, masofa
+    // o'lchanmay qolardi va narx eng past tarifga qulardi — ya'ni
+    // bloklash mijozga chegirma bo'lib chiqardi.
+    if (tripStageRef.current === null) {
+      stopDriverLocationTracking();
+    }
     // `isOnline: false` + push tokenini o'chirish — panelda ham
     // oflayn ko'rinadi va telefonga yangi buyurtma bildirishnomasi
     // kelmaydi.
@@ -923,6 +931,23 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [driver?.blocked, driver?.blockedReason, driverId]);
+
+  useEffect(() => {
+    setTariffWait(null);
+    const tariffId = activeOrder?.tariffId;
+    // Buyurtmada narx BOR (hatto 0 bo'lsa ham) — o'shani ishlatamiz.
+    // Safar boshlangandagi shartlar keyin o'zgarmasligi kerak.
+    if (activeOrder?.waitPerMin != null || !tariffId) return;
+    let alive = true;
+    fetchTariffWaitRates(tariffId)
+      .then((rates) => {
+        if (alive && rates) setTariffWait(rates);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [activeOrder?.id, activeOrder?.tariffId, activeOrder?.waitPerMin]);
 
   // acceptOrderId prop o'zgarganda pendingAcceptId ni yangilash
   useEffect(() => {
@@ -1999,8 +2024,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // KUTISH HAQI. Narxlar buyurtma bilan birga keladi (tarifdan), ya'ni
   // dispetcher ularni paneldan o'zgartira oladi va ilovani qayta
   // yig'ish shart emas. `waitPerMin` 0 bo'lsa kutish bepul.
-  const waitFreeMin = activeOrder?.freeWaitMin ?? 0;
-  const waitPerMinute = activeOrder?.waitPerMin ?? 0;
+  const waitFreeMin = activeOrder?.freeWaitMin ?? tariffWait?.freeWaitMin ?? 0;
+  const waitPerMinute = activeOrder?.waitPerMin ?? tariffWait?.waitPerMin ?? 0;
   const liveWaitSeconds =
     waitAccumSec +
     (waitStartedAt != null ? Math.max(0, (waitTick - waitStartedAt) / 1000) : 0);
@@ -2275,7 +2300,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         <View style={[styles.blockBanner, { top: insets.top + 12, backgroundColor: '#B4761F' }]}>
           <Ionicons name="wallet" size={17} color={COLORS.white} />
           <Text style={styles.blockBannerText}>
-            Balansingiz tugagan \u2014 sizga buyurtma kelmaydi. Hisobni to\u2019ldiring.
+            {'Balansingiz tugagan \u2014 sizga buyurtma kelmaydi. Hisobni to\u2019ldiring.'}
           </Text>
         </View>
       )}
@@ -2286,34 +2311,16 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         <View style={[styles.blockBanner, { top: insets.top + 12 }]}>
           <Ionicons name="lock-closed" size={17} color={COLORS.white} />
           <Text style={styles.blockBannerText}>
-            Siz bloklangansiz \u2014 joriy safarni yakunlang. Yangi buyurtma kelmaydi.
+            {'Siz bloklangansiz \u2014 joriy safarni yakunlang. Yangi buyurtma kelmaydi.'}
           </Text>
         </View>
       )}
 
-      {/* Safar yo'q \u2014 endi ishlash mumkin emas. Oyna yopilmaydi:
-          yagona chiqish yo'li \u2014 tizimdan chiqish. */}
-      <Modal
-        visible={!!driver?.blocked && tripStage === null}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {}}
-      >
-        <View style={styles.blockOverlay}>
-          <View style={styles.blockCard}>
-            <Ionicons name="lock-closed" size={42} color={COLORS.danger} />
-            <Text style={styles.blockTitle}>Siz admin tomonidan bloklangansiz</Text>
-            <Text style={styles.blockText}>
-              {driver?.blockedReason
-                ? `Sababi: ${driver.blockedReason}`
-                : "Batafsil ma'lumot uchun dispetcherga murojaat qiling."}
-            </Text>
-            <TouchableOpacity style={styles.blockBtn} onPress={logout}>
-              <Text style={styles.blockBtnText}>Chiqish</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
+      {/* MUHIM: safar tugagach ko'rsatiladigan TO'LIQ EKRAN bu yerda
+          EMAS \u2014 u ilova ildizida (app/_layout.tsx). Avval u shu
+          yerda, Modal sifatida turardi va faqat XARITA tabini
+          qoplardi: haydovchi pastdagi "Tarix" yoki "Hisob" tabiga
+          o'tishi bilan xabar yo'qolardi. */}
 
       <Modal visible={poolVisible} animationType="slide" transparent onRequestClose={() => setPoolVisible(false)}>
         <View style={styles.modalOverlay}>

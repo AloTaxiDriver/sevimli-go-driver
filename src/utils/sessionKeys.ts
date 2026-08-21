@@ -38,3 +38,12 @@ export const TRIP_TRACK_COUNT_KEY = 'trip_track_point_count';
  * React holatida emas, aynan shu kalitda yashaydi (qarang:
  * src/utils/tripMeter.ts). */
 export const TRIP_METER_KEY = 'trip_meter_state';
+
+/** Tugallanmagan safar yozuvi (haydovchi bo'yicha). MapScreen yozadi
+ * va o'chiradi; ilova ILDIZI esa faqat O'QIYDI — bloklangan
+ * haydovchiga to'liq ekran ko'rsatishdan oldin "safar ustidami?" degan
+ * savolga javob shu yerdan olinadi. Kalit satri ikki joyda takrorlanib
+ * ketmasligi uchun shu faylda turadi. */
+export function activeTripStorageKey(driverId: string) {
+  return `active_trip_${driverId}`;
+}
