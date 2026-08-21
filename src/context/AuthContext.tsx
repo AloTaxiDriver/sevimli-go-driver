@@ -21,6 +21,11 @@ export type Driver = {
   rating: number;
   balance: number;
   photo: string | null;
+  /** Admin intizom uchun bloklagan. Bunday haydovchi tizimga kira
+   * olmaydi va yangi buyurtma olmaydi. */
+  blocked: boolean;
+  /** Admin ko'rsatgan sabab. Bo'sh bo'lishi mumkin. */
+  blockedReason: string;
 };
 
 type AuthContextType = {
@@ -60,7 +65,22 @@ function mapFirestoreDriver(phone: string, data: Record<string, any>): Driver {
     rating: typeof data.rating === 'number' ? data.rating : 5,
     balance: typeof data.balance === 'number' ? data.balance : 0,
     photo: data.photo || null,
+    // MUHIM: AYNAN `true` bo'lgandagina bloklangan deb hisoblanadi.
+    // Maydon umuman yo'q bo'lsa (hozirgi haydovchilarning hammasi
+    // shunday) hech narsa o'zgarmaydi.
+    blocked: data.blocked === true,
+    blockedReason: typeof data.blockedReason === 'string' ? data.blockedReason : '',
   };
+}
+
+/** Haydovchiga ko'rsatiladigan matn. Sabab ko'rsatilgan bo'lsa u ham
+ * qo'shiladi — "nega?" degan savol bilan dispetcherga qo'ng'iroq
+ * qilishning oldini oladi. */
+export function blockedMessage(reason?: unknown): string {
+  const base = 'Siz admin tomonidan bloklangansiz.';
+  return typeof reason === 'string' && reason.trim()
+    ? `${base}\n\nSababi: ${reason.trim()}`
+    : `${base}\n\nBatafsil ma'lumot uchun dispetcherga murojaat qiling.`;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -81,7 +101,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (savedPhone) {
           const doc = await firestore().collection('drivers').doc(savedPhone).get();
           const data = doc.data();
-          if (doc.exists() && data) {
+          if (doc.exists() && data && data.blocked === true) {
+            // Bloklangan haydovchining sessiyasi tiklanmaydi — aks
+            // holda ilovani qayta ochish bloknni chetlab o'tish
+            // yo'liga aylanardi.
+            await AsyncStorage.removeItem(SAVED_PHONE_KEY);
+            setError(blockedMessage(data.blockedReason));
+            console.log('[AUTH] Haydovchi bloklangan, sessiya tozalandi:', savedPhone);
+          } else if (doc.exists() && data) {
             setDriver(mapFirestoreDriver(savedPhone, data));
             sessionRestored = true;
             console.log('[AUTH] Sessiya tiklandi:', savedPhone);
@@ -128,12 +155,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError("Parol noto'g'ri");
         return false;
       }
-      // MUHIM: faqat ANIQ `approved:false` bo'lgan hisoblar (o'zi
-      // ro'yxatdan o'tib, hali moderatsiyadan o'tmagan) bloklanadi.
-      // Dashboard'dan qo'lda qo'shilgan eski haydovchilarda bu maydon
-      // umuman yo'q — ular bilan hech narsa o'zgarmaydi.
-      if (data.approved === false) {
-        setError("Hisobingiz hali moderatsiyada. Administrator tasdiqlashini kuting.");
+      // Admin intizom uchun bloklagan. Bu `approved` dan BOSHQA
+      // narsa: `approved` — hali ko'rib chiqilmagan yangi ariza,
+      // `blocked` — ishlab turgan haydovchini to'xtatish. Ikkinchisi
+      // qaytariladi, birinchisi esa odatda tasdiq bilan tugaydi.
+      if (data.blocked === true) {
+        setError(blockedMessage(data.blockedReason));
         return false;
       }
 

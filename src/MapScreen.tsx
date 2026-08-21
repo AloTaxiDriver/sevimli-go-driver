@@ -23,7 +23,7 @@ import OrderCard from './components/OrderCard';
 import PoolOrderItem from './components/PoolOrderItem';
 import TripCard from './components/TripCard';
 import WaitingCard from './components/WaitingCard';
-import { useAuth } from './context/AuthContext';
+import { blockedMessage, useAuth } from './context/AuthContext';
 import { MOCK_HEAT_POINTS, getHeatColor } from './data/heatmapData';
 import { Order } from './data/mockOrders';
 import { COLORS } from './theme/colors';
@@ -178,7 +178,7 @@ function computeRouteTarget(
 
 export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string }) {
   const insets = useSafeAreaInsets();
-  const { driver } = useAuth();
+  const { driver, logout } = useAuth();
   const driverId = driver?.id || driver?.phone || 'unknown_driver';
 
   const [location, setLocation] = useState<Coords | null>(null);
@@ -341,6 +341,14 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // yangidan tug'iladi). Shuning uchun avtomatik kutish shu tutqich
   // orqali chaqiriladi — .current har renderda yangilanadi.
   const waitControl = useRef({ begin: () => {}, end: () => {} });
+  // ADMIN BLOKLAGANDA. AuthContext haydovchi hujjatini jonli
+  // tinglaydi, ya'ni blok telefonga DARHOL yetib keladi — haydovchi
+  // ilovani qayta ochishini kutish shart emas.
+  //
+  // Joriy safar ATAYLAB to'xtatilmaydi: mijoz mashinada bo'lishi
+  // mumkin va uni yo'lda qoldirib bo'lmaydi. Yangi buyurtma esa
+  // kelmaydi — onlayn holat va push tokeni o'chiriladi.
+  const blockNoticeShown = useRef(false);
   const writeTripSnapshot = useRef(() => {});
   useEffect(() => {
     waitControl.current = { begin: beginWaiting, end: endWaiting };
@@ -895,6 +903,26 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     })();
     return () => { locationSubscription.current?.remove(); };
   }, []);
+
+  useEffect(() => {
+    if (!driver?.blocked) {
+      blockNoticeShown.current = false;
+      return;
+    }
+    setIsOnline(false);
+    setPoolVisible(false);
+    setPendingAcceptId(null);
+    stopDriverLocationTracking();
+    // `isOnline: false` + push tokenini o'chirish — panelda ham
+    // oflayn ko'rinadi va telefonga yangi buyurtma bildirishnomasi
+    // kelmaydi.
+    saveDriverPushToken(driverId, null).catch(() => {});
+    if (!blockNoticeShown.current) {
+      blockNoticeShown.current = true;
+      Alert.alert('Bloklandingiz', blockedMessage(driver.blockedReason));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [driver?.blocked, driver?.blockedReason, driverId]);
 
   // acceptOrderId prop o'zgarganda pendingAcceptId ni yangilash
   useEffect(() => {
@@ -2227,6 +2255,41 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         </View>
       )}
 
+      {/* Bloklangan, lekin safar ustida — mijozni yo'lda qoldirib
+          bo'lmaydi, shuning uchun faqat ogohlantiramiz. */}
+      {!!driver?.blocked && tripStage !== null && (
+        <View style={[styles.blockBanner, { top: insets.top + 12 }]}>
+          <Ionicons name="lock-closed" size={17} color={COLORS.white} />
+          <Text style={styles.blockBannerText}>
+            Siz bloklangansiz \u2014 joriy safarni yakunlang. Yangi buyurtma kelmaydi.
+          </Text>
+        </View>
+      )}
+
+      {/* Safar yo'q \u2014 endi ishlash mumkin emas. Oyna yopilmaydi:
+          yagona chiqish yo'li \u2014 tizimdan chiqish. */}
+      <Modal
+        visible={!!driver?.blocked && tripStage === null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {}}
+      >
+        <View style={styles.blockOverlay}>
+          <View style={styles.blockCard}>
+            <Ionicons name="lock-closed" size={42} color={COLORS.danger} />
+            <Text style={styles.blockTitle}>Siz admin tomonidan bloklangansiz</Text>
+            <Text style={styles.blockText}>
+              {driver?.blockedReason
+                ? `Sababi: ${driver.blockedReason}`
+                : "Batafsil ma'lumot uchun dispetcherga murojaat qiling."}
+            </Text>
+            <TouchableOpacity style={styles.blockBtn} onPress={logout}>
+              <Text style={styles.blockBtnText}>Chiqish</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={poolVisible} animationType="slide" transparent onRequestClose={() => setPoolVisible(false)}>
         <View style={styles.modalOverlay}>
           <TouchableOpacity style={styles.modalBackdrop} onPress={() => setPoolVisible(false)} />
@@ -2465,6 +2528,45 @@ const styles = StyleSheet.create({
   trackOffTitle: { fontSize: 19, color: COLORS.white, fontWeight: '800', marginTop: 1 },
   orderOverlay: { position: 'absolute', left: 0, right: 0 },
   modalOverlay: { flex: 1, justifyContent: 'flex-end' },
+  blockBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    backgroundColor: COLORS.danger,
+    borderRadius: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 14,
+  },
+  blockBannerText: { flex: 1, color: COLORS.white, fontSize: 12.5, fontWeight: '700' },
+  blockOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 28,
+  },
+  blockCard: {
+    width: '100%',
+    backgroundColor: COLORS.white,
+    borderRadius: 22,
+    padding: 26,
+    alignItems: 'center',
+    gap: 14,
+  },
+  blockTitle: { fontSize: 18, fontWeight: '800', color: COLORS.dark, textAlign: 'center' },
+  blockText: { fontSize: 14, color: COLORS.textMuted, textAlign: 'center', lineHeight: 20 },
+  blockBtn: {
+    marginTop: 6,
+    alignSelf: 'stretch',
+    backgroundColor: COLORS.danger,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+  },
+  blockBtnText: { color: COLORS.white, fontSize: 15, fontWeight: '800' },
   modalBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.3)' },
   sheet: { borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 20, overflow: 'hidden', borderTopWidth: 1.5, borderLeftWidth: 1.5, borderRightWidth: 1.5, borderColor: 'rgba(255,255,255,0.7)' },
   sheetHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(22,24,29,0.2)', alignSelf: 'center', marginBottom: 16 },

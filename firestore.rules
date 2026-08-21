@@ -212,8 +212,14 @@ service cloud.firestore {
       //     qo'ymasin (dispatch faqat shu maydonga qarab filtrlaydi).
       // Ikkalasini ham haydovchi ilovasi YANGILAMAYDI — ular faqat
       // ro'yxatdan o'tishda, hujjat YARATILGANDA yoziladi.
+      //   `blocked`/`blockedReason` — intizom chorasi. Bu ro'yxatga
+      //     qo'shilmasa, haydovchi ilovasi (u autentifikatsiyasiz
+      //     yozadi) o'ziga `blocked: false` yozib, blokdan o'zini
+      //     o'zi chiqarib olardi.
       allow update: if isStaff() ||
-        !changedKeys().hasAny(['balance', 'password', 'approved', 'branch']);
+        !changedKeys().hasAny(
+          ['balance', 'password', 'approved', 'branch', 'blocked', 'blockedReason']
+        );
       // MUHIM: avval bu yerda `allow write: if true` turardi va pastda
       // `allow delete: if false` yozilgan edi. Firestore qoidalari
       // BIR-BIRINI BEKOR QILMAYDI — ular OR bilan qo'shiladi, va

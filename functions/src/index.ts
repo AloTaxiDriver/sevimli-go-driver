@@ -595,6 +595,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     const dispatchNow = Date.now();
     let staleSkipped = 0;
     let noBalanceSkipped = 0;
+    // Admin intizom uchun bloklaganlar.
+    let blockedSkipped = 0;
     // "Domoy/Ish/Mening hududim" rejimi tufayli chetda qolganlar.
     let modeSkipped = 0;
 
@@ -613,6 +615,14 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       // buni tekshirmasdan qabul qilsa, joriy faol safar Firestore'da
       // "osilib" (hech qachon yakunlanmay) qoladi.
       if (data.busy) return;
+      // Admin bloklagan haydovchi — intizom buzilishi, qarz va h.k.
+      // Ilova ham uni to'sadi, lekin taqsimlash bunga TAYANMASLIGI
+      // kerak: eski versiyadagi ilova yoki qo'lda yuborilgan so'rov
+      // baribir buyurtma olib qo'yishi mumkin edi.
+      if (data.blocked === true) {
+        blockedSkipped++;
+        return;
+      }
       // Balansi tugagan haydovchi navbatga QO'SHILMAYDI — yuqoridagi
       // izohga qarang (hasEnoughBalanceForOrder).
       if (!hasEnoughBalanceForOrder(data)) {
@@ -656,8 +666,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     logger.info(
       `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi ` +
         `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn", ` +
-        `${noBalanceSkipped} ta balansi tugagan, ${modeSkipped} ta "o'z hududi" rejimidagi ` +
-        `haydovchi o'tkazib yuborildi` +
+        `${noBalanceSkipped} ta balansi tugagan, ${blockedSkipped} ta bloklangan, ` +
+        `${modeSkipped} ta "o'z hududi" rejimidagi haydovchi o'tkazib yuborildi` +
         (settings.respectDriverArea ? "" : ' ("o\'z hududi" filtri O\'CHIRILGAN)')
     );
 

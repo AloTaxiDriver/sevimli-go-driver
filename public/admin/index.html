@@ -3256,6 +3256,10 @@ function normalizeFirestoreDriver(d){
     // ko'rmasa, "nega unga buyurtma bormayapti?" degan savolga
     // javob topa olmaydi.
     activeMode:d.activeMode||'',
+    // Admin intizom uchun bloklagan. Haydovchini O'CHIRISHDAN farqi:
+    // balansi, tarixi va bonuslari joyida qoladi, blok qaytariladi.
+    blocked:d.blocked===true,
+    blockedReason:typeof d.blockedReason==='string'?d.blockedReason:'',
     rating:typeof d.rating==='number'?d.rating:5,
     trips:typeof d.trips==='number'?d.trips:0,
   };
@@ -3307,7 +3311,9 @@ function renderDriversGrid(search='',filter='all'){
   else if(filter!=='all')drivers=drivers.filter(d=>d.status===filter);
   const el=document.getElementById('drivers-grid');
   if(!el)return;
-  el.innerHTML=drivers.map(d=>`<div class="driver-card" style="${d.approved===false?'border:1.5px solid #F59E0B':(d.gpsStale?'border:1.5px solid #DC2626':'')}">
+  el.innerHTML=drivers.map(d=>`<div class="driver-card" style="${d.blocked?'border:1.5px solid #DC2626;background:#FFFBFB':(d.approved===false?'border:1.5px solid #F59E0B':(d.gpsStale?'border:1.5px solid #DC2626':''))}">
+    ${d.blocked?`<div style="background:#FEF2F2;border:1px solid rgba(220,38,38,0.3);color:#B91C1C;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;margin-bottom:8px" title="Haydovchi tizimga kira olmaydi va buyurtma olmaydi">
+      \u26d4 Bloklangan${d.blockedReason?' \u2014 '+esc(d.blockedReason):''}</div>`:''}
     ${d.activeMode?`<div style="background:#FFF7ED;border:1px solid rgba(180,118,31,0.25);color:#9C6614;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px" title="Haydovchi faqat o\u2019zi tanlagan nuqta atrofidagi buyurtmalarni oladi. Nuqta tugma bosilgan joyda qotib qoladi \u2014 keyin qayerga borsa ham o\u2019zgarmaydi.">
       \u25c9 ${d.activeMode==='home'?'Domoy':d.activeMode==='work'?'Ish':'Mening hududim'} rejimi \u2014 faqat o\u2019sha hudud buyurtmalari</div>`:''}
     ${d.gpsStale?`<div style="background:#FEF2F2;border:1px solid rgba(220,38,38,0.25);color:#B91C1C;border-radius:8px;padding:6px 9px;font-size:11px;font-weight:700;margin-bottom:8px;display:flex;align-items:center;gap:6px" title="Taqsimlash bunday haydovchini o\u2019tkazib yuboradi \u2014 unga avtomatik buyurtma bormaydi">
@@ -3323,6 +3329,9 @@ function renderDriversGrid(search='',filter='all'){
     <div style="display:flex;gap:8px">
       ${d.approved===false?`<button class="btn btn-coral" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="approveDriver('${d.id}')">${ic('check',13,'#fff')} Tasdiqlash</button>`:''}
       <button class="btn btn-light" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="showDriverModal('${d.id}')">${ic('edit',13)} Tahrir</button>
+      ${d.approved===false?'':(d.blocked
+        ?`<button class="btn btn-light" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="unblockDriver('${d.id}')">${ic('check',13)} Blokdan chiqar</button>`
+        :`<button class="btn btn-light" style="flex:1;justify-content:center;font-size:12px;padding:7px;color:#B91C1C" onclick="blockDriver('${d.id}')">${ic('x',13)} Bloklash</button>`)}
       ${d.approved===false?`<button class="btn btn-danger" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="rejectDriverModeration('${d.id}')">${ic('x',13)} Rad etish</button>`:`<button class="btn btn-danger" style="flex:1;justify-content:center;font-size:12px;padding:7px" onclick="deleteDriver('${d.id}')">${ic('trash',13)} O’chir</button>`}
     </div>
   </div>`).join('')||'<p style="padding:20px;color:rgba(0,0,0,0.4)">Haydovchi topilmadi</p>';
@@ -3359,6 +3368,54 @@ function rejectDriverModeration(id){
     },
     'Ha, rad etish',
     true
+  );
+}
+// BLOKLASH \u2014 o'chirishdan farqi: qaytariladi va haydovchining
+// balansi, safar tarixi, bonus yozuvlari joyida qoladi. Avval
+// intizom buzganni to'xtatishning yagona yo'li uni butunlay
+// o'chirish edi.
+//
+// Sabab ATAYLAB so'raladi va haydovchiga ko'rsatiladi: "nega
+// bloklandim?" degan savol bilan dispetcherga qo'ng'iroq
+// qilishning oldini oladi, va bir necha oydan keyin qarorning
+// sababini o'zimiz ham eslay olamiz.
+function blockDriver(id){
+  const drv=firestoreDriversList.find(x=>x.id===id);
+  const reason=prompt('Bloklash sababi (haydovchiga ko\u2019rsatiladi):','');
+  // `null` \u2014 "Bekor qilish" bosilgan. Bo’sh satr esa
+  // "sababsiz bloklash" \u2014 bunga ruxsat beramiz.
+  if(reason===null)return;
+  showConfirmModal(
+    'Haydovchini bloklash',
+    (drv?esc(drv.name)+' ':'')+'tizimga kira olmaydi va buyurtma olmaydi. Telefonida darhol xabar chiqadi. Joriy safari bo\u2019lsa, uni yakunlab olishi mumkin.',
+    ()=>{
+      if(window.saveDriverToFirestore)window.saveDriverToFirestore(id,{
+        blocked:true,
+        blockedReason:reason.trim(),
+        blockedAt:new Date().toISOString(),
+        blockedBy:window.currentAdminStaffName||window.currentAdminRole||'admin',
+        // Bloklangan haydovchi panelda ham oflayn ko'rinishi kerak.
+        isOnline:false,
+        status:'offline',
+      });
+    },
+    'Ha, bloklash',
+    true
+  );
+}
+function unblockDriver(id){
+  const drv=firestoreDriversList.find(x=>x.id===id);
+  showConfirmModal(
+    'Blokdan chiqarish',
+    (drv?esc(drv.name)+' ':'')+'yana tizimga kira oladi va buyurtma ola boshlaydi.',
+    ()=>{
+      if(window.saveDriverToFirestore)window.saveDriverToFirestore(id,{
+        blocked:false,
+        blockedReason:'',
+        unblockedAt:new Date().toISOString(),
+      });
+    },
+    'Ha, blokdan chiqarish'
   );
 }
 function deleteDriver(id){
