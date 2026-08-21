@@ -1557,6 +1557,19 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // mashinada. Manzil oldindan noma'lum, narx metr (perKm) bo'yicha
   // hisoblanadi (xuddi tariffPerKm/tariffMinPrice orqali).
   async function handleStartBordur() {
+    // MUHIM: bu tekshiruv boshqa TO'RTTA qabul qilish yo'lida bor edi,
+    // shu yerda esa yo'q edi. Bordyur — dispetchersiz, taqsimlashsiz
+    // safar: haydovchi tugmani bosadi va ishlay boshlaydi. Ya'ni
+    // balansi tugagan haydovchi uchun bu yagona ochiq eshik bo'lib
+    // qolgan edi, komissiya esa har safar balansni yanada minusga
+    // tortardi.
+    if ((driver?.balance || 0) <= 0) {
+      Alert.alert(
+        'Balans yetarli emas',
+        "Safarni boshlash uchun hisobingizni to'ldiring."
+      );
+      return;
+    }
     if (!location) {
       Alert.alert('Joylashuv aniqlanmagan', 'GPS joylashuvi hali aniqlanmadi, birozdan keyin urinib ko‘ring.');
       return;
@@ -2252,6 +2265,18 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             // ikkalasi bir-biriga xalaqit berardi.
             onToggleWait={activeOrder.waitingMode === 'automatic' ? undefined : toggleWaiting}
             onPrimaryAction={hasSecondStop && activeLeg === 1 ? handleReachedStop1 : openTripSummary} />
+        </View>
+      )}
+
+      {/* Balans tugagan \u2014 buyurtma kelmasligining sababi.
+          Bloklanganda ko'rsatilmaydi: u yerda boshqa, muhimroq
+          xabar bor va ikkitasi ustma-ust tushib qolardi. */}
+      {isOnline && !driver?.blocked && (driver?.balance || 0) <= 0 && (
+        <View style={[styles.blockBanner, { top: insets.top + 12, backgroundColor: '#B4761F' }]}>
+          <Ionicons name="wallet" size={17} color={COLORS.white} />
+          <Text style={styles.blockBannerText}>
+            Balansingiz tugagan \u2014 sizga buyurtma kelmaydi. Hisobni to\u2019ldiring.
+          </Text>
         </View>
       )}
 

@@ -3099,6 +3099,18 @@ async function submitOrder(){
       'Davom etamizmi?'
     ))return;
   }
+  // Tanlangan haydovchining balansi tugagan bo'lsa \u2014 u buyurtmani
+  // ilovada QABUL QILA OLMAYDI. To'smaymiz (dispetcher hozir
+  // to'ldirmoqchi bo'lishi mumkin), lekin oqibatini aytamiz.
+  if(driver){
+    const drv=firestoreDriversList.find(x=>x.id===driver);
+    if(drv&&(drv.balance||0)<=0&&!confirm(
+      esc(drv.name)+' balansi: '+(drv.balance||0).toLocaleString()+' so\u2019m.\n\n'+
+      'Bunday haydovchi buyurtmani ilovada QABUL QILA OLMAYDI \u2014 '+
+      'buyurtma unda osilib qoladi.\n\n'+
+      'Avval hisobini to\u2019ldiring. Baribir davom etamizmi?'
+    ))return;
+  }
   const branchId=document.getElementById('f-branch')?.value||null;
   if(branchId&&!guardBranchWrite(branchId))return;
   const note=document.getElementById('f-note')?.value||'';
@@ -9857,7 +9869,11 @@ function driverSelectOptions(free){
   // buyurtma push orqali boradi va joylashuvga umuman bog'liq emas.
   // Faqat AVTOMATIK taqsimlash uni o'tkazib yuboradi — shuning
   // uchun ogohlantirib qo'yamiz, lekin to'smaymiz.
-  return head+free.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} \u00b7 ${esc(d.car)}${d.gpsStale?' \u26a0 GPS yo\u2019q':''}</option>`).join('');
+  // Balansi tugagan haydovchi ilovada buyurtmani QABUL QILA OLMAYDI.
+  // Avval bu panelda umuman ko'rinmasdi: dispetcher biriktirar,
+  // buyurtma o'sha haydovchida osilib qolar, sababi esa hech qayerda
+  // yozilmasdi.
+  return head+free.map(d=>`<option value="${esc(d.id)}">${esc(d.name)} \u00b7 ${esc(d.car)}${(d.balance||0)<=0?' \u26d4 balans yo\u2019q':''}${d.gpsStale?' \u26a0 GPS yo\u2019q':''}</option>`).join('');
 }
 
 function startGlobalOrdersListener(){
