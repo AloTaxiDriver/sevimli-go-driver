@@ -24,6 +24,18 @@ export type Order = {
   // bo'yicha hisoblanadi (MapScreen.tsx'dagi livePrice).
   tieredPricing?: boolean;
   priceTiers?: { km?: number; pricePerKm: number }[];
+  // KUTISH HAQI — tarifdan keladi (dispetcher paneldan sozlaydi).
+  // `waitPerMin` 0 yoki berilmagan bo'lsa kutish bepul: eski
+  // buyurtmalardan kutilmaganda pul olinib qolmasligi uchun.
+  freeWaitMin?: number;
+  waitPerMin?: number;
+  // Safar DAVOMIDAGI kutishni kim boshqaradi. Filial sozlamasi
+  // ("Kutish vaqti statusi" tugmasi) shu maydonga tushadi:
+  //   'manual'    — haydovchi "Kutish" tugmasini o'zi bosadi
+  //   'automatic' — mashina to'xtab qolsa taymer o'zi yoqiladi
+  // Mijozni olib ketish nuqtasida kutish esa HAR DOIM avtomatik —
+  // haydovchi "Yetib keldim" deganda boshlanadi.
+  waitingMode?: 'manual' | 'automatic';
   // Mijoz bonus/qo'shimcha xizmat ishlatgan bo'lsa — `price` maydoni
   // (yuqorida) allaqachon shularni hisobga olgan yakuniy summa. Safar
   // davomida MapScreen'da GPS bo'yicha jonli hisoblanadigan narxni ham

@@ -133,6 +133,9 @@ export type FirestoreOrder = {
   minDistancePrice?: number;
   tieredPricing?: boolean;
   priceTiers?: PriceTier[];
+  freeWaitMin?: number;
+  waitPerMin?: number;
+  waitingMode?: 'manual' | 'automatic';
   createdAtMillis?: number;
   cancelReason?: string;
   cancelledBy?: 'driver' | 'dispatcher';
@@ -201,6 +204,11 @@ export function mapDocToOrder(
         : 0,
     tieredPricing: !!data.tieredPricing,
     priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
+    freeWaitMin: typeof data.freeWaitMin === 'number' ? data.freeWaitMin : 0,
+    // 0 = kutish bepul. Eski buyurtmalarda bu maydon umuman yo'q va
+    // ular AVVALGIDEK, hech qanday kutish haqisiz yakunlanishi kerak.
+    waitPerMin: typeof data.waitPerMin === 'number' ? data.waitPerMin : 0,
+    waitingMode: data.waitingMode === 'automatic' ? 'automatic' : 'manual',
     createdAtMillis: data.createdAt?.toMillis
       ? data.createdAt.toMillis()
       : data.createdAt?.seconds
@@ -819,6 +827,10 @@ export async function finalizeOrderPrice(
   orderId: string,
   meteredPrice: number,
   actualDistanceKm: number,
+  // Kutish: jami soniya va undan hisoblangan haq. Panelda buyurtma
+  // tafsilotida ko'rsatiladi — "narx nega bunchalik?" degan savolga
+  // javob shu yerda bo'lishi kerak.
+  wait: { totalSeconds: number; billedMinutes: number; charge: number },
   // Safar tugagan joy. Manzil belgilanmagan safarlarda (bordyur)
   // buyurtmada `dropoffLat/Lng` UMUMAN bo'lmaydi — panel xaritasida
   // faqat olish nuqtasi ko'rinardi.
@@ -843,6 +855,12 @@ export async function finalizeOrderPrice(
     price: roundedPrice,
     finalPrice,
     actualDistanceKm: Math.round(actualDistanceKm * 10) / 10,
+    // MUHIM: `meteredPrice` ichida kutish haqi ALLAQACHON bor. Bu
+    // uchtasi — faqat tushuntirish uchun, ular narxga qayta
+    // qo'shilmaydi.
+    waitSeconds: Math.round(wait.totalSeconds),
+    waitBilledMinutes: wait.billedMinutes,
+    waitCharge: wait.charge,
   };
   // Koordinata O'YLAB TOPILMAYDI: GPS o'sha lahzada javob bermagan
   // bo'lsa maydon umuman yozilmaydi.
@@ -933,6 +951,9 @@ export function firestoreOrderToOrder(fo: FirestoreOrder) {
     minDistancePrice: fo.minDistancePrice || fo.price,
     tieredPricing: !!fo.tieredPricing,
     priceTiers: fo.priceTiers,
+    freeWaitMin: fo.freeWaitMin || 0,
+    waitPerMin: fo.waitPerMin || 0,
+    waitingMode: fo.waitingMode || 'manual',
     serviceType: fo.serviceType,
     toAddress2: fo.toAddress2,
     dropoff2Location,
@@ -1266,6 +1287,8 @@ export type FirestoreTariff = {
   minDistancePrice: number;
   tieredPricing?: boolean;
   priceTiers?: PriceTier[];
+  freeWaitMin: number;
+  waitPerMin: number;
 };
 
 export async function fetchBordurTariff(): Promise<FirestoreTariff | null> {
@@ -1287,6 +1310,8 @@ export async function fetchBordurTariff(): Promise<FirestoreTariff | null> {
       minDistancePrice: typeof data.minDistancePrice === 'number' ? data.minDistancePrice : 0,
       tieredPricing: !!data.tieredPricing,
       priceTiers: Array.isArray(data.priceTiers) ? data.priceTiers : undefined,
+      freeWaitMin: typeof data.minWaitMin === 'number' ? data.minWaitMin : 0,
+      waitPerMin: typeof data.waitMinPrice === 'number' ? data.waitMinPrice : 0,
     };
   } catch (error) {
     console.warn('Bordyur tarifini olishda xato:', error);
@@ -1318,6 +1343,11 @@ export async function startBordurTrip(
     minDistancePrice: tariff.minDistancePrice,
     tieredPricing: !!tariff.tieredPricing,
     priceTiers: tariff.priceTiers || [],
+    freeWaitMin: tariff.freeWaitMin,
+    waitPerMin: tariff.waitPerMin,
+    // Bordyur — ko'chadan olingan yo'lovchi, dispetcher umuman
+    // aralashmaydi. Kutishni boshqaradigan yagona odam — haydovchi.
+    waitingMode: 'manual',
     pickupLat: location.latitude,
     pickupLng: location.longitude,
     dropoffLat: location.latitude,

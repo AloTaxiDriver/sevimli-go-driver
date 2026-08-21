@@ -2321,6 +2321,10 @@ function normalizeFirestoreOrder(o){
     // Buyurtma yaratilgandagi tarif stavkalari — masofa noma'lum holda
     // yakunlanganda narxni qayta hisoblash uchun kerak (pastga qarang,
     // completeOrderFromDashboard).
+    waitSeconds:typeof o.waitSeconds==='number'?o.waitSeconds:null,
+    waitBilledMinutes:typeof o.waitBilledMinutes==='number'?o.waitBilledMinutes:null,
+    waitCharge:typeof o.waitCharge==='number'?o.waitCharge:null,
+    waitingMode:o.waitingMode||'',
     perKm:typeof o.perKm==='number'?o.perKm:0,
     minDistance:typeof o.minDistance==='number'?o.minDistance:0,
     minDistancePrice:typeof o.minDistancePrice==='number'?o.minDistancePrice:0,
@@ -2981,6 +2985,13 @@ function tieredDistanceSurcharge(distanceBeyondMin,tiers){
 // — bosqichli narxlash yoqilgan bo'lsa priceTiers, aks holda eski flat
 // perKm formulasi ishlatiladi. calcTotal() va submitOrder()da bir xil
 // natija chiqishi uchun ikkalasi shu funksiyani chaqiradi.
+// Filialdagi "Kutish vaqti statusi" tugmasi qaysi holatda turibdi.
+// Filial topilmasa 'automatic' \u2014 panelning o'z standarti bilan bir xil.
+function orderWaitingMode(branchId){
+  if(!branchId)return 'automatic';
+  const b=(dbGet('branches')||[]).find(x=>x.id===branchId);
+  return b&&b.waitingMode==='manual'?'manual':'automatic';
+}
 function computeTariffRawBase(trf,routeDistanceKm){
   const minDistance=trf?.minDistance||0;
   const distanceBeyondMin=Math.max(0,routeDistanceKm-minDistance);
@@ -3157,6 +3168,13 @@ async function submitOrder(){
       perKm: trf?.perKm || 0,
       minDistance: trf?.minDistance || 0,
       minDistancePrice: trf?.minDistancePrice || 0,
+      // KUTISH: narx tarifdan, rejim esa FILIALDAN olinadi. Ikkalasi
+      // ham buyurtma bilan birga ketadi — ilova qo'shimcha hujjat
+      // o'qimasligi va sozlama o'zgarsa ham BOSHLANGAN safar
+      // qoidalari o'zgarmasligi uchun.
+      freeWaitMin: trf?.minWaitMin || 0,
+      waitPerMin: trf?.waitMinPrice || 0,
+      waitingMode: orderWaitingMode(branchId),
       // Bosqichli narxlash yoqilgan tariflar uchun — mobil ilova safar
       // davomida jonli narxni shu bosqichlar asosida hisoblaydi.
       tieredPricing: !!trf?.tieredPricing,
@@ -6117,6 +6135,13 @@ function saveTariff(tariffId){
       perKm:finalData.perKm,
       minDistance:finalData.minDistance,
       minDistancePrice:finalData.minDistancePrice,
+      // MUHIM: kutish narxlari AVVAL bu ro'yxatda yo'q edi. Panelda
+      // ular kiritilardi, localStorage'da saqlanardi, Firestore'ga
+      // esa umuman bormasdi — ya'ni ilovaga hech qachon yetib
+      // bormasdi va kutish amalda bepul edi.
+      minWaitMin:finalData.minWaitMin,
+      waitMinPrice:finalData.waitMinPrice,
+      peakWaitMinPrice:finalData.peakWaitMinPrice,
       bordur:finalData.bordur,
       status:finalData.status,
       carImage:finalData.carImage||null,
@@ -7386,6 +7411,12 @@ function openOrderDetail(orderId){
     infoRow('Safar boshlandi',fmtDateTime(o.startedAtMillis)),
     infoRow('Yakunlandi',fmtDateTime(o.completedAtMillis)),
     infoRow('Mijozni kutish',fmtDuration(o.arrivedAtMillis,o.startedAtMillis)),
+    // Haydovchi o'lchagan JAMI kutish (olib ketish nuqtasida + safar
+    // davomida) va undan olingan haq. Yuqoridagi qator faqat
+    // "keldi \u2192 boshladi" oralig'ini ko'rsatadi, ya'ni mijoz
+    // do'konga kirib ketgan vaqtni umuman hisobga olmaydi.
+    o.waitSeconds!=null?infoRow('Kutish (jami)',Math.round(o.waitSeconds/60)+' daq'+(o.waitBilledMinutes?' \u2022 '+o.waitBilledMinutes+' daq pullik':' \u2022 bepul')):'',
+    o.waitCharge?infoRow('Kutish haqi',o.waitCharge.toLocaleString()+' so\u2019m'):'',
     infoRow('Safar davomiyligi',fmtDuration(o.startedAtMillis,o.completedAtMillis)),
     infoRow('Boshdan-oxir',fmtDuration(o.createdAtMillis,o.completedAtMillis)),
   ];

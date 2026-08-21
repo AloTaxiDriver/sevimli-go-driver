@@ -43,6 +43,7 @@ import { startDriverLocationTracking, stopDriverLocationTracking } from './utils
 import { notifyTripEnd, notifyTripStart, preloadSounds, unloadSounds } from './utils/notifications';
 import { getRoute } from './utils/routing';
 import { addTripPoint, resumeTripMeter, startTripMeter } from './utils/tripMeter';
+import { billableWaitMinutes, computeWaitCharge } from './utils/waitCharge';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
 const TRACK_PADDING = 20;
@@ -59,6 +60,18 @@ const READY_CARD_PADDING = 20;
 const START_TRACK_WIDTH = SCREEN_WIDTH - READY_CARD_PADDING * 2;
 const START_KNOB_SIZE = 54;
 const START_SWIPE_THRESHOLD = START_TRACK_WIDTH - START_KNOB_SIZE - 10;
+
+// AVTOMATIK KUTISH chegaralari. Mashina shu tezlikdan sekin bo'lsa
+// "to'xtagan" deb hisoblanadi, lekin taymer DARHOL yonmaydi — 60
+// soniya kutiladi. Aks holda har svetofor, har chorraha kutish deb
+// yozilib, mijoz tirbandlik uchun pul to'lardi.
+//
+// Yonish va o'chish chegaralari ATAYLAB har xil (3 va 5 km/soat):
+// bitta chegara bo'lsa, GPS shovqini tufayli taymer sekin
+// harakatda yonib-o'chib turardi.
+const AUTO_WAIT_AFTER_MS = 60 * 1000;
+const AUTO_WAIT_STOP_KMH = 3;
+const AUTO_WAIT_MOVE_KMH = 5;
 
 type TripStage = 'ready_to_start' | 'to_pickup' | 'waiting' | 'in_progress' | null;
 type Coords = { latitude: number; longitude: number };
@@ -77,6 +90,12 @@ type ActiveTripSnapshot = {
   tripStage: Exclude<TripStage, null>;
   activeLeg: 1 | 2;
   tripDistanceKm: number;
+  /** Yig'ilgan kutish (soniya) — taymer o'chirilgan oraliqlar. */
+  waitAccumSec?: number;
+  /** Taymer YONIQ bo'lsa — qachon yoqilgani (ms). Soniyalab sanash
+   * o'rniga vaqt belgisi saqlanadi: ekran o'chsa ham, ilova yopilsa
+   * ham hisob buzilmaydi. */
+  waitStartedAt?: number | null;
   /** Snapshot qachon yozilgani. Ilova yopiq turgan vaqtda dispetcher
    * buyurtmani orqaga qaytargan bo'lishi mumkin — juda eski snapshot
    * o'sha o'zgarishni bosib ketmasligi uchun kerak. */
@@ -239,6 +258,19 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // aniqlanguncha) true — shu vaqt ichida yangi buyurtmani qabul qilish
   // effekti kutib turadi, aks holda tiklanayotgan safar ustiga yangi
   // buyurtma tushib qolishi mumkin.
+  // KUTISH HISOBI. Jami = `waitAccumSec` + (taymer yoniq bo'lsa
+  // hozirgacha o'tgan vaqt). Ref'lar GPS callback'i uchun — u bo'sh
+  // deps bilan bir marta yaratiladi va holatni ko'ra olmaydi.
+  const [waitAccumSec, setWaitAccumSec] = useState(0);
+  const [waitStartedAt, setWaitStartedAt] = useState<number | null>(null);
+  const waitAccumRef = useRef(0);
+  const waitStartedAtRef = useRef<number | null>(null);
+  // Avtomatik rejimda: mashina qachondan beri to'xtab turibdi.
+  const stoppedSinceRef = useRef<number | null>(null);
+  const waitingModeRef = useRef<'manual' | 'automatic'>('manual');
+  // Taymer yonib turganda ekrandagi raqam har soniyada yangilanishi
+  // uchun. Taymer o'chiq bo'lsa umuman ishlamaydi.
+  const [waitTick, setWaitTick] = useState(() => Date.now());
   const [restoringTrip, setRestoringTrip] = useState(true);
   const tripRestoreStartedRef = useRef<number | null>(null);
   const activeLegRef = useRef<1 | 2>(1);
@@ -304,7 +336,37 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // ekranga chiqarmasdan qayta chaqirishi mumkin, va o'shanda ref
   // ko'rsatilmagan holatga ishora qilib qolardi. Hozircha zararsiz,
   // lekin bu — jimgina buziladigan turdagi xato.
+  // GPS callback'i bo'sh deps bilan BIR MARTA yaratiladi, ya'ni u
+  // render paytidagi funksiyalarni ko'ra olmaydi (ular har renderda
+  // yangidan tug'iladi). Shuning uchun avtomatik kutish shu tutqich
+  // orqali chaqiriladi — .current har renderda yangilanadi.
+  const waitControl = useRef({ begin: () => {}, end: () => {} });
   const writeTripSnapshot = useRef(() => {});
+  useEffect(() => {
+    waitControl.current = { begin: beginWaiting, end: endWaiting };
+  });
+  useEffect(() => {
+    waitingModeRef.current =
+      activeOrder?.waitingMode === 'automatic' ? 'automatic' : 'manual';
+  }, [activeOrder]);
+  // Taymer yonganda: ekrandagi raqamni har soniyada yangilaymiz va
+  // holatni qurilmaga yozib turamiz.
+  //
+  // MUHIM: kutish davomida mashina qimirlamaydi, ya'ni GPS callback'i
+  // snapshotni YOZMAYDI (u faqat masofa o'zgarganda yozadi). Shu
+  // sababli yozuvni aynan shu yerdan qilamiz — aks holda ilova
+  // yopilib qolsa, kutish qayerdan uzilganini bilmay qolardik.
+  useEffect(() => {
+    if (waitStartedAt == null) return;
+    const iv = setInterval(() => {
+      setWaitTick(Date.now());
+      if (Date.now() - lastTripPersistAtRef.current > 10000) {
+        lastTripPersistAtRef.current = Date.now();
+        writeTripSnapshot.current();
+      }
+    }, 1000);
+    return () => clearInterval(iv);
+  }, [waitStartedAt]);
   useEffect(() => {
     writeTripSnapshot.current = () => {
       const orderId = activeOrderSourceId.current;
@@ -315,6 +377,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
         tripStage: stage,
         activeLeg: activeLegRef.current,
         tripDistanceKm: tripDistanceRef.current,
+        waitAccumSec: waitAccumRef.current,
+        waitStartedAt: waitStartedAtRef.current,
         savedAt: Date.now(),
       };
       AsyncStorage.setItem(activeTripStorageKey(driverId), JSON.stringify(snapshot)).catch(() => {});
@@ -322,6 +386,7 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   });
 
   function clearTripSnapshot() {
+    resetWaiting();
     lastTripPersistAtRef.current = 0;
     // MUHIM: yozuvchi AYNAN shu ikki ref'ga qarab ishlaydi va u React
     // render siklidan MUSTAQIL — GPS callback'idan chaqiriladi. Ularni
@@ -556,6 +621,31 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           updateOrderStatus(fo.id, statusForStage).catch(console.warn);
         }
 
+        // Kutish hisobini tiklaymiz.
+        //
+        // MUHIM: taymer YONIQ holatda ilova o'lgan bo'lsa, uni yoniq
+        // holda tiklamaymiz. Oraliq faqat snapshot oxirgi marta
+        // yozilgan paytgacha yopiladi — ya'ni biz FAQAT ilova tirik
+        // ekanini bilgan vaqtimiz uchun pul olamiz. Ilova qancha
+        // yopiq turganini bilmaymiz va uni mijozga yozib qo'yish
+        // to'g'ri bo'lmasdi. Haydovchi hali ham kutayotgan bo'lsa,
+        // tugmani qayta bosadi (avtomatik rejimda o'zi yonadi).
+        const savedAccum =
+          typeof snapshot?.waitAccumSec === 'number' ? snapshot.waitAccumSec : 0;
+        const savedStarted =
+          typeof snapshot?.waitStartedAt === 'number' ? snapshot.waitStartedAt : null;
+        const knownUntil =
+          typeof snapshot?.savedAt === 'number' ? snapshot.savedAt : savedStarted;
+        const restoredWait =
+          savedStarted != null && knownUntil != null
+            ? savedAccum + Math.max(0, (knownUntil - savedStarted) / 1000)
+            : savedAccum;
+        waitAccumRef.current = restoredWait;
+        waitStartedAtRef.current = null;
+        stoppedSinceRef.current = null;
+        setWaitAccumSec(restoredWait);
+        setWaitStartedAt(null);
+
         if (stage === 'in_progress') {
           // Bosib o'tilgan masofani tiklaymiz — aks holda hisoblagich
           // nolga tushib, safar oxirida narx eng past tarifga qulab
@@ -735,6 +825,21 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
               ? prev
               : nextHeading
           );
+
+          // AVTOMATIK KUTISH — mashina to'xtab qolsa taymer o'zi yonadi.
+          // Faqat dispetcher filialda shu rejimni tanlagan bo'lsa.
+          if (tripStageRef.current === 'in_progress' && waitingModeRef.current === 'automatic') {
+            if (nextSpeed < AUTO_WAIT_STOP_KMH) {
+              if (stoppedSinceRef.current == null) {
+                stoppedSinceRef.current = Date.now();
+              } else if (Date.now() - stoppedSinceRef.current >= AUTO_WAIT_AFTER_MS) {
+                waitControl.current.begin();
+              }
+            } else if (nextSpeed >= AUTO_WAIT_MOVE_KMH) {
+              stoppedSinceRef.current = null;
+              waitControl.current.end();
+            }
+          }
 
           // Faqat "in_progress" bosqichida (mijoz mashinada, safar
           // boshlangan) masofani yig'amiz.
@@ -1441,6 +1546,8 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       // ID ataylab parametr orqali: `activeOrderSourceId` bu yerda
       // hali yozilmagan (keyingi qatorda yoziladi).
       resetTripMeter(orderId);
+      // Bordyurda olib ketish nuqtasi yo'q — kutish noldan boshlanadi.
+      resetWaiting();
       activeOrderSourceId.current = orderId;
       setActiveOrder({
         id: orderId,
@@ -1531,6 +1638,37 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     setTripStage('to_pickup');
     setDriverBusyStatus(driverId, true).catch(() => {});
   }
+  // Taymerni yoqish/o'chirish. Ikkalasi ham QAYTA chaqirilishga
+  // chidamli: avtomatik rejimda GPS har signalda "yoq" deb chaqiradi.
+  function beginWaiting() {
+    if (waitStartedAtRef.current != null) return;
+    const now = Date.now();
+    waitStartedAtRef.current = now;
+    setWaitStartedAt(now);
+    // Taymer ekranda DARHOL 0:00 dan ketsin — interval birinchi
+    // marta faqat bir soniyadan keyin ishlaydi.
+    setWaitTick(now);
+  }
+  function endWaiting() {
+    const started = waitStartedAtRef.current;
+    if (started == null) return;
+    waitAccumRef.current += Math.max(0, (Date.now() - started) / 1000);
+    waitStartedAtRef.current = null;
+    setWaitAccumSec(waitAccumRef.current);
+    setWaitStartedAt(null);
+  }
+  function resetWaiting() {
+    waitAccumRef.current = 0;
+    waitStartedAtRef.current = null;
+    stoppedSinceRef.current = null;
+    setWaitAccumSec(0);
+    setWaitStartedAt(null);
+  }
+  function toggleWaiting() {
+    if (waitStartedAtRef.current != null) endWaiting();
+    else beginWaiting();
+  }
+
   function handleSkipOrder() {
     const id = activeOrderSourceId.current;
     if (id) setSkippedOrderIds((p) => new Set(p).add(id));
@@ -1540,6 +1678,12 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   function handleArrivedAtPickup() {
     const id = activeOrderSourceId.current;
     if (id) updateOrderStatus(id, 'arrived').catch(console.warn);
+    // Olib ketish nuqtasidagi kutish HAR DOIM avtomatik boshlanadi —
+    // haydovchi keldi, mijoz hali chiqmadi. Bu taksida hamma joyda
+    // shunday va dispetcherning "avtomatik/qo'lda" tanlovi faqat
+    // SAFAR DAVOMIDAGI kutishga tegishli.
+    resetWaiting();
+    beginWaiting();
     setTripStage('waiting');
   }
   // Bosib o'tilgan masofa hisoblagichini nolga tushiradi. AVVAL bu
@@ -1559,6 +1703,9 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
     const id = activeOrderSourceId.current;
     if (id) updateOrderStatus(id, 'in_progress').catch(console.warn);
     notifyTripStart();
+    // Mijoz mashinaga o'tirdi — olib ketish nuqtasidagi kutish tugadi.
+    // Yig'ilgan soniyalar SAQLANADI: ular ham to'lanadigan kutish.
+    endWaiting();
     // Safar boshlanish nuqtasidan hisoblagichni nolga tushiramiz
     resetTripMeter(id);
     setActiveLeg(1);
@@ -1616,10 +1763,37 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       // Endi ikkala yozuv ham kutiladi. O'tmasa — safar ekranda
       // QOLADI va haydovchi qayta urinib ko'ra oladi.
       setFinishingTrip(true);
+      // Taymer yoniq qolgan bo'lsa shu yerda to'xtaydi — haydovchi
+      // "Tugatdim"ni bosishni unutgan bo'lishi mumkin.
+      endWaiting();
+      // MUHIM: yakuniy summa ref'lardan QAYTA hisoblanadi, ekrandagi
+      // `livePrice` dan olinmaydi. Ekrandagi qiymat React holatiga
+      // tayanadi va u bir render orqada qolishi mumkin — o'shanda
+      // buyurtmaga yozilgan narx bilan yozilgan masofa/kutish
+      // bir-biriga mos kelmay qolardi.
+      const finalKm = tripDistanceRef.current;
+      const finalWaitSeconds = waitAccumRef.current;
+      const finalBeyondMin = Math.max(0, finalKm - tariffMinDistance);
+      const finalSurcharge = activeOrder?.tieredPricing
+        ? computeTieredDistanceSurcharge(finalBeyondMin, activeOrder?.priceTiers)
+        : finalBeyondMin * tariffPerKm;
+      const finalWaitCharge = computeWaitCharge(finalWaitSeconds, waitFreeMin, waitPerMinute);
+      const finalMetered =
+        Math.ceil((tariffMinPrice + finalSurcharge + finalWaitCharge) / 1000) * 1000;
       try {
         // Yakuniy narx — jonli hisoblangan (va yaxlitlangan) summa,
         // oldindan taxmin qilingan (statik) narx emas
-        await finalizeOrderPrice(id, livePrice, tripDistanceRef.current, location);
+        await finalizeOrderPrice(
+          id,
+          finalMetered,
+          finalKm,
+          {
+            totalSeconds: finalWaitSeconds,
+            billedMinutes: billableWaitMinutes(finalWaitSeconds, waitFreeMin),
+            charge: finalWaitCharge,
+          },
+          location
+        );
         await updateOrderStatus(id, 'completed');
       } catch (e) {
         console.warn('Safarni yakunlashda xato:', e);
@@ -1781,7 +1955,16 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   const distanceSurcharge = activeOrder?.tieredPricing
     ? computeTieredDistanceSurcharge(distanceBeyondMin, activeOrder?.priceTiers)
     : distanceBeyondMin * tariffPerKm;
-  const rawLivePrice = tariffMinPrice + distanceSurcharge;
+  // KUTISH HAQI. Narxlar buyurtma bilan birga keladi (tarifdan), ya'ni
+  // dispetcher ularni paneldan o'zgartira oladi va ilovani qayta
+  // yig'ish shart emas. `waitPerMin` 0 bo'lsa kutish bepul.
+  const waitFreeMin = activeOrder?.freeWaitMin ?? 0;
+  const waitPerMinute = activeOrder?.waitPerMin ?? 0;
+  const liveWaitSeconds =
+    waitAccumSec +
+    (waitStartedAt != null ? Math.max(0, (waitTick - waitStartedAt) / 1000) : 0);
+  const waitCharge = computeWaitCharge(liveWaitSeconds, waitFreeMin, waitPerMinute);
+  const rawLivePrice = tariffMinPrice + distanceSurcharge + waitCharge;
   const livePrice = Math.ceil(rawLivePrice / 1000) * 1000;
   // MUHIM: `livePrice` — sof tarif/masofa asosidagi (xom) summa, mijoz
   // ishlatgan bonus/qo'shimcha xizmatni hisobga olmaydi. Ekranda haydovchiga
@@ -2006,7 +2189,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
       {tripStage === 'waiting' && activeOrder && (
         <View style={[styles.orderOverlay, { bottom: bottomSafeOffset }]}>
           <WaitingCard order={activeOrder} onStartTrip={handleStartTrip} onRecenterMap={recenterMap}
-            onCancel={() => setCancelModalVisible(true)} />
+            onCancel={() => setCancelModalVisible(true)}
+            waitSeconds={liveWaitSeconds}
+            waitRunning={waitStartedAt != null}
+            onToggleWait={toggleWaiting}
+            freeWaitMin={waitFreeMin}
+            waitPerMin={waitPerMinute}
+            waitCharge={waitCharge} />
         </View>
       )}
       {tripStage === 'in_progress' && activeOrder && (
@@ -2027,6 +2216,13 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
             recipientName={activeOrder.serviceType === 'delivery' && (activeLeg === 2 || !hasSecondStop) ? activeOrder.recipientName : undefined}
             recipientPhone={activeOrder.serviceType === 'delivery' && (activeLeg === 2 || !hasSecondStop) ? activeOrder.recipientPhone : undefined}
             packageDescription={activeOrder.serviceType === 'delivery' ? activeOrder.packageDescription : undefined}
+            waitSeconds={liveWaitSeconds}
+            waitRunning={waitStartedAt != null}
+            waitCharge={waitCharge}
+            // Tugma FAQAT qo'lda rejimda. Avtomatik rejimda taymerni
+            // mashinaning o'zi yoqadi va haydovchining tugmasi
+            // ikkalasi bir-biriga xalaqit berardi.
+            onToggleWait={activeOrder.waitingMode === 'automatic' ? undefined : toggleWaiting}
             onPrimaryAction={hasSecondStop && activeLeg === 1 ? handleReachedStop1 : openTripSummary} />
         </View>
       )}

@@ -39,7 +39,22 @@ type Props = {
   recipientName?: string;
   recipientPhone?: string;
   packageDescription?: string;
+  // SAFAR DAVOMIDAGI KUTISH (mijoz do'konga kirib ketdi va h.k.).
+  // `onToggleWait` berilgan bo'lsa — qo'lda rejim, "Kutish" tugmasi
+  // chiqadi. Avtomatik rejimda tugma bo'lmaydi (mashina to'xtaganda
+  // taymer o'zi yonadi), lekin hisob baribir ko'rsatiladi: haydovchi
+  // narx nega oshayotganini ko'rib turishi kerak.
+  waitSeconds?: number;
+  waitRunning?: boolean;
+  waitCharge?: number;
+  onToggleWait?: () => void;
 };
+
+function formatWait(totalSeconds: number) {
+  const m = Math.floor(totalSeconds / 60);
+  const s = Math.floor(totalSeconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
 
 // Karta to'liq ochiq holatda taxminan shuncha balandlikni egallaydi —
 // bu boshlang'ich (fallback) qiymat, haqiqiy balandlik onLayout orqali
@@ -51,6 +66,7 @@ const VISIBLE_WHEN_COLLAPSED = 56;
 export default function TripCard({
   order, stage, distanceKm, durationMin, price, onPrimaryAction, onCancel,
   primaryLabel, stageNote, recipientName, recipientPhone, packageDescription,
+  waitSeconds = 0, waitRunning = false, waitCharge = 0, onToggleWait,
 }: Props) {
   const isToPickup = stage === 'to_pickup';
 
@@ -180,6 +196,30 @@ export default function TripCard({
           <View style={styles.priceRow}>
             <Text style={styles.priceLabel}>Joriy narx</Text>
             <Text style={styles.priceValue}>{price.toLocaleString()} so'm</Text>
+          </View>
+        )}
+
+        {stage === 'in_progress' && (!!onToggleWait || waitRunning || waitSeconds > 0) && (
+          <View style={[styles.waitRow, waitRunning && styles.waitRowActive]}>
+            <Ionicons
+              name="hourglass"
+              size={17}
+              color={waitRunning ? COLORS.white : COLORS.textMuted}
+            />
+            <Text style={[styles.waitText, waitRunning && styles.waitTextActive]}>
+              {waitRunning ? 'Kutilmoqda' : 'Kutish'} {formatWait(waitSeconds)}
+              {waitCharge > 0 ? `  +${waitCharge.toLocaleString()} so'm` : ''}
+            </Text>
+            {!!onToggleWait && (
+              <TouchableOpacity
+                style={[styles.waitBtn, waitRunning && styles.waitBtnActive]}
+                onPress={onToggleWait}
+              >
+                <Text style={[styles.waitBtnText, waitRunning && styles.waitBtnTextActive]}>
+                  {waitRunning ? 'Tugatdim' : 'Boshlash'}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -323,6 +363,38 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,90,44,0.2)',
   },
   priceLabel: { fontSize: 13, fontWeight: '700', color: COLORS.textMuted },
+  waitRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(0,0,0,0.04)',
+    borderRadius: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  // Kutish YONIQ holatda karta aniq boshqacha ko'rinadi — haydovchi
+  // taymerni o'chirishni unutib, mijozdan ortiqcha pul olib
+  // qo'ymasligi uchun.
+  waitRowActive: {
+    backgroundColor: '#B4761F',
+    borderColor: '#8A5A17',
+  },
+  waitText: { flex: 1, fontSize: 13, fontWeight: '700', color: COLORS.textMuted },
+  waitTextActive: { color: COLORS.white },
+  waitBtn: {
+    paddingVertical: 7,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  waitBtnActive: { backgroundColor: 'rgba(255,255,255,0.18)', borderColor: 'rgba(255,255,255,0.5)' },
+  waitBtnText: { fontSize: 12.5, fontWeight: '800', color: COLORS.dark },
+  waitBtnTextActive: { color: COLORS.white },
   priceValue: { fontSize: 22, fontWeight: '900', color: COLORS.primary },
 
   deliveryBox: {

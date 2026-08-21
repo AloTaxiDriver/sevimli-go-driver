@@ -1,6 +1,6 @@
 // src/components/WaitingCard.tsx
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useRef } from 'react';
 import {
   Animated,
   Dimensions,
@@ -11,7 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
-import { FREE_WAIT_SECONDS, Order, WAIT_PRICE_PER_MIN } from '../data/mockOrders';
+import { Order } from '../data/mockOrders';
 import { COLORS } from '../theme/colors';
 
 type Props = {
@@ -19,6 +19,22 @@ type Props = {
   onStartTrip: () => void;
   onRecenterMap?: () => void;
   onCancel?: () => void;
+  // MUHIM: kutish hisobi endi bu kartada YASHAMAYDI. Avval u shu
+  // yerdagi `useState` edi va shuning uchun hech qayerga yeta
+  // olmasdi: ekranda "Pullik kutish +2500 so'm" ko'rinardi, buyurtmaga
+  // esa hech narsa qo'shilmasdi. Endi hisob safar holatining bir
+  // qismi (MapScreen, qurilmada saqlanadi) va bu karta uni faqat
+  // ko'rsatadi.
+  waitSeconds: number;
+  waitRunning: boolean;
+  onToggleWait: () => void;
+  /** Tarifdan: necha daqiqa bepul kutiladi. */
+  freeWaitMin: number;
+  /** Tarifdan: bepul daqiqalardan keyingi 1 daqiqa narxi.
+   *  0 bo'lsa kutish bepul va narx umuman ko'rsatilmaydi. */
+  waitPerMin: number;
+  /** Hozirgi kutish haqi (so'm). */
+  waitCharge: number;
 };
 
 // MUHIM: bu raqamni haqiqiy dispetcher/qo'llab-quvvatlash raqami bilan almashtiring
@@ -40,28 +56,18 @@ function formatTime(totalSeconds: number) {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-export default function WaitingCard({ order, onStartTrip, onRecenterMap, onCancel }: Props) {
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  const [isPaused, setIsPaused] = useState(false);
-  const isPausedRef = useRef(false);
-
-  useEffect(() => {
-    isPausedRef.current = isPaused;
-  }, [isPaused]);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (!isPausedRef.current) {
-        setElapsedSeconds((prev) => prev + 1);
-      }
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const isFree = elapsedSeconds < FREE_WAIT_SECONDS;
-  const paidSeconds = isFree ? 0 : elapsedSeconds - FREE_WAIT_SECONDS;
-  const paidMinutes = Math.ceil(paidSeconds / 60);
-  const waitCost = paidMinutes * WAIT_PRICE_PER_MIN;
+export default function WaitingCard({
+  order, onStartTrip, onRecenterMap, onCancel,
+  waitSeconds, waitRunning, onToggleWait, freeWaitMin, waitPerMin, waitCharge,
+}: Props) {
+  const elapsedSeconds = waitSeconds;
+  const isPaused = !waitRunning;
+  const freeSeconds = Math.max(0, freeWaitMin) * 60;
+  // Kutish narxi sozlanmagan bo'lsa (waitPerMin = 0) kutish butunlay
+  // bepul — o'shanda "bepul vaqt tugadi" degan ogohlantirishning
+  // ma'nosi yo'q.
+  const isFree = waitPerMin <= 0 || elapsedSeconds < freeSeconds;
+  const waitCost = waitCharge;
 
   // 0 = to'liq ochiq, collapsedOffset = deyarli yopiq (faqat tutqich + sarlavha)
   const translateY = useRef(new Animated.Value(0)).current;
@@ -160,7 +166,7 @@ export default function WaitingCard({ order, onStartTrip, onRecenterMap, onCance
   }
 
   function togglePause() {
-    setIsPaused((prev) => !prev);
+    onToggleWait();
   }
 
   return (
@@ -195,7 +201,9 @@ export default function WaitingCard({ order, onStartTrip, onRecenterMap, onCance
             <Text style={styles.timerLabelPaused}>To'xtatib turilgan</Text>
           ) : isFree ? (
             <Text style={styles.timerLabelFree}>
-              Bepul kutish ({formatTime(FREE_WAIT_SECONDS - elapsedSeconds)} qoldi)
+              {waitPerMin > 0
+                ? `Bepul kutish (${formatTime(Math.max(0, freeSeconds - elapsedSeconds))} qoldi)`
+                : 'Kutish bepul'}
             </Text>
           ) : (
             <Text style={styles.timerLabelPaid}>

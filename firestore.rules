@@ -104,6 +104,17 @@ service cloud.firestore {
         // maydonlar pulga TA'SIR QILMAYDI, faqat hisobot uchun.
         'arrivedAt', 'startedAt', 'completedAt',
         'price', 'finalPrice', 'actualDistanceKm',
+        // Kutish: jami soniya, to'langan daqiqa va summa.
+        //
+        // MUHIM: bu ro'yxatga qo'shilmasa, safarni YAKUNLASH butunlay
+        // ishlamay qolardi — `finalizeOrderPrice` bitta yozuvda narx
+        // bilan birga shularni ham yuboradi, qoida esa ro'yxatdan
+        // tashqari bitta maydon bo'lsa YOZUVNI BUTUNLAY rad etadi.
+        //
+        // `waitCharge` narxga TA'SIR QILMAYDI: u `price` ichida
+        // allaqachon hisoblangan va bu yerda faqat tushuntirish
+        // uchun saqlanadi.
+        'waitSeconds', 'waitBilledMinutes', 'waitCharge',
         // Safar tugagan joy — manzilsiz safarlarda xaritadagi
         // yagona "B" nuqtasi shu bo'ladi.
         'finishLat', 'finishLng',
