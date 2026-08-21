@@ -755,7 +755,17 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
           // Endi hisob `utils/tripMeter` da: chegaradan kichik bo'lakda
           // langar QOLDIRILADI va harakat to'planib boradi.
           if (tripStageRef.current === 'in_progress') {
-            addTripPoint(newCoord.latitude, newCoord.longitude, update.coords.accuracy)
+            // `update.timestamp` ATAYLAB uzatiladi: fon vazifasi ham
+            // nuqtaning GPS o'lchagan vaqtini beradi, ikkala oqim bir
+            // xil vaqt o'lchoviga tayanishi kerak. Aks holda bittasi
+            // "yetkazilgan payt", ikkinchisi "o'lchangan payt" bilan
+            // ishlab, nuqtalar bir-birini eskirgan deb rad etardi.
+            addTripPoint(
+              newCoord.latitude,
+              newCoord.longitude,
+              update.coords.accuracy,
+              update.timestamp
+            )
               .then((km) => {
                 // `null` — faol safar yo'q (masalan safar aynan shu
                 // lahzada tiklanayapti). O'shanda ekrandagi masofaga

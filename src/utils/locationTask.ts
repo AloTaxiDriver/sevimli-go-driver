@@ -30,7 +30,7 @@ import * as TaskManager from 'expo-task-manager';
 import { getBackgroundLocationConsent } from './backgroundLocationConsent';
 import { LOCATION_TASK_DRIVER_ID_KEY, SAVED_PHONE_KEY } from './sessionKeys';
 import { addTripPoint } from './tripMeter';
-import { recordTrackPoint } from './tripTrack';
+import { recordTrackPoints } from './tripTrack';
 
 export const DRIVER_LOCATION_TASK = 'sevimli-go-driver-location';
 const DRIVER_ID_KEY = LOCATION_TASK_DRIVER_ID_KEY;
@@ -45,8 +45,27 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
     return;
   }
   const { locations } = (data || {}) as LocationTaskPayload;
-  const latest = locations?.[locations.length - 1];
-  if (!latest) return;
+  if (!locations || locations.length === 0) return;
+
+  // MUHIM: Android joylashuvlarni TO'PLAB yetkazadi. Telefon uyquga
+  // ketganda tizim ilovani har 10 soniyada uyg'otmaydi — nuqtalarni
+  // yig'ib turadi va bir necha daqiqadan keyin HAMMASINI bitta
+  // chaqiruvda beradi. `locations` ro'yxat bo'lishining sababi shu.
+  //
+  // Avval bu yerda faqat OXIRGISI olinardi:
+  //
+  //     const latest = locations?.[locations.length - 1];
+  //
+  // qolgani esa jimgina yo'qolardi. Ikkita haqiqiy buyurtmada
+  // o'lchandi (21.08.2026): 22 nuqta yozilgan joyda ~82 tasi,
+  // 60 nuqta yozilgan joyda ~112 tasi bo'lishi kerak edi. Eng
+  // katta bo'shliqlar — 8 daqiqa 37 soniya va 7 daqiqa 08 soniya.
+  // Haydovchi mijozni olib borib qaytgan, xaritada esa qaytish
+  // yo'li umuman ko'rinmagan: iz ko'l ustidan to'g'ri chiziq bo'lib
+  // kesib o'tgan, masofa ham o'sha to'g'ri chiziq bo'yicha
+  // o'lchanib, yakuniy summa kam chiqqan.
+  const ordered = [...locations].sort((a, b) => a.timestamp - b.timestamp);
+  const latest = ordered[ordered.length - 1];
 
   try {
     const driverId = await AsyncStorage.getItem(DRIVER_ID_KEY);
@@ -107,7 +126,17 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
     // Ataylab `await` bilan: fon vazifasi qaytgach Android jarayonni
     // to'xtatib qo'yishi mumkin, ya'ni "keyin bajariladi" degan
     // yozuv umuman ketmay qolardi.
-    await recordTrackPoint(driverId, latest.coords.latitude, latest.coords.longitude);
+    // Yo'l iziga BUTUN to'plam yoziladi. Vaqt sifatida GPS o'lchagan
+    // payt ishlatiladi — yetkazilgan payt emas, aks holda to'plangan
+    // nuqtalarning hammasi bir xil vaqt olib, tartibi buzilardi.
+    await recordTrackPoints(
+      driverId,
+      ordered.map((l) => ({
+        lat: l.coords.latitude,
+        lng: l.coords.longitude,
+        t: l.timestamp,
+      }))
+    );
 
     // MUHIM: safar narxi shu qatorga bog'liq. Avval masofa FAQAT
     // MapScreen ichidagi `watchPositionAsync` orqali hisoblanardi — u
@@ -118,11 +147,16 @@ TaskManager.defineTask(DRIVER_LOCATION_TASK, async ({ data, error }) => {
     // Bu yerdagi nuqta va MapScreen'dagi nuqta bitta hisoblagichga
     // tushadi; har qabul qilingan nuqta langarni o'ziga ko'chirgani
     // uchun ikki marta hisoblash bo'lmaydi.
-    await addTripPoint(
-      latest.coords.latitude,
-      latest.coords.longitude,
-      latest.coords.accuracy
-    );
+    // Hisoblagichga ham HAMMASI, vaqt tartibida beriladi — shunda u
+    // yo'lni haqiqiy ketma-ketlik bo'yicha o'lchaydi.
+    for (const l of ordered) {
+      await addTripPoint(
+        l.coords.latitude,
+        l.coords.longitude,
+        l.coords.accuracy,
+        l.timestamp
+      );
+    }
   } catch (e) {
     console.warn('Fon rejimida joylashuvni yozishda xato:', e);
   }

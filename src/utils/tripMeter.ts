@@ -179,7 +179,14 @@ export async function stopTripMeter(): Promise<void> {
 export async function addTripPoint(
   lat: number,
   lng: number,
-  accuracyM?: number | null
+  accuracyM?: number | null,
+  // Nuqta AYNAN QACHON o'lchangani. Berilmasa — hozir.
+  //
+  // MUHIM: to'plab yuborilgan nuqtalar uchun bu SHART. Ularning
+  // hammasiga "hozir" deb qaralsa, oradagi vaqt 1 soniya bo'lib
+  // chiqadi, tezlik esa yuzlab km/soat — va pastdagi tekshiruv
+  // haqiqiy yo'lning hammasini "GPS sakrashi" deb tashlab yuborardi.
+  atMs?: number | null
 ): Promise<number | null> {
   return enqueue(async () => {
     const state = await readState();
@@ -193,7 +200,7 @@ export async function addTripPoint(
     // ko'chirilmaydi — aloqa tiklangach oradagi yo'l to'liq o'lchanadi.
     if (accuracyM != null && accuracyM > WORST_ACCURACY_M) return state.km;
 
-    const now = Date.now();
+    const now = typeof atMs === 'number' && atMs > 0 ? atMs : Date.now();
 
     // Langar yo'q (safar endi boshlandi) — shu nuqtaning o'zi langar
     // bo'ladi, masofa qo'shilmaydi.
@@ -201,6 +208,13 @@ export async function addTripPoint(
       await writeState({ ...state, lat, lng, at: now });
       return state.km;
     }
+
+    // Langardan ESKI nuqta. Ikkita oqim bir vaqtda ishlaydi va fon
+    // vazifasi nuqtalarni kech yetkazishi mumkin — ya'ni ekrandagi
+    // kuzatuvchi allaqachon oldinga o'tib ketgan joyga eski nuqta
+    // kelib qolishi mumkin. Uni qo'shsak, yo'l orqaga-oldinga
+    // hisoblanib, masofa ikki marta yozilardi.
+    if (now <= state.at) return state.km;
 
     const deltaKm = getDistanceKm(
       { latitude: state.lat, longitude: state.lng },

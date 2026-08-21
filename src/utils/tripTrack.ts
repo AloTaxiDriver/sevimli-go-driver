@@ -32,6 +32,12 @@ import { TRIP_TRACK_ORDER_KEY, TRIP_TRACK_COUNT_KEY } from './sessionKeys';
  * 10 soniyalik oraliqda 2000 nuqta ≈ 5.5 soat. */
 const MAX_TRACK_POINTS = 2000;
 
+/** `t` — GPS nuqtani AYNAN QACHON o'lchagani (yetkazilgan payt emas).
+ *
+ * MUHIM: avval bu yerga `Date.now()` yozilardi. Android nuqtalarni
+ * to'plab yuborganda ularning hammasiga bir xil "hozir" tushar va
+ * haqiqiy tartib yo'qolardi — panel esa izni aynan shu maydon
+ * bo'yicha saralaydi. */
 export type TrackPoint = { lat: number; lng: number; t: number };
 
 /** Safar boshlandi — shu paytdan e'tiboran joylashuvlar yozib
@@ -58,18 +64,27 @@ export async function stopTripTracking(): Promise<void> {
   }
 }
 
-/** Joylashuv vazifasi har yangi nuqtada chaqiradi. Faol safar
+/** Joylashuv vazifasi yangi nuqtalar kelganda chaqiradi. Faol safar
  * bo'lmasa hech narsa qilmaydi.
+ *
+ * MUHIM: bu funksiya BIR NECHTA nuqtani qabul qiladi. Android
+ * joylashuvlarni to'plab yuboradi — telefon uyquga ketganda tizim
+ * ilovani har 10 soniyada uyg'otmaydi, nuqtalarni yig'ib turadi va
+ * bir necha daqiqadan keyin hammasini birdan beradi. Avval bu yerga
+ * faqat OXIRGISI kelardi va qolgani yo'qolardi: 22 nuqta yozilgan
+ * joyda 82 tasi bo'lishi kerak edi, iz esa 8 daqiqalik bo'shliq bilan
+ * chiqib, xaritada to'g'ri chiziq bo'lib kesib o'tardi.
  *
  * Xatolar YUTILADI: yo'l izi qo'shimcha ma'lumot, uni yozib
  * bo'lmagani haydovchining joylashuvi yangilanishiga (asosiy vazifa)
  * halal bermasligi kerak. */
-export async function recordTrackPoint(
+export async function recordTrackPoints(
   driverId: string,
-  lat: number,
-  lng: number
+  points: TrackPoint[]
 ): Promise<void> {
   try {
+    if (!points.length) return;
+
     const orderId = await AsyncStorage.getItem(TRIP_TRACK_ORDER_KEY);
     if (!orderId) return;
 
@@ -77,7 +92,11 @@ export async function recordTrackPoint(
     const count = Number(rawCount) || 0;
     if (count >= MAX_TRACK_POINTS) return;
 
-    const point: TrackPoint = { lat, lng, t: Date.now() };
+    // To'plangan nuqta chegaradan oshib ketishi mumkin — ortiqchasi
+    // kesiladi, aks holda hisoblagich yolg'on gapirib qolardi.
+    const room = MAX_TRACK_POINTS - count;
+    const batch = points.length > room ? points.slice(0, room) : points;
+
     await firestore()
       .collection('orderTracks')
       .doc(orderId)
@@ -85,14 +104,14 @@ export async function recordTrackPoint(
         {
           orderId,
           driverId,
-          points: firestore.FieldValue.arrayUnion(point),
+          points: firestore.FieldValue.arrayUnion(...batch),
           updatedAt: firestore.FieldValue.serverTimestamp(),
         },
         { merge: true }
       );
 
-    await AsyncStorage.setItem(TRIP_TRACK_COUNT_KEY, String(count + 1));
+    await AsyncStorage.setItem(TRIP_TRACK_COUNT_KEY, String(count + batch.length));
   } catch (e) {
-    console.warn('Yo’l izi nuqtasini yozishda xato:', e);
+    console.warn('Yo’l izi nuqtalarini yozishda xato:', e);
   }
 }
