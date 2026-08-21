@@ -11,10 +11,33 @@
       "**/node_modules/**"
     ],
     "rewrites": [
-      { "source": "/manager", "destination": "/admin/index.html" },
-      { "source": "/manager/**", "destination": "/admin/index.html" },
-      { "source": "/depecher", "destination": "/admin/index.html" },
-      { "source": "/depecher/**", "destination": "/admin/index.html" }
+      {
+        "source": "/manager",
+        "destination": "/admin/index.html"
+      },
+      {
+        "source": "/manager/**",
+        "destination": "/admin/index.html"
+      },
+      {
+        "source": "/depecher",
+        "destination": "/admin/index.html"
+      },
+      {
+        "source": "/depecher/**",
+        "destination": "/admin/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "**/*.html",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache, no-store, must-revalidate"
+          }
+        ]
+      }
     ]
   },
   "functions": [
