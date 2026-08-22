@@ -155,6 +155,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setError("Parol noto'g'ri");
         return false;
       }
+      // MUHIM: `approved` AYNAN `false` bo'lgandagina to'siladi.
+      // Maydon umuman yo'q bo'lsa (dashboard orqali qo'shilgan eski
+      // haydovchilarning hammasi shunday) kirish avvalgidek
+      // ishlayveradi — aks holda bu tekshiruv butun parkni tizimdan
+      // chiqarib yuborardi. Faqat ilovadan o'zi ro'yxatdan o'tganlar
+      // `false` bilan yaratiladi va dispetcher tasdiqlashini kutadi.
+      if (data.approved === false) {
+        setError('Arizangiz ko’rib chiqilmoqda. Dispetcher tasdiqlagach kirishingiz mumkin.');
+        return false;
+      }
       // Admin intizom uchun bloklagan. Bu `approved` dan BOSHQA
       // narsa: `approved` — hali ko'rib chiqilmagan yangi ariza,
       // `blocked` — ishlab turgan haydovchini to'xtatish. Ikkinchisi
