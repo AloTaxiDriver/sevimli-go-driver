@@ -46,10 +46,8 @@ export type TrackPoint = { lat: number; lng: number; t: number };
  * "haydovchi kelmadi" nizolarida kerak bo'ladi). */
 export async function startTripTracking(orderId: string): Promise<void> {
   try {
-    await AsyncStorage.multiSet([
-      [TRIP_TRACK_ORDER_KEY, orderId],
-      [TRIP_TRACK_COUNT_KEY, '0'],
-    ]);
+    await AsyncStorage.setItem(TRIP_TRACK_ORDER_KEY, orderId);
+    await AsyncStorage.setItem(TRIP_TRACK_COUNT_KEY, '0');
   } catch (e) {
     console.warn('Yo’l izini boshlashda xato:', e);
   }
@@ -58,7 +56,8 @@ export async function startTripTracking(orderId: string): Promise<void> {
 /** Safar tugadi yoki bekor qilindi — yozishni to'xtatamiz. */
 export async function stopTripTracking(): Promise<void> {
   try {
-    await AsyncStorage.multiRemove([TRIP_TRACK_ORDER_KEY, TRIP_TRACK_COUNT_KEY]);
+    await AsyncStorage.removeItem(TRIP_TRACK_ORDER_KEY);
+    await AsyncStorage.removeItem(TRIP_TRACK_COUNT_KEY);
   } catch (e) {
     console.warn('Yo’l izini to’xtatishda xato:', e);
   }
