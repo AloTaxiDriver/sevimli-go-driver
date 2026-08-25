@@ -1243,6 +1243,33 @@ export default function MapScreen({ acceptOrderId }: { acceptOrderId?: string })
   // kuzatuv to'xtaydi.
   async function handleBgLocationDisclosure(accepted: boolean) {
     setBgLocationDisclosureVisible(false);
+
+    // MUHIM (Google Play siyosati — 2026-08-19 da ilova aynan shu sabab
+    // rad etilgan): tizimning ruxsat oynasi oshkora xabardan keyin
+    // DARHOL chiqishi shart. Rad etish matni:
+    //   "Запросы на согласие пользователя и динамические разрешения
+    //    появляются не сразу после показа сообщения о раскрытии
+    //    информации."
+    //
+    // Avval so'rov shu yerda emas, `beginTracking` ichida edi va unga
+    // yetguncha oradan AsyncStorage yozuvi, kuzatuv navbati va yana
+    // bitta AsyncStorage o'qishi o'tardi. Undan ham yomoni: beginTracking
+    // foreground ruxsati bo'lmasa `return` qilardi, ya'ni tekshiruvchi
+    // tushuntirishni qabul qilgani bilan tizim oynasini UMUMAN
+    // ko'rmasdi.
+    //
+    // Shuning uchun so'rov endi shu yerda, boshqa HECH QANDAY await'dan
+    // oldin. Foreground ruxsati bo'lmasa Android fon ruxsatini
+    // ko'rsatmaydi, shuning uchun avval o'sha so'raladi — u ham tizim
+    // oynasi, ya'ni zanjir uzilmaydi.
+    if (accepted) {
+      const foreground = await Location.getForegroundPermissionsAsync();
+      if (!foreground.granted) {
+        await Location.requestForegroundPermissionsAsync().catch(() => {});
+      }
+      await Location.requestBackgroundPermissionsAsync().catch(() => {});
+    }
+
     await setBackgroundLocationConsent(accepted ? 'granted' : 'declined');
     // MUHIM: oyna ochiq turgan vaqt ichida haydovchi oflayn bo'lgan
     // bo'lishi mumkin — javobni o'qib, keyin "Ishni tugatish"ni bosgan

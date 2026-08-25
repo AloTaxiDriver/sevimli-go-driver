@@ -224,9 +224,15 @@ async function beginTracking(driverId: string): Promise<void> {
     // service ishlayotgan paytda Android fon ruxsatini talab qilmaydi.
     // Ya'ni haydovchi rad etsa ham ishlay oladi, faqat ilova butunlay
     // yopilganda kuzatuv to'xtaydi.
-    if ((await getBackgroundLocationConsent()) === 'granted') {
-      await Location.requestBackgroundPermissionsAsync().catch(() => {});
-    }
+    // MUHIM: fon ruxsati bu yerda SO'RALMAYDI. U faqat bitta joyda —
+    // oshkora tushuntirish oynasi qabul qilingan zahoti so'raladi
+    // (MapScreen.handleBgLocationDisclosure). Google Play talabi shu:
+    // tizim oynasi tushuntirishdan keyin darhol chiqishi kerak.
+    //
+    // Bu yerda so'rash ikki xatoga olib kelardi: (1) tushuntirish bilan
+    // so'rov orasiga bir nechta async qadam tushardi, (2) ilova keyingi
+    // safar ochilganda so'rov hech qanday tushuntirishsiz chiqishi
+    // mumkin edi. Ikkalasi ham siyosat buzilishi.
 
     // MUHIM: ruxsat oynasi ochiq turgan vaqt ichida (u soniyalab
     // cho'zilishi mumkin) haydovchi oflayn bo'lib ulgurgan bo'lishi
