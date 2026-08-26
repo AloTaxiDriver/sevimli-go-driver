@@ -455,10 +455,22 @@ async function computeNearestBranchId(
   return nearestId;
 }
 
+// MUHIM: `driverId` ham tekshiriladi. Avval faqat `status` ga
+// qaralardi — ya'ni egasi bor, lekin holati hamon "pending" bo'lgan
+// buyurtma "hali bo'sh" deb hisoblanardi va sikl uni KEYINGI
+// haydovchiga taklif qilishda davom etardi: buyurtmani bir haydovchi
+// olib bo'lgach, biroz vaqtdan keyin ikkinchisining ekranida karta
+// paydo bo'lardi.
+//
+// Ikkovi odatda bitta yozuvda keladi, lekin bunga TAYANIB bo'lmaydi:
+// eski ilova versiyasi, uzilgan yozuv yoki dispetcherning qo'lda
+// biriktirishi ularni ajratib yuborishi mumkin.
 async function isOrderStillPending(orderId: string): Promise<boolean> {
   try {
-    const doc = await db.collection("orders").doc(orderId).get();
-    return doc.data()?.status === "pending";
+    const data = (await db.collection("orders").doc(orderId).get()).data();
+    if (!data) return false;
+    if (data.status !== "pending") return false;
+    return data.driverId == null;
   } catch {
     return false;
   }

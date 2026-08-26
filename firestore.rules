@@ -50,6 +50,29 @@ service cloud.firestore {
       return request.resource.data.diff(resource.data).affectedKeys();
     }
 
+    // Haydovchi ilovasida Firebase Auth YO'Q — ya'ni bu yerda "kim
+    // yozayotgani"ni bilishning iloji yo'q. Lekin BUYURTMANING HOZIRGI
+    // holatidan kelib chiqib, eng zararli yozuvni to'xtatib qolish
+    // mumkin: allaqachon biriktirilgan buyurtmani BOSHQA haydovchi
+    // o'ziga o'tkazishi.
+    //
+    // Aynan shu tufayli bitta buyurtmani ikki haydovchi qabul qilib
+    // olardi: ilovadagi tranzaksiya buni to'g'ri to'xtatadi, lekin
+    // faqat SHU tranzaksiyani ishlatadigan versiyada. Eski APK
+    // o'rnatilgan telefon uchun hech qanday to'siq yo'q edi.
+    function driverClaimOk() {
+      return
+        // `driverId` ga umuman tegilmayapti — safar davomidagi oddiy
+        // yangilanish (holat, narx, masofa, vaqtlar).
+        !changedKeys().hasAny(['driverId'])
+        // Bo'shatish: buyurtmani egasiz qilib qaytarish
+        // (revertOrderAcceptance — balansi yetmagan haydovchi).
+        || request.resource.data.get('driverId', null) == null
+        // Egallash — FAQAT hozir EGASIZ va hamon "pending" buyurtmani.
+        || (resource.data.get('driverId', null) == null &&
+            resource.data.get('status', 'pending') == 'pending');
+    }
+
     // Dashboard xodimi — rol hujjati bo'yicha (`isStaff()`), YOKI eski
     // yo'l bilan (email/parol bilan kirgan). Ikkinchisi ATAYLAB
     // saqlanmoqda: birinchi (bootstrap) admin hisobida `adminRoles`
@@ -180,7 +203,11 @@ service cloud.firestore {
         //    manfiyga tushirib, uni butunlay ishdan to'xtatish mumkin
         //    edi (balans <= 0 bo'lsa ilova buyurtma qabul qildirmaydi).
         //    `extrasTotal` endi FAQAT mijozniki.
-        || changedKeys().hasOnly(driverOrderFields())
+        //    MUHIM: endi maydon ro'yxati YETARLI EMAS — buyurtma
+        //    egasiz bo'lishi ham shart (`driverClaimOk`). Busiz
+        //    boshqa haydovchi olib bo'lgan buyurtmani o'ziga
+        //    o'tkazib yuborish mumkin edi.
+        || (changedKeys().hasOnly(driverOrderFields()) && driverClaimOk())
         // 4) Rol hujjati hali yaratilmagan dashboard xodimi (bootstrap
         //    admin) — panel maydonlari. `customerReader()` izohiga
         //    qarang: bu yumshoq shox ataylab qoldirilgan, lekin u ham
