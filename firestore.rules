@@ -372,7 +372,30 @@ service cloud.firestore {
     // ilovasining o'zida (public/admin/index.html) amalga oshiriladi.
     // ============================================================
     match /dashboardData/{docId} {
-      allow read: if true;
+      // MUHIM: bu yerda `read: if true` turardi — ya'ni internetdagi
+      // HAR KIM, hech qanday hisobsiz, quyidagilarni to'liq yuklab
+      // olardi:
+      //   dashboardData/workers    — xodimlar: ism, telefon, username,
+      //                              lavozim, qaysi filialda ishlashi;
+      //   dashboardData/clients    — mijozlar: ism, telefon, nechta
+      //                              buyurtma bergani, jami sarfi;
+      //   dashboardData/driverTxns — PUL DAFTARI: har bir balans
+      //                              to'ldirish, summasi, sanasi, kimga
+      //                              tegishli ekani.
+      //
+      // Dashboard kodining o'zi allaqachon "faqat xodim o'qiydi" degan
+      // taxminga qurilgan: tinglovchilar ATAYLAB rol tasdiqlangandan
+      // KEYIN, `startDashboardListeners` ichida ishga tushadi. Ya'ni
+      // qoida kodning niyatidan orqada qolgan edi.
+      //
+      // Ikki istisno — mijoz ilovasi (uning xodim hisobi yo'q) shu
+      // ikkitasini o'qiydi va ikkalasi ham shaxsiy ma'lumot emas:
+      //   `services` — qo'shimcha xizmatlar narxi (bagaj, 5 o'rin);
+      //   `branches` — filial nomi/manzili/koordinatasi.
+      // Ro'yxat ATAYLAB butun oila uchun bir xil: bu loyihalar
+      // bir-biridan nusxa olinadi, va keyinroq ko'chirilgan mijoz
+      // ilovasi jimgina ishlamay qolmasligi kerak.
+      allow read: if isStaff() || docId in ['services', 'branches'];
       allow write: if isStaff();
     }
 
