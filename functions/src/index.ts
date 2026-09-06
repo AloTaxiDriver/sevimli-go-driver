@@ -164,7 +164,43 @@ function driverLastSeenMillis(data: FirebaseFirestore.DocumentData): number {
 // Chegara ilovadagidan (90 soniya) ataylab KENGROQ: bu yerda xatoning
 // narxi kattaroq (haqiqiy haydovchi buyurtmadan mahrum bo'ladi), va
 // tunnel/lift kabi qisqa uzilishlar hisobga olinishi kerak.
-const DRIVER_DISPATCH_STALE_MS = 5 * 60 * 1000;
+//
+// MUHIM: bu chegara endi CHIQARIB TASHLASH uchun EMAS, faqat NAVBAT
+// TARTIBI uchun ishlatiladi. Alo Taxi'da (06.09.2026) jonli jurnal
+// ko'rsatdi: bir joyda turgan 3 ta onlayn haydovchidan 2 tasi
+// "arvoh" deb chiqarib tashlangan, buyurtma faqat bittasiga taklif
+// qilinib, darhol "Ochiq buyurtmalar"ga tushgan.
+//
+// Harakatsiz turgan telefonda Android joylashuvni TO'PLAB yetkazadi
+// (Doze; ba'zi ishlab chiqaruvchilarda foreground service ham
+// bo'g'iladi) — ya'ni AYNAN buyurtma kutib turgan haydovchining
+// koordinatasi eskiradi. Push esa unga baribir yetib boradi: yuqori
+// ustuvorlikdagi FCM xabari uxlab yotgan ilovani ham uyg'otadi.
+// Shuning uchun eskirgan koordinata "telefoni jiringlamaydi" degani
+// EMAS.
+const DRIVER_FRESH_LOCATION_MS = 5 * 60 * 1000;
+
+/** Haydovchiga taklif yuborishning umuman ma'nosi bormi.
+ *
+ * MUHIM: bu yerda AYNAN `cleanupGhostOnlineDrivers` bilan BIR XIL
+ * qoida ishlatiladi. Avval taqsimlash o'zining qat'iyroq (5 daqiqa)
+ * chegarasini yuritardi, tozalash vazifasi esa ancha uzoq jimlikni
+ * normal deb bilardi — natijada oradagi oraliqda "o'lik hudud"
+ * paydo bo'lardi: haydovchi panelda ham, mijoz ilovasida ham onlayn
+ * ko'rinadi, lekin unga hech qachon buyurtma taklif qilinmaydi. Va
+ * bu holat O'ZI TUZALMAYDI: `isOnline` faqat haydovchi qo'lda qayta
+ * yoqqanda yangilanadi.
+ *
+ * Endi qoida bitta: haydovchi tozalash vazifasi uni oflayn
+ * qilmaguncha "yetib boriladigan" hisoblanadi. */
+function isDriverStillReachable(
+  data: FirebaseFirestore.DocumentData,
+  now: number
+): boolean {
+  const lastSeen = driverLastSeenMillis(data);
+  if (lastSeen === 0) return false;
+  return now - lastSeen <= GHOST_ONLINE_STALE_MS;
+}
 
 // Ketma-ket taklif sikli uchun umumiy vaqt byudjeti. Funksiyaning
 // o'z chegarasi 540 soniya — undan xavfsiz masofada to'xtaymiz,
@@ -597,7 +633,9 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       return;
     }
 
-    type DriverInfo = { id: string; token: string; distance: number };
+    // `stale` — koordinatasi eskirgan (telefon jim turibdi): navbatdan
+    // chiqarilmaydi, faqat OXIRIGA qo'yiladi.
+    type DriverInfo = { id: string; token: string; distance: number; stale: boolean };
 
     const nearbyDrivers: DriverInfo[] = [];
 
@@ -615,13 +653,18 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
     driversSnapshot.docs.forEach((doc) => {
       const data = doc.data();
       if (!data.pushToken) return;
-      // "Arvoh" onlayn haydovchilar navbatga qo'shilmaydi — yuqoridagi
-      // DRIVER_DISPATCH_STALE_MS izohiga qarang.
-      const locationMillis = driverLocationMillis(data);
-      if (locationMillis === 0 || dispatchNow - locationMillis > DRIVER_DISPATCH_STALE_MS) {
+      // Haqiqiy arvoh (tozalash vazifasi ham uni oflayn qiladi) —
+      // chetda qoladi.
+      if (!isDriverStillReachable(data, dispatchNow)) {
         staleSkipped++;
         return;
       }
+      // Koordinatasi eskirgan, lekin seansi tirik. Navbatga QO'SHILADI,
+      // faqat oxiriga — sabab yuqorida, DRIVER_FRESH_LOCATION_MS
+      // ustidagi izohda.
+      const locationMillis = driverLocationMillis(data);
+      const staleLocation =
+        locationMillis === 0 || dispatchNow - locationMillis > DRIVER_FRESH_LOCATION_MS;
       // MUHIM: band (safar davomidagi) haydovchiga yangi buyurtma
       // yuborilmasin — aks holda mijoz ilova tomonda (accept oqimi)
       // buni tekshirmasdan qabul qilsa, joriy faol safar Firestore'da
@@ -668,16 +711,35 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
       if (pickupLat != null && pickupLng != null && data.lat != null && data.lng != null) {
         const dist = getDistanceMeters(pickupLat, pickupLng, data.lat, data.lng);
         if (dist <= settings.radiusMeters) {
-          nearbyDrivers.push({ id: doc.id, token: data.pushToken, distance: dist });
+          nearbyDrivers.push({
+            id: doc.id,
+            token: data.pushToken,
+            distance: dist,
+            stale: staleLocation,
+          });
         }
       }
     });
 
-    nearbyDrivers.sort((a, b) => a.distance - b.distance);
+    // Avval joylashuvi YANGI haydovchilar (masofa bo'yicha), so'ng
+    // jim turganlar. Ikkinchi guruhning masofasi oxirgi ma'lum
+    // nuqtadan o'lchanadi — u eskirgan bo'lishi mumkin, shuning
+    // uchun ular navbatning oxirida.
+    nearbyDrivers.sort((a, b) =>
+      a.stale === b.stale ? a.distance - b.distance : a.stale ? 1 : -1
+    );
+
+    // Koordinatasi eskirgan, lekin navbatga TUSHGANLAR — jurnalda
+    // chetda qolganlardan alohida ko'rinsin. Ataylab navbat
+    // shakllangandan KEYIN sanaladi: filtrlardan oldin sanalsa,
+    // boshqa filialdagi yoki radiusdan uzoq haydovchi ham qo'shilib,
+    // son navbatdagi haqiqiy songa mos kelmasdi.
+    const staleQueued = nearbyDrivers.filter((d) => d.stale).length;
 
     logger.info(
       `Buyurtma ${orderId} (filial: ${branchId}): ${nearbyDrivers.length} ta yaqin haydovchi ` +
-        `(${settings.radiusMeters}m radius), ${staleSkipped} ta "arvoh onlayn", ` +
+        `(${settings.radiusMeters}m radius; ${staleQueued} tasining koordinatasi ` +
+        `eskirgan — navbat oxirida), ${staleSkipped} ta "arvoh onlayn", ` +
         `${noBalanceSkipped} ta balansi tugagan, ${blockedSkipped} ta bloklangan, ` +
         `${modeSkipped} ta "o'z hududi" rejimidagi haydovchi o'tkazib yuborildi` +
         (settings.respectDriverArea ? "" : ' ("o\'z hududi" filtri O\'CHIRILGAN)')
@@ -769,7 +831,8 @@ export const onNewOrderNotifyDrivers = onDocumentCreated(
 
       logger.info(
         `Buyurtma ${orderId} → haydovchi ${driver.id} ` +
-          `(masofa: ${Math.round(driver.distance)}m, navbat: ${i + 1}/${nearbyDrivers.length})`
+          `(masofa: ${Math.round(driver.distance)}m, navbat: ${i + 1}/${nearbyDrivers.length}` +
+          `${driver.stale ? ", koordinatasi eskirgan" : ""})`
       );
 
       await sendPushToToken(driver.token, orderId, dataPayload);
